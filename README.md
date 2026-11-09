@@ -11,12 +11,24 @@ Delphi 12 / Object Pascal, standard RTL/VCL only.
 - `src/Portappix.State.pas` — `TPortappixJournal`, tracks active runs in `run_state.json` and recovers from crashes or forced exits.
 - `src/Portappix.Catalog.pas` — `TPortappixCatalog`, downloads/loads `catalog.json` and parses app entries (`id`, `name`, `version`, `category`, `url`, `sha256`, `size`).
 - `src/Portappix.PackageManager.pas` — `TPortappixPackageManager`, downloads, SHA-256 verifies, extracts, and atomically installs app packages without touching `Data\<id>`.
+- `src/Portappix.Importer.pas` — `TPortappixImporter`, extracts Windows version info (`GetFileVersionInfo*`/`VerQueryValue`), generates a scaffolded `app.json` for an existing app folder, and can optionally copy it into `Apps\<id>`.
 
 ## VCL frontend (Phase 4)
 
 - `src/Portappix.TrayUI.pas` — tray icon/popup menu manager; scans `Apps\*\app.json`, groups by category, and launches apps via `TPortableAppRunner` on anonymous background threads (UI stays responsive).
 - `src/MainForm.pas` / `src/MainForm.dfm` — dashboard with **Installed Apps** (scan, launch, uninstall `Apps\<id>` only; `Data\<id>` preserved) and **Store** (cached/remote catalog, search, install + progress bar).
 - `src/Launcher.dpr` — application entrypoint.
+
+## App Importer (Final Utility)
+
+`src/Portappix.Importer.pas` — `TPortappixImporter`:
+- `GenerateManifest(SourceFolder, TargetExe[, Publisher, out ManifestPath, out AppId])` extracts Windows version info from `TargetExe` using `GetFileVersionInfoSize`/`GetFileVersionInfo`/`VerQueryValue` (`ProductName`, `CompanyName`, `FileVersion`, with fixed-file-info fallback). Falls back to the EXE file name if version info is missing.
+- Builds `id` by lowercasing `ProductName` (or EXE name) and stripping/collapsing non-alphanumerics.
+- Writes formatted `SourceFolder\app.json` with `id`, `name`, optional `publisher`/`version`, `exe` (path relative to `SourceFolder`), and Level 2 virtualization stubs:
+  - `"env": {"APPDATA": "{data}\\AppData"}`
+  - `"registry": []`
+  - `"junctions": {}`
+- Optional integration: `ImportToApps(SourceFolder, TargetExe, Publisher, AppsRoot)` generates the manifest, then copies the whole source folder to `Apps\<id>` (refuses if destination exists). It never touches `Data\<id>`.
 
 ## UI boot sequence
 

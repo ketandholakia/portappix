@@ -8,7 +8,8 @@ uses
   Portappix.State in 'Portappix.State.pas',
   Portappix.Catalog in 'Portappix.Catalog.pas',
   Portappix.PackageManager in 'Portappix.PackageManager.pas',
-  Portappix.TrayUI in 'Portappix.TrayUI.pas';
+  Portappix.TrayUI in 'Portappix.TrayUI.pas',
+  Portappix.Importer in 'Portappix.Importer.pas';
 
 {$R *.res}
 

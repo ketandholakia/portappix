@@ -21,7 +21,8 @@ uses
   Portappix.Catalog,
   Portappix.PackageManager,
   Portappix.State,
-  Portappix.TrayUI;
+  Portappix.TrayUI,
+  Portappix.Importer;
 
 type
   TMainLauncherForm = class(TForm)
@@ -36,6 +37,7 @@ type
     LaunchButton: TButton;
     UninstallButton: TButton;
     RefreshInstalledButton: TButton;
+    ImportAppButton: TButton;
     SearchEdit: TEdit;
     SearchLabel: TLabel;
     RefreshCatalogButton: TButton;
@@ -43,6 +45,7 @@ type
     ProgressBar: TProgressBar;
     StatusLabel: TLabel;
     TrayIcon: TTrayIcon;
+    dlgImportExe: TOpenDialog;
     procedure FormCreate(Sender: TObject);
     procedure FormCloseQuery(Sender: TObject; var CanClose: Boolean);
     procedure FormDestroy(Sender: TObject);
@@ -53,6 +56,7 @@ type
     procedure InstallButtonClick(Sender: TObject);
     procedure SearchEditChange(Sender: TObject);
     procedure TrayIconDblClick(Sender: TObject);
+    procedure btnImportAppClick(Sender: TObject);
   private
     FRootPath: string;
     FAppsDir: string;
@@ -527,6 +531,34 @@ begin
           end);
       end;
     end).Start;
+end;
+
+procedure TMainLauncherForm.btnImportAppClick(Sender: TObject);
+var
+  SourceFolder: string;
+  AppsRoot: string;
+  Importer: TPortappixImporter;
+begin
+  if not dlgImportExe.Execute then
+    Exit;
+
+  SourceFolder := TPath.GetDirectoryName(dlgImportExe.FileName);
+  AppsRoot := TPath.Combine(FRootPath, 'Apps');
+
+  try
+    Importer := TPortappixImporter.Create(FRootPath);
+    try
+      Importer.ImportToApps(SourceFolder, dlgImportExe.FileName, '', AppsRoot);
+    finally
+      Importer.Free;
+    end;
+
+    ShowMessage('App imported successfully! You can configure its Level 2 sandboxing in the new Apps folder if needed.');
+    LoadInstalledApps;
+  except
+    on E: Exception do
+      ShowMessage('Import failed: ' + E.Message);
+  end;
 end;
 
 procedure TMainLauncherForm.TrayIconDblClick(Sender: TObject);

@@ -84,6 +84,15 @@ object MainLauncherForm: TMainLauncherForm
           TabOrder = 2
           OnClick = UninstallButtonClick
         end
+        object ImportAppButton: TButton
+          Left = 386
+          Top = 8
+          Width = 120
+          Height = 25
+          Caption = 'Import App...'
+          TabOrder = 3
+          OnClick = btnImportAppClick
+        end
       end
     end
     object StoreTab: TTabSheet
@@ -196,6 +205,13 @@ object MainLauncherForm: TMainLauncherForm
     Visible = True
     OnDblClick = TrayIconDblClick
     Left = 808
+    Top = 8
+  end
+  object dlgImportExe: TOpenDialog
+    Filter = 'Applications (*.exe)|*.exe|All files (*.*)|*.*'
+    Options = [ofHideReadOnly, ofPathMustExist, ofFileMustExist, ofEnableSizing]
+    Title = 'Select application executable to import'
+    Left = 760
     Top = 8
   end
 end
