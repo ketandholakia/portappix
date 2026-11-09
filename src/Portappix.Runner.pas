@@ -855,7 +855,9 @@ begin
 
     try
       if TFile.Exists(BackupFile) then
-        TFile.Delete(BackupFile);
+        raise EPortappixRunnerError.CreateFmt(
+          'A host registry backup from a previous run already exists: "%s". ' +
+          'Recover it before launching this app again.', [BackupFile]);
 
       if not RegistryKeyExists(Key) then
         Continue;

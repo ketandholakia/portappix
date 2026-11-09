@@ -243,7 +243,8 @@ export-before-delete ordering with an injected registry-ops fake.
 ## Notes and limitations
 
 - Host registry keys present before launch are backed up and restored. If a backup cannot be
-  created, `Run` raises before any host key is deleted.
+  created — or a backup from a previous crash still exists — `Run` raises before any host key
+  is deleted so the original state can be recovered first.
 - Registry import is not transactional; a partially imported `.reg` may need manual cleanup.
 - Junctions use `FSCTL_*` directly, so `%` in paths is never expanded by `cmd.exe`.
 - Registry operations use `reg.exe` resolved from `SystemRoot\System32`; the registry view

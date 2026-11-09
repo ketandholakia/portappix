@@ -206,7 +206,8 @@ var
   Hash: THashSHA2;
 begin
   Hash := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
-  Hash.Update(AData);
+  if Length(AData) > 0 then
+    Hash.Update(AData);
   Result := Hash.HashAsBytes;
 end;
 
