@@ -26,6 +26,15 @@
           "type": "string",
           "minLength": 1
         },
+        "publisher": {
+          "type": "string",
+          "minLength": 1
+        },
+        "manifestSchema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1
+        },
         "version": {
           "type": "string",
           "minLength": 1
@@ -37,7 +46,7 @@
         "url": {
           "type": "string",
           "format": "uri",
-          "pattern": "^https?://"
+          "pattern": "^https://"
         },
         "sha256": {
           "type": "string",
