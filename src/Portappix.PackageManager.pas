@@ -3,6 +3,7 @@ unit Portappix.PackageManager;
 interface
 
 uses
+  Winapi.Windows,
   System.SysUtils,
   System.Classes,
   System.IOUtils,
@@ -10,7 +11,10 @@ uses
   System.Zip,
   System.Net.HttpClient,
   System.Net.URLClient,
-  Portappix.Catalog;
+  Portappix.Common,
+  Portappix.Catalog,
+  Portappix.Manifest,
+  Portappix.Policy;
 
 type
   EPortappixPackageError = class(Exception);
@@ -29,16 +33,17 @@ type
     function CacheFile(const AppDef: TCatalogApp): string;
     procedure DownloadPackage(const AppDef: TCatalogApp; const ADestination: string;
       const AProgress: TDownloadProgressEvent);
-    function CalculateSha256(const AFileName: string): string;
     procedure VerifyPackage(const AppDef: TCatalogApp; const AFileName: string);
-    procedure ExtractPackage(const AZipFile, ADestinationDir: string);
     procedure DeleteDirectoryQuiet(const ADirectory: string);
     procedure DeleteFileQuiet(const AFileName: string);
     procedure AtomicSwap(const ATempDir, AFinalDir: string);
     function SanitizeFileComponent(const AValue: string): string;
+    procedure ValidateExtractedManifest(const AppDef: TCatalogApp; const ATempDir: string);
   public
     constructor Create(const ARootPath: string = '');
     procedure InstallApp(const AppDef: TCatalogApp; const AProgress: TDownloadProgressEvent = nil);
+    procedure ExtractArchive(const AZipFile, ADestinationDir: string);
+    class function ComputeSha256(const AFileName: string): string; static;
     property RootPath: string read FRootPath;
     property AppsDirectory: string read FAppsDir;
     property CacheDirectory: string read FCacheDir;
@@ -47,45 +52,9 @@ type
 
 implementation
 
-function LauncherDirectory: string;
-begin
-  Result := TPath.GetDirectoryName(ParamStr(0));
-  if Result = '' then
-    Result := GetCurrentDir;
-end;
-
-function IsRelativePath(const APath: string): Boolean;
-begin
-  if APath = '' then
-    Exit(True);
-  if (Length(APath) >= 2) and (APath[2] = ':') then
-    Exit(False);
-  if (Length(APath) >= 2) and (APath[1] = '\') and (APath[2] = '\') then
-    Exit(False);
-  if APath[1] = '\' then
-    Exit(False);
-  Result := True;
-end;
-
-function ResolveRootPath(const APath: string): string;
-begin
-  if APath = '' then
-    Exit(TPath.GetFullPath(LauncherDirectory));
-  if IsRelativePath(APath) then
-    Result := TPath.GetFullPath(TPath.Combine(LauncherDirectory, APath))
-  else
-    Result := TPath.GetFullPath(APath);
-end;
-
-function IsZipSlip(const ABaseDir, AFileName: string): Boolean;
-var
-  FullPath: string;
-  BasePath: string;
-begin
-  BasePath := IncludeTrailingPathDelimiter(TPath.GetFullPath(ABaseDir));
-  FullPath := TPath.GetFullPath(TPath.Combine(ABaseDir, AFileName));
-  Result := not FullPath.StartsWith(BasePath, True);
-end;
+const
+  MaxZipEntries = 20000;
+  MaxZipUncompressedBytes = Int64(2) * 1024 * 1024 * 1024;
 
 constructor TPortappixPackageManager.Create(const ARootPath: string);
 begin
@@ -131,7 +100,6 @@ var
   Client: THTTPClient;
   Stream: TFileStream;
   Response: IHTTPResponse;
-  Abort: Boolean;
   TempDestination: string;
 begin
   TempDestination := ADestination + '.download';
@@ -164,7 +132,8 @@ begin
         DeleteFileQuiet(TempDestination);
         if Aborted then
           raise EPortappixPackageError.CreateFmt('Download aborted for "%s".', [AppDef.Id]);
-        raise EPortappixPackageError.CreateFmt('Unable to download "%s": %s', [AppDef.Id, E.Message]);
+        raise EPortappixPackageError.CreateFmt('Unable to download "%s": %s',
+          [AppDef.Id, E.Message]);
       end;
     end;
   finally
@@ -192,7 +161,7 @@ begin
   TFile.Move(TempDestination, ADestination);
 end;
 
-function TPortappixPackageManager.CalculateSha256(const AFileName: string): string;
+class function TPortappixPackageManager.ComputeSha256(const AFileName: string): string;
 var
   Stream: TFileStream;
 begin
@@ -209,9 +178,10 @@ procedure TPortappixPackageManager.VerifyPackage(const AppDef: TCatalogApp;
 var
   ActualHash: string;
   ExpectedHash: string;
+  ActualSize: Int64;
 begin
   ExpectedHash := AppDef.Sha256.Trim.ToLower;
-  ActualHash := CalculateSha256(AFileName);
+  ActualHash := ComputeSha256(AFileName);
   if not SameText(ActualHash, ExpectedHash) then
   begin
     DeleteFileQuiet(AFileName);
@@ -219,24 +189,50 @@ begin
       'SHA-256 mismatch for "%s". Expected %s but got %s.',
       [AppDef.Id, ExpectedHash, ActualHash]);
   end;
+
+  if AppDef.Size > 0 then
+  begin
+    ActualSize := TFile.GetSize(AFileName);
+    if ActualSize <> AppDef.Size then
+    begin
+      DeleteFileQuiet(AFileName);
+      raise EPortappixPackageError.CreateFmt(
+        'Size mismatch for "%s". Expected %d bytes but got %d bytes.',
+        [AppDef.Id, AppDef.Size, ActualSize]);
+    end;
+  end;
 end;
 
-procedure TPortappixPackageManager.ExtractPackage(const AZipFile, ADestinationDir: string);
+procedure TPortappixPackageManager.ExtractArchive(const AZipFile, ADestinationDir: string);
 var
   Zip: TZipFile;
   FileName: string;
   DestinationPath: string;
+  TotalUncompressed: Int64;
+  EntrySize: Int64;
 begin
   if TDirectory.Exists(ADestinationDir) then
     TDirectory.Delete(ADestinationDir, True);
   ForceDirectories(ADestinationDir);
 
+  TotalUncompressed := 0;
   Zip := TZipFile.Create;
   try
     Zip.Open(AZipFile, TZipMode.zmRead);
     try
+      if Zip.FileCount > MaxZipEntries then
+        raise EPortappixPackageError.CreateFmt(
+          'Package contains %d entries; the limit is %d.', [Zip.FileCount, MaxZipEntries]);
+
       for var Index := 0 to Zip.FileCount - 1 do
       begin
+        EntrySize := Zip.FileInfo[Index].UncompressedSize;
+        TotalUncompressed := TotalUncompressed + EntrySize;
+        if TotalUncompressed > MaxZipUncompressedBytes then
+          raise EPortappixPackageError.CreateFmt(
+            'Package expands to more than %d bytes; refusing to extract.',
+            [MaxZipUncompressedBytes]);
+
         FileName := StringReplace(Zip.FileNames[Index], '/', '\', [rfReplaceAll]);
         if (FileName = '') or FileName.EndsWith('\') then
         begin
@@ -252,7 +248,7 @@ begin
 
         DestinationPath := TPath.Combine(ADestinationDir, FileName);
         ForceDirectories(TPath.GetDirectoryName(DestinationPath));
-        Zip.Extract(Index, ADestinationDir, False);
+        Zip.Extract(Index, ADestinationDir, True);
       end;
     finally
       Zip.Close;
@@ -296,13 +292,13 @@ begin
   begin
     if not RenameFile(AFinalDir, OldDir) then
       raise EPortappixPackageError.CreateFmt('Unable to move existing app directory "%s" to "%s": %s',
-        [AFinalDir, OldDir, SysErrorMessage(GetLastError)]);
+        [AFinalDir, OldDir, SysErrorMessage(Integer(GetLastError))]);
   end;
 
   try
     if not RenameFile(ATempDir, AFinalDir) then
       raise EPortappixPackageError.CreateFmt('Unable to install app directory "%s": %s',
-        [AFinalDir, SysErrorMessage(GetLastError)]);
+        [AFinalDir, SysErrorMessage(Integer(GetLastError))]);
   except
     if TDirectory.Exists(OldDir) and not TDirectory.Exists(AFinalDir) then
       if not RenameFile(OldDir, AFinalDir) then
@@ -311,6 +307,39 @@ begin
   end;
 
   DeleteDirectoryQuiet(OldDir);
+end;
+
+procedure TPortappixPackageManager.ValidateExtractedManifest(const AppDef: TCatalogApp;
+  const ATempDir: string);
+var
+  ManifestPath: string;
+  Manifest: TPortappixManifest;
+  Policy: TPolicyResult;
+begin
+  ManifestPath := TPath.Combine(ATempDir, 'app.json');
+  if not TFile.Exists(ManifestPath) then
+    raise EPortappixPackageError.CreateFmt(
+      'Package "%s" does not contain app.json at the archive root.', [AppDef.Id]);
+
+  Manifest := TPortappixManifest.LoadFromFile(ManifestPath);
+  try
+    if not SameText(Manifest.Id, AppDef.Id) then
+      raise EPortappixPackageError.CreateFmt(
+        'Package "%s" contains a manifest for "%s"; the catalog id must match.',
+        [AppDef.Id, Manifest.Id]);
+
+    Policy := TPortappixPolicy.ValidateManifest(Manifest);
+    try
+      if not Policy.Allowed then
+        raise EPortappixPackageError.CreateFmt(
+          'Package "%s" violates the Portappix policy:' + sLineBreak + '%s',
+          [AppDef.Id, Policy.Summary]);
+    finally
+      Policy.Free;
+    end;
+  finally
+    Manifest.Free;
+  end;
 end;
 
 procedure TPortappixPackageManager.InstallApp(const AppDef: TCatalogApp;
@@ -326,6 +355,9 @@ begin
     raise EPortappixPackageError.Create('App definition id must not be empty.');
   if AppDef.Url.Trim = '' then
     raise EPortappixPackageError.CreateFmt('App "%s" has no download URL.', [AppDef.Id]);
+  if not IsHttpsUrl(AppDef.Url) then
+    raise EPortappixPackageError.CreateFmt('App "%s" must use an https:// download URL.',
+      [AppDef.Id]);
 
   EnsureDirectories;
 
@@ -341,11 +373,8 @@ begin
 
   Log(Format('Extracting %s.', [PackageFile]));
   try
-    ExtractPackage(PackageFile, TempDir);
-
-    if not TFile.Exists(TPath.Combine(TempDir, 'app.json')) then
-      raise EPortappixPackageError.CreateFmt(
-        'Package "%s" does not contain app.json at the archive root.', [AppDef.Id]);
+    ExtractArchive(PackageFile, TempDir);
+    ValidateExtractedManifest(AppDef, TempDir);
 
     Log(Format('Installing %s.', [AppDef.Id]));
     AtomicSwap(TempDir, FinalDir);

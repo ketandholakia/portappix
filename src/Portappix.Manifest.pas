@@ -8,7 +8,8 @@ uses
   System.JSON,
   System.StrUtils,
   System.Generics.Collections,
-  System.Generics.Defaults;
+  System.Generics.Defaults,
+  Portappix.Common;
 
 type
   EPortappixManifestError = class(Exception);
@@ -18,6 +19,10 @@ type
     FId: string;
     FName: string;
     FExe: string;
+    FArgs: string;
+    FVersion: string;
+    FCategory: string;
+    FSchema: Integer;
     FEnvironment: TDictionary<string, string>;
     FJunctions: TDictionary<string, string>;
     FRegistryKeys: TArray<string>;
@@ -25,6 +30,8 @@ type
     FSourceDir: string;
     function ReadString(const AObject: TJSONObject; const AName: string;
       const ARequired: Boolean): string;
+    function ReadInteger(const AObject: TJSONObject; const AName: string;
+      const ADefault: Integer): Integer;
     procedure ReadStringDictionary(const AObject: TJSONObject; const AName: string;
       const ADestination: TDictionary<string, string>);
     procedure ReadEnvironment(const AObject: TJSONObject);
@@ -38,6 +45,10 @@ type
     property Id: string read FId;
     property Name: string read FName;
     property Exe: string read FExe;
+    property Args: string read FArgs;
+    property Version: string read FVersion;
+    property Category: string read FCategory;
+    property Schema: Integer read FSchema;
     property Environment: TDictionary<string, string> read FEnvironment;
     property Junctions: TDictionary<string, string> read FJunctions;
     property RegistryKeys: TArray<string> read FRegistryKeys;
@@ -45,26 +56,17 @@ type
     property SourceDir: string read FSourceDir;
   end;
 
+function ManifestIdMatchesFolder(const AManifestPath: string): Boolean;
+
 implementation
-
-function IsSafeFolderName(const AValue: string): Boolean;
-const
-  InvalidCharacters: TSysCharSet = ['\', '/', ':', '*', '?', '"', '<', '>', '|'];
-begin
-  Result := (AValue <> '') and (AValue <> '.') and (AValue <> '..');
-  if not Result then
-    Exit;
-
-  for var Character in AValue do
-    if (Character < ' ') or CharInSet(Character, InvalidCharacters) then
-      Exit(False);
-end;
 
 constructor TPortappixManifest.Create;
 begin
   inherited Create;
   FEnvironment := TDictionary<string, string>.Create(TStringComparer.OrdinalIgnoreCase);
   FJunctions := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
+  FCategory := 'Apps';
+  FSchema := PortappixManifestSchema;
 end;
 
 destructor TPortappixManifest.Destroy;
@@ -87,6 +89,20 @@ begin
   except
     Result.Free;
     raise;
+  end;
+end;
+
+function ManifestIdMatchesFolder(const AManifestPath: string): Boolean;
+var
+  Manifest: TPortappixManifest;
+  FolderName: string;
+begin
+  Manifest := TPortappixManifest.LoadFromFile(AManifestPath);
+  try
+    FolderName := ExtractFileName(ExcludeTrailingPathDelimiter(Manifest.SourceDir));
+    Result := SameText(Manifest.Id, FolderName);
+  finally
+    Manifest.Free;
   end;
 end;
 
@@ -116,7 +132,7 @@ begin
     FId := ReadString(RootObject, 'id', False).Trim;
     if FId = '' then
       FId := ExtractFileName(ExcludeTrailingPathDelimiter(FSourceDir));
-    if not IsSafeFolderName(FId) then
+    if not IsSafeFileComponent(FId) then
       raise EPortappixManifestError.CreateFmt('Manifest id "%s" is not a valid folder name.',
         [FId]);
 
@@ -125,6 +141,21 @@ begin
       FName := FId;
 
     FExe := ReadString(RootObject, 'exe', True).Trim;
+    FArgs := ReadString(RootObject, 'args', False);
+    FVersion := ReadString(RootObject, 'version', False).Trim;
+
+    FCategory := ReadString(RootObject, 'category', False).Trim;
+    if FCategory = '' then
+      FCategory := 'Apps';
+
+    FSchema := ReadInteger(RootObject, 'schema', PortappixManifestSchema);
+    if FSchema > PortappixManifestSchema then
+      raise EPortappixManifestError.CreateFmt(
+        'Manifest "%s" uses schema %d but this launcher supports schema %d.',
+        [FSourceFile, FSchema, PortappixManifestSchema]);
+    if FSchema < 1 then
+      raise EPortappixManifestError.CreateFmt('Manifest "%s" has an invalid schema value.',
+        [FSourceFile]);
 
     ReadEnvironment(RootObject);
     ReadJunctions(RootObject);
@@ -156,6 +187,20 @@ begin
     raise EPortappixManifestError.CreateFmt('Property "%s" contains a null character.', [AName]);
   if ARequired and (Result.Trim = '') then
     raise EPortappixManifestError.CreateFmt('Property "%s" must not be empty.', [AName]);
+end;
+
+function TPortappixManifest.ReadInteger(const AObject: TJSONObject;
+  const AName: string; const ADefault: Integer): Integer;
+var
+  Value: TJSONValue;
+begin
+  Result := ADefault;
+  Value := AObject.GetValue(AName);
+  if Value = nil then
+    Exit;
+  if not (Value is TJSONNumber) then
+    raise EPortappixManifestError.CreateFmt('Property "%s" must be a number.', [AName]);
+  Result := TJSONNumber(Value).AsInt;
 end;
 
 procedure TPortappixManifest.ReadStringDictionary(const AObject: TJSONObject;

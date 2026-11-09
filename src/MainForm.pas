@@ -8,7 +8,9 @@ uses
   System.SysUtils,
   System.Classes,
   System.IOUtils,
+  System.StrUtils,
   System.UITypes,
+  System.Generics.Collections,
   Vcl.Graphics,
   Vcl.Controls,
   Vcl.Forms,
@@ -17,10 +19,12 @@ uses
   Vcl.StdCtrls,
   Vcl.ExtCtrls,
   Vcl.Menus,
+  Portappix.Common,
   Portappix.Manifest,
   Portappix.Catalog,
   Portappix.PackageManager,
   Portappix.State,
+  Portappix.Runner,
   Portappix.TrayUI,
   Portappix.Importer;
 
@@ -41,6 +45,7 @@ type
     SearchEdit: TEdit;
     SearchLabel: TLabel;
     RefreshCatalogButton: TButton;
+    UpdateButton: TButton;
     InstallButton: TButton;
     ProgressBar: TProgressBar;
     StatusLabel: TLabel;
@@ -54,6 +59,7 @@ type
     procedure UninstallButtonClick(Sender: TObject);
     procedure RefreshCatalogButtonClick(Sender: TObject);
     procedure InstallButtonClick(Sender: TObject);
+    procedure UpdateButtonClick(Sender: TObject);
     procedure SearchEditChange(Sender: TObject);
     procedure TrayIconDblClick(Sender: TObject);
     procedure btnImportAppClick(Sender: TObject);
@@ -62,12 +68,16 @@ type
     FAppsDir: string;
     FCatalogCacheFile: string;
     FCatalogUrl: string;
-    FJournal: TPortappixJournal;
+    FAllowUnsignedCatalog: Boolean;
+    FJournal: IPortappixJournal;
     FTrayUI: TPortappixTrayUI;
     FCatalog: TPortappixCatalog;
     FPackageManager: TPortappixPackageManager;
+    FInstalledPaths: TStringList;
+    FInstalledVersions: TDictionary<string, string>;
     FInstallInProgress: Boolean;
     FAllowClose: Boolean;
+    FWaitingForApps: Boolean;
     procedure InitializePaths;
     procedure InitializeRuntime;
     procedure InitializeTray;
@@ -79,12 +89,20 @@ type
     function SelectedCatalogApp: TCatalogApp;
     procedure ShowMainForm;
     procedure HideToTray;
+    procedure RequestExit;
     procedure SetStatus(const AMessage: string);
     procedure QueueStatus(const AMessage: string);
     procedure SetInstallProgress(const AAppId: string; ASent, ATotal: Int64);
     procedure InstallSelectedAppInBackground;
+    function AskConsent(const AAppId, ADescription, AManifestHash: string): Boolean;
+    function WaitForRunningApps(const ATimeoutMs: Cardinal): Boolean;
+    procedure SetAllowUnsignedCatalog(const AValue: Boolean);
+    procedure WMQueryEndSession(var Message: TWMQueryEndSession); message WM_QUERYENDSESSION;
+    procedure WMEndSession(var Message: TWMEndSession); message WM_ENDSESSION;
   public
     property CatalogUrl: string read FCatalogUrl write FCatalogUrl;
+    property AllowUnsignedCatalog: Boolean read FAllowUnsignedCatalog
+      write SetAllowUnsignedCatalog;
   end;
 
 var
@@ -94,17 +112,14 @@ implementation
 
 {$R *.dfm}
 
-function LauncherDirectory: string;
-begin
-  Result := TPath.GetDirectoryName(ParamStr(0));
-  if Result = '' then
-    Result := GetCurrentDir;
-end;
-
 procedure TMainLauncherForm.FormCreate(Sender: TObject);
 begin
   FInstallInProgress := False;
   FAllowClose := False;
+  FWaitingForApps := False;
+  FAllowUnsignedCatalog := False;
+  FInstalledPaths := TStringList.Create;
+  FInstalledVersions := TDictionary<string, string>.Create(TStringComparer.OrdinalIgnoreCase);
   // Set CatalogUrl to your hosted catalog.json URL (or leave empty to use local cache only).
   FCatalogUrl := '';
   InitializePaths;
@@ -120,6 +135,12 @@ begin
   FRootPath := TPath.GetFullPath(LauncherDirectory);
   FAppsDir := TPath.Combine(FRootPath, 'Apps');
   FCatalogCacheFile := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), 'catalog.json');
+end;
+
+procedure TMainLauncherForm.SetAllowUnsignedCatalog(const AValue: Boolean);
+begin
+  FAllowUnsignedCatalog := AValue;
+  AllowUnsignedCatalogs := AValue;
 end;
 
 procedure TMainLauncherForm.InitializeRuntime;
@@ -147,26 +168,120 @@ begin
   FTrayUI := TPortappixTrayUI.Create(TrayIcon, FRootPath, FJournal);
   FTrayUI.OnShowForm := procedure begin TThread.Queue(nil, procedure begin ShowMainForm; end); end;
   FTrayUI.OnRefreshForm := procedure begin TThread.Queue(nil, procedure begin LoadInstalledApps; end); end;
+  FTrayUI.OnExitRequested := procedure begin TThread.Queue(nil, procedure begin RequestExit; end); end;
+  FTrayUI.OnConsentRequired :=
+    function(const AAppId, ADescription, AManifestHash: string): Boolean
+    begin
+      Result := AskConsent(AAppId, ADescription, AManifestHash);
+    end;
   FTrayUI.OnLog := procedure(const Message: string) begin QueueStatus(Message); end;
 end;
 
 procedure TMainLauncherForm.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
+var
+  Running: Integer;
 begin
-  CanClose := FAllowClose;
-  if not FAllowClose then
+  if FAllowClose then
+  begin
+    CanClose := True;
+    Exit;
+  end;
+
+  CanClose := False;
+  if FWaitingForApps then
+    Exit;
+
+  Running := 0;
+  if Assigned(FTrayUI) then
+    Running := FTrayUI.RunningCount;
+
+  if Running > 0 then
+  begin
+    if MessageDlg(Format('%d app(s) are still running. Wait for them to finish and exit?',
+      [Running]), mtWarning, [mbYes, mbNo], 0) = mrYes then
+    begin
+      FWaitingForApps := True;
+      try
+        if WaitForRunningApps(30000) then
+        begin
+          FAllowClose := True;
+          CanClose := True;
+        end
+        else
+          ShowMessage('Apps are still running; exit cancelled. Close them and try again.');
+      finally
+        FWaitingForApps := False;
+      end;
+    end;
+  end
+  else
     HideToTray;
 end;
 
 procedure TMainLauncherForm.FormDestroy(Sender: TObject);
 begin
-  for var Index := 0 to InstalledListView.Items.Count - 1 do
-    if InstalledListView.Items[Index].Data <> nil then
-      StrDispose(PChar(InstalledListView.Items[Index].Data));
-
+  FInstalledPaths.Free;
+  FInstalledVersions.Free;
   FTrayUI.Free;
   FPackageManager.Free;
   FCatalog.Free;
-  FJournal.Free;
+  FJournal := nil;
+end;
+
+procedure TMainLauncherForm.WMQueryEndSession(var Message: TWMQueryEndSession);
+begin
+  // Never block Windows logoff/shutdown; the crash journal recovers leftover state.
+  FAllowClose := True;
+  Message.Result := 1;
+end;
+
+procedure TMainLauncherForm.WMEndSession(var Message: TWMEndSession);
+begin
+  if Message.EndSession then
+    FAllowClose := True;
+  inherited;
+end;
+
+procedure TMainLauncherForm.RequestExit;
+var
+  Running: Integer;
+begin
+  Running := 0;
+  if Assigned(FTrayUI) then
+    Running := FTrayUI.RunningCount;
+
+  if Running > 0 then
+  begin
+    if MessageDlg(Format('%d app(s) are still running. Wait for them to finish and exit?',
+      [Running]), mtWarning, [mbYes, mbNo], 0) <> mrYes then
+      Exit;
+    if not WaitForRunningApps(30000) then
+    begin
+      ShowMessage('Apps are still running; exit cancelled.');
+      Exit;
+    end;
+  end;
+
+  FAllowClose := True;
+  Close;
+end;
+
+function TMainLauncherForm.WaitForRunningApps(const ATimeoutMs: Cardinal): Boolean;
+var
+  StartedAt: UInt64;
+begin
+  if not Assigned(FTrayUI) then
+    Exit(True);
+
+  StartedAt := GetTickCount64;
+  while FTrayUI.RunningCount > 0 do
+  begin
+    if GetTickCount64 - StartedAt >= ATimeoutMs then
+      Exit(False);
+    Application.ProcessMessages;
+    Sleep(50);
+  end;
+  Result := True;
 end;
 
 procedure TMainLauncherForm.ShowMainForm;
@@ -193,15 +308,14 @@ begin
   TThread.Queue(nil, procedure begin SetStatus(AMessage); end);
 end;
 
-
 procedure TMainLauncherForm.LoadInstalledApps;
 var
   Item: TListItem;
   Manifest: TPortappixManifest;
+  FolderName: string;
 begin
-  for var Index := 0 to InstalledListView.Items.Count - 1 do
-    if InstalledListView.Items[Index].Data <> nil then
-      StrDispose(PChar(InstalledListView.Items[Index].Data));
+  FInstalledPaths.Clear;
+  FInstalledVersions.Clear;
 
   InstalledListView.Items.BeginUpdate;
   try
@@ -211,17 +325,29 @@ begin
 
     for var AppDir in TDirectory.GetDirectories(FAppsDir) do
     begin
+      FolderName := TPath.GetFileName(AppDir);
+      if IsTransientAppFolder(FolderName) then
+        Continue;
+
       var ManifestPath := TPath.Combine(AppDir, 'app.json');
       if not TFile.Exists(ManifestPath) then
         Continue;
       try
         Manifest := TPortappixManifest.LoadFromFile(ManifestPath);
         try
+          if not SameText(Manifest.Id, FolderName) then
+          begin
+            QueueStatus(Format('Skipping "%s": manifest id "%s" does not match its folder.',
+              [ManifestPath, Manifest.Id]));
+            Continue;
+          end;
+
           Item := InstalledListView.Items.Add;
           Item.Caption := Manifest.Name;
           Item.SubItems.Add(Manifest.Id);
           Item.SubItems.Add(AppDir);
-          Item.Data := Pointer(StrNew(PChar(ManifestPath)));
+          FInstalledPaths.Add(ManifestPath);
+          FInstalledVersions.AddOrSetValue(Manifest.Id, Manifest.Version);
         finally
           Manifest.Free;
         end;
@@ -234,6 +360,7 @@ begin
     InstalledListView.Items.EndUpdate;
   end;
 
+  PopulateStoreList(SearchEdit.Text);
   if Assigned(FTrayUI) then
     FTrayUI.RebuildMenu;
 end;
@@ -244,9 +371,9 @@ var
 begin
   Result := '';
   Item := InstalledListView.Selected;
-  if (Item = nil) or (Item.Data = nil) then
+  if (Item = nil) or (Item.Index < 0) or (Item.Index >= FInstalledPaths.Count) then
     Exit;
-  Result := string(PChar(Item.Data));
+  Result := FInstalledPaths[Item.Index];
 end;
 
 function TMainLauncherForm.SelectedCatalogApp: TCatalogApp;
@@ -335,6 +462,8 @@ procedure TMainLauncherForm.PopulateStoreList(const AFilter: string);
 var
   FilterText: string;
   Item: TListItem;
+  Status: string;
+  InstalledVersion: string;
 begin
   FilterText := AFilter.Trim.ToLower;
   StoreListView.Items.BeginUpdate;
@@ -348,10 +477,21 @@ begin
          not App.Category.ToLower.Contains(FilterText) then
         Continue;
 
+      if FInstalledVersions.TryGetValue(App.Id, InstalledVersion) then
+      begin
+        if SameText(InstalledVersion, App.Version) then
+          Status := 'Installed'
+        else
+          Status := 'Update available';
+      end
+      else
+        Status := '';
+
       Item := StoreListView.Items.Add;
       Item.Caption := App.Name;
       Item.SubItems.Add(App.Id);
       Item.SubItems.Add(App.Version);
+      Item.SubItems.Add(Status);
       Item.SubItems.Add(App.Category);
       Item.SubItems.Add(IntToStr(App.Size));
     end;
@@ -368,14 +508,12 @@ end;
 procedure TMainLauncherForm.RefreshCatalogInBackground;
 var
   CatalogUrl: string;
-  RootPath: string;
   CacheFile: string;
 begin
   CatalogUrl := FCatalogUrl.Trim;
   if CatalogUrl = '' then
     Exit;
 
-  RootPath := FRootPath;
   CacheFile := FCatalogCacheFile;
   QueueStatus('Refreshing catalog...');
 
@@ -446,6 +584,33 @@ begin
   InstallSelectedAppInBackground;
 end;
 
+procedure TMainLauncherForm.UpdateButtonClick(Sender: TObject);
+var
+  App: TCatalogApp;
+  InstalledVersion: string;
+begin
+  App := SelectedCatalogApp;
+  if App = nil then
+  begin
+    MessageDlg('Select an app from the Store tab first.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+
+  if not FInstalledVersions.TryGetValue(App.Id, InstalledVersion) then
+  begin
+    MessageDlg('That app is not installed; use Install instead.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+
+  if SameText(InstalledVersion, App.Version) then
+  begin
+    MessageDlg('That app is already up to date.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+
+  InstallSelectedAppInBackground;
+end;
+
 procedure TMainLauncherForm.InstallSelectedAppInBackground;
 var
   Selected: TCatalogApp;
@@ -477,6 +642,7 @@ begin
   RootPath := FRootPath;
   FInstallInProgress := True;
   InstallButton.Enabled := False;
+  UpdateButton.Enabled := False;
   ProgressBar.Style := pbstNormal;
   ProgressBar.Position := 0;
   SetStatus('Installing ' + AppCopy.Name + '...');
@@ -485,14 +651,22 @@ begin
     procedure
     var
       PackageManager: TPortappixPackageManager;
+      LastQueuedAt: UInt64;
     begin
+      LastQueuedAt := 0;
       PackageManager := TPortappixPackageManager.Create(RootPath);
       try
         try
           PackageManager.OnLog := procedure(const Message: string) begin QueueStatus(Message); end;
           PackageManager.InstallApp(AppCopy,
             procedure(const AAppId: string; ASent, ATotal: Int64; var AAbort: Boolean)
+            var
+              Now: UInt64;
             begin
+              Now := GetTickCount64;
+              if Now - LastQueuedAt < 100 then
+                Exit;
+              LastQueuedAt := Now;
               TThread.Queue(nil,
                 procedure
                 begin
@@ -526,6 +700,7 @@ begin
           begin
             FInstallInProgress := False;
             InstallButton.Enabled := True;
+            UpdateButton.Enabled := True;
             ProgressBar.Style := pbstNormal;
             AppCopy.Free;
           end);
@@ -533,11 +708,22 @@ begin
     end).Start;
 end;
 
+function TMainLauncherForm.AskConsent(const AAppId, ADescription,
+  AManifestHash: string): Boolean;
+begin
+  Result := MessageDlg(
+    'The app "' + AAppId + '" wants to make the following host changes:' + sLineBreak +
+    sLineBreak + ADescription + sLineBreak + sLineBreak +
+    'Allow this app to run? (Approval is remembered for this exact app.json.)',
+    mtConfirmation, [mbYes, mbNo], 0) = mrYes;
+end;
+
 procedure TMainLauncherForm.btnImportAppClick(Sender: TObject);
 var
   SourceFolder: string;
   AppsRoot: string;
   Importer: TPortappixImporter;
+  Analysis: TPortappixSourceAnalysis;
 begin
   if not dlgImportExe.Execute then
     Exit;
@@ -548,6 +734,17 @@ begin
   try
     Importer := TPortappixImporter.Create(FRootPath);
     try
+      Importer.OnLog := procedure(const Message: string) begin QueueStatus(Message); end;
+      Analysis := Importer.AnalyzeSource(SourceFolder);
+      if Analysis.RequiresConfirmation then
+        if MessageDlg(Format(
+          'This folder contains %d file(s), %d byte(s)%s. Importing a drive root or a very ' +
+          'large folder can take a long time and use a lot of disk space. Continue?',
+          [Analysis.FileCount, Analysis.TotalBytes,
+           IfThen(Analysis.IsDriveRoot, ' and is a drive root', '')]),
+          mtWarning, [mbYes, mbNo], 0) <> mrYes then
+          Exit;
+
       Importer.ImportToApps(SourceFolder, dlgImportExe.FileName, '', AppsRoot);
     finally
       Importer.Free;

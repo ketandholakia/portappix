@@ -140,23 +140,27 @@ object MainLauncherForm: TMainLauncherForm
         Columns = <
           item
             Caption = 'Name'
-            Width = 220
+            Width = 200
           end
           item
             Caption = 'Id'
-            Width = 140
+            Width = 130
           end
           item
             Caption = 'Version'
             Width = 100
           end
           item
+            Caption = 'Status'
+            Width = 130
+          end
+          item
             Caption = 'Category'
-            Width = 140
+            Width = 120
           end
           item
             Caption = 'Size'
-            Width = 120
+            Width = 90
           end>
         ReadOnly = True
         RowSelect = True
@@ -180,12 +184,21 @@ object MainLauncherForm: TMainLauncherForm
           TabOrder = 0
           OnClick = InstallButtonClick
         end
-        object ProgressBar: TProgressBar
+        object UpdateButton: TButton
           Left = 134
-          Top = 10
-          Width = 710
-          Height = 21
+          Top = 8
+          Width = 120
+          Height = 25
+          Caption = 'Update'
           TabOrder = 1
+          OnClick = UpdateButtonClick
+        end
+        object ProgressBar: TProgressBar
+          Left = 260
+          Top = 10
+          Width = 584
+          Height = 21
+          TabOrder = 2
         end
       end
     end

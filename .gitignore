@@ -21,6 +21,14 @@ Data/
 Apps/
 run_state.json
 run_state.json.tmp
+run_state.json.bad
+
+# Signing material (keep the private key out of git)
+keys/
+
+# Python
+__pycache__/
+*.pyc
 
 # OS/editor
 .DS_Store

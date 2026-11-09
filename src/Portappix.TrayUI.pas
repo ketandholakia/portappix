@@ -14,21 +14,29 @@ uses
   Vcl.Menus,
   Vcl.ExtCtrls,
   Vcl.Dialogs,
+  Portappix.Common,
+  Portappix.Consent,
   Portappix.Manifest,
   Portappix.Runner,
   Portappix.State;
 
 type
+  TConsentRequest = reference to function(const AAppId, ADescription,
+    AManifestHash: string): Boolean;
+
   TPortappixTrayUI = class
   private
     FTrayIcon: TTrayIcon;
     FPopupMenu: TPopupMenu;
     FRootPath: string;
     FAppsDir: string;
-    FJournal: TPortappixJournal;
+    FJournal: IPortappixJournal;
     FShowForm: TProc;
     FRefreshForm: TProc;
+    FExitRequested: TProc;
+    FConsentRequest: TConsentRequest;
     FLog: TProc<string>;
+    FRunning: Integer;
     procedure Log(const AMessage: string);
     procedure EnsurePopupMenu;
     procedure ClearMenuItems;
@@ -44,14 +52,17 @@ type
       const ACategories: TDictionary<string, TMenuItem>): TMenuItem;
   public
     constructor Create(ATrayIcon: TTrayIcon; const ARootPath: string = '';
-      const AJournal: TPortappixJournal = nil);
+      const AJournal: IPortappixJournal = nil);
     destructor Destroy; override;
     procedure RebuildMenu;
     procedure LaunchApp(const AManifestPath: string);
     property RootPath: string read FRootPath;
     property AppsDirectory: string read FAppsDir;
+    property RunningCount: Integer read FRunning;
     property OnShowForm: TProc read FShowForm write FShowForm;
     property OnRefreshForm: TProc read FRefreshForm write FRefreshForm;
+    property OnExitRequested: TProc read FExitRequested write FExitRequested;
+    property OnConsentRequired: TConsentRequest read FConsentRequest write FConsentRequest;
     property OnLog: TProc<string> read FLog write FLog;
   end;
 
@@ -65,38 +76,8 @@ type
     Category: string;
   end;
 
-function LauncherDirectory: string;
-begin
-  Result := TPath.GetDirectoryName(ParamStr(0));
-  if Result = '' then
-    Result := GetCurrentDir;
-end;
-
-function IsRelativePath(const APath: string): Boolean;
-begin
-  if APath = '' then
-    Exit(True);
-  if (Length(APath) >= 2) and (APath[2] = ':') then
-    Exit(False);
-  if (Length(APath) >= 2) and (APath[1] = '\') and (APath[2] = '\') then
-    Exit(False);
-  if APath[1] = '\' then
-    Exit(False);
-  Result := True;
-end;
-
-function ResolveRootPath(const APath: string): string;
-begin
-  if APath = '' then
-    Exit(TPath.GetFullPath(LauncherDirectory));
-  if IsRelativePath(APath) then
-    Result := TPath.GetFullPath(TPath.Combine(LauncherDirectory, APath))
-  else
-    Result := TPath.GetFullPath(APath);
-end;
-
 constructor TPortappixTrayUI.Create(ATrayIcon: TTrayIcon; const ARootPath: string;
-  const AJournal: TPortappixJournal);
+  const AJournal: IPortappixJournal);
 begin
   inherited Create;
   FTrayIcon := ATrayIcon;
@@ -112,6 +93,7 @@ begin
   if FTrayIcon <> nil then
     FTrayIcon.PopupMenu := nil;
   FPopupMenu.Free;
+  FJournal := nil;
   inherited;
 end;
 
@@ -181,6 +163,9 @@ begin
     if TDirectory.Exists(FAppsDir) then
       for var AppDir in TDirectory.GetDirectories(FAppsDir) do
       begin
+        if IsTransientAppFolder(TPath.GetFileName(AppDir)) then
+          Continue;
+
         var ManifestPath := TPath.Combine(AppDir, 'app.json');
         if not TFile.Exists(ManifestPath) then
           Continue;
@@ -188,10 +173,17 @@ begin
         try
           Manifest := TPortappixManifest.LoadFromFile(ManifestPath);
           try
+            if not SameText(Manifest.Id, TPath.GetFileName(AppDir)) then
+            begin
+              Log(Format('Skipping "%s": manifest id "%s" does not match its folder name.',
+                [ManifestPath, Manifest.Id]));
+              Continue;
+            end;
+
             var Entry := TInstalledAppEntry.Create;
             Entry.ManifestPath := ManifestPath;
             Entry.Name := Manifest.Name;
-            Entry.Category := 'Apps';
+            Entry.Category := Manifest.Category;
             Entries.Add(Entry);
           finally
             Manifest.Free;
@@ -291,7 +283,10 @@ end;
 
 procedure TPortappixTrayUI.ExitMenuClick(Sender: TObject);
 begin
-  Application.Terminate;
+  if Assigned(FExitRequested) then
+    FExitRequested()
+  else
+    Application.Terminate;
 end;
 
 procedure TPortappixTrayUI.LaunchApp(const AManifestPath: string);
@@ -303,37 +298,103 @@ procedure TPortappixTrayUI.RunAppInBackground(const AManifestPath: string);
 var
   ManifestPath: string;
   RootPath: string;
-  Journal: TPortappixJournal;
+  Journal: IPortappixJournal;
 begin
   ManifestPath := AManifestPath;
   RootPath := FRootPath;
   Journal := FJournal;
 
+  InterlockedIncrement(FRunning);
   TThread.CreateAnonymousThread(
     procedure
     var
+      Manifest: TPortappixManifest;
+      Consent: TPortappixConsent;
       Runner: TPortableAppRunner;
+      LockHandle: THandle;
+      Description: string;
+      ManifestHash: string;
+      Approved: Boolean;
     begin
+      LockHandle := 0;
       try
-        Runner := TPortableAppRunner.Create(ManifestPath, Journal, RootPath);
         try
-          Runner.OnLog :=
-            procedure(const Message: string)
+          Manifest := TPortappixManifest.LoadFromFile(ManifestPath);
+          try
+            if not SameText(Manifest.Id,
+              TPath.GetFileName(TPath.GetDirectoryName(ManifestPath))) then
             begin
-              TThread.Queue(nil, procedure begin Log(Message); end);
+              TThread.Synchronize(nil,
+                procedure
+                begin
+                  MessageDlg(Format('Cannot run "%s": manifest id "%s" does not match its folder.',
+                    [Manifest.Name, Manifest.Id]), mtError, [mbOK], 0);
+                end);
+              Exit;
             end;
-          Runner.Run;
-        finally
-          Runner.Free;
-        end;
-      except
-        on E: Exception do
-          TThread.Queue(nil,
-            procedure
+
+            if not TryAcquireMutex(AppMutexName(RootPath, Manifest.Id), LockHandle) then
             begin
-              Log('Unable to launch app: ' + E.Message);
-              MessageDlg('Unable to launch app: ' + E.Message, mtError, [mbOK], 0);
-            end);
+              TThread.Synchronize(nil,
+                procedure
+                begin
+                  MessageDlg(Format('%s is already running.', [Manifest.Name]),
+                    mtInformation, [mbOK], 0);
+                end);
+              Exit;
+            end;
+
+            Consent := TPortappixConsent.Create(RootPath);
+            try
+              if Consent.NeedsConsent(Manifest) then
+              begin
+                Description := Consent.ApprovalDescription(Manifest);
+                ManifestHash := Consent.ManifestHash(Manifest);
+                Approved := False;
+                TThread.Synchronize(nil,
+                  procedure
+                  begin
+                    if Assigned(FConsentRequest) then
+                      Approved := FConsentRequest(Manifest.Id, Description, ManifestHash);
+                  end);
+                if not Approved then
+                begin
+                  TThread.Synchronize(nil,
+                    procedure begin Log('Launch cancelled: consent was not granted.'); end);
+                  Exit;
+                end;
+                Consent.Approve(Manifest);
+              end;
+            finally
+              Consent.Free;
+            end;
+
+            Runner := TPortableAppRunner.Create(ManifestPath, Journal, RootPath);
+            try
+              Runner.OnLog :=
+                procedure(const Message: string)
+                begin
+                  TThread.Queue(nil, procedure begin Log(Message); end);
+                end;
+              Runner.Run;
+            finally
+              Runner.Free;
+            end;
+          finally
+            Manifest.Free;
+          end;
+        except
+          on E: Exception do
+            TThread.Synchronize(nil,
+              procedure
+              begin
+                Log('Unable to launch app: ' + E.Message);
+                MessageDlg('Unable to launch app: ' + E.Message, mtError, [mbOK], 0);
+              end);
+        end;
+      finally
+        ReleaseMutexHandle(LockHandle);
+        InterlockedDecrement(FRunning);
       end;
     end).Start;
 end;

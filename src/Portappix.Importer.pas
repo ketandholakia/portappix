@@ -7,56 +7,48 @@ uses
   System.SysUtils,
   System.Classes,
   System.IOUtils,
-  System.JSON;
+  System.JSON,
+  Portappix.Common;
 
 type
   EPortappixImporterError = class(Exception);
 
+  TPortappixSourceAnalysis = record
+    TotalBytes: Int64;
+    FileCount: Int64;
+    IsDriveRoot: Boolean;
+    ReparsePointsSkipped: Int64;
+    function RequiresConfirmation: Boolean;
+  end;
+
   TPortappixImporter = class
   private
     FRootPath: string;
+    FOnLog: TProc<string>;
     function ResolvePath(const APath: string): string;
-    function ResolveRootPath(const APath: string): string;
-    function QueryVersionString(const AExePath, AValueName: string): string;
-    function GetExeFileVersion(const AExePath: string): string;
-    function MakeId(const ABaseName: string): string;
-    function MakeRelativeExePath(const ASourceFolder, ATargetExe: string): string;
-    procedure CopyDirectory(const ASourceDir, ADestinationDir: string);
+    procedure CopyDirectory(const ASourceDir, ADestinationDir: string;
+      var AAnalysis: TPortappixSourceAnalysis);
+    procedure WalkSource(const ADirectory: string; var AAnalysis: TPortappixSourceAnalysis);
+    procedure Log(const AMessage: string);
   public
     constructor Create(const ARootPath: string = '');
-    class function GenerateManifest(const SourceFolder, TargetExe: string): Boolean; overload; static;
+    class function QueryVersionString(const AExePath, AValueName: string): string; static;
+    class function GetExeFileVersion(const AExePath: string): string; static;
+    class function MakeId(const ABaseName: string): string; static;
+    class function MakeRelativeExePath(const ASourceFolder, ATargetExe: string): string; static;
+    class function BuildManifestJson(const ASourceFolder, ATargetExe, APublisher: string;
+      out AAppId, AName: string): string; static;
+    function AnalyzeSource(const ASourceFolder: string): TPortappixSourceAnalysis;
+    class function GenerateManifest(const SourceFolder, TargetExe: string): Boolean; static;
     function GenerateManifest(const SourceFolder, TargetExe: string;
-      const APublisher: string = ''): Boolean; overload;
-    function GenerateManifest(const SourceFolder, TargetExe: string;
-      const APublisher: string; out AManifestPath, AAppId: string): Boolean; overload;
+      const APublisher: string; out AManifestPath, AAppId: string): Boolean;
     function ImportToApps(const SourceFolder, TargetExe: string;
-      const APublisher: string = ''; const AAppsRoot: string = ''): string; overload;
-    class function ImportToApps(const SourceFolder, TargetExe: string;
-      const APublisher, AAppsRoot: string): string; overload; static;
+      const APublisher: string = ''; const AAppsRoot: string = ''): string;
     property RootPath: string read FRootPath;
+    property OnLog: TProc<string> read FOnLog write FOnLog;
   end;
 
 implementation
-
-function LauncherDirectory: string;
-begin
-  Result := TPath.GetDirectoryName(ParamStr(0));
-  if Result = '' then
-    Result := GetCurrentDir;
-end;
-
-function IsRelativePath(const APath: string): Boolean;
-begin
-  if APath = '' then
-    Exit(True);
-  if (Length(APath) >= 2) and (APath[2] = ':') then
-    Exit(False);
-  if (Length(APath) >= 2) and (APath[1] = '\') and (APath[2] = '\') then
-    Exit(False);
-  if APath[1] = '\' then
-    Exit(False);
-  Result := True;
-end;
 
 constructor TPortappixImporter.Create(const ARootPath: string);
 begin
@@ -64,25 +56,25 @@ begin
   FRootPath := ResolveRootPath(ARootPath);
 end;
 
-function TPortappixImporter.ResolveRootPath(const APath: string): string;
+procedure TPortappixImporter.Log(const AMessage: string);
 begin
-  if APath = '' then
-    Exit(TPath.GetFullPath(LauncherDirectory));
-  if IsRelativePath(APath) then
-    Result := TPath.GetFullPath(TPath.Combine(LauncherDirectory, APath))
-  else
-    Result := TPath.GetFullPath(APath);
+  if Assigned(FOnLog) then
+    FOnLog(AMessage);
 end;
 
 function TPortappixImporter.ResolvePath(const APath: string): string;
 begin
-  if IsRelativePath(APath) then
-    Result := TPath.GetFullPath(TPath.Combine(FRootPath, APath))
-  else
-    Result := TPath.GetFullPath(APath);
+  Result := ResolveFromRoot(FRootPath, APath);
 end;
 
-function TPortappixImporter.QueryVersionString(const AExePath, AValueName: string): string;
+function TPortappixSourceAnalysis.RequiresConfirmation: Boolean;
+begin
+  Result := IsDriveRoot or (TotalBytes > Int64(2) * 1024 * 1024 * 1024) or
+    (FileCount > 20000);
+end;
+
+class function TPortappixImporter.QueryVersionString(const AExePath,
+  AValueName: string): string;
 var
   Handle: DWORD;
   Size: DWORD;
@@ -119,7 +111,7 @@ begin
     Result := Trim(ValuePtr);
 end;
 
-function TPortappixImporter.GetExeFileVersion(const AExePath: string): string;
+class function TPortappixImporter.GetExeFileVersion(const AExePath: string): string;
 var
   Handle: DWORD;
   Size: DWORD;
@@ -147,7 +139,7 @@ begin
        HiWord(FixedInfo.dwFileVersionLS), LoWord(FixedInfo.dwFileVersionLS)]);
 end;
 
-function TPortappixImporter.MakeId(const ABaseName: string): string;
+class function TPortappixImporter.MakeId(const ABaseName: string): string;
 var
   Source: string;
   PreviousWasSeparator: Boolean;
@@ -177,7 +169,8 @@ begin
     Result := 'app';
 end;
 
-function TPortappixImporter.MakeRelativeExePath(const ASourceFolder, ATargetExe: string): string;
+class function TPortappixImporter.MakeRelativeExePath(const ASourceFolder,
+  ATargetExe: string): string;
 var
   SourceFolder: string;
   TargetExe: string;
@@ -196,38 +189,14 @@ begin
     Result := TPath.GetFileName(TargetExe);
 end;
 
-class function TPortappixImporter.GenerateManifest(const SourceFolder, TargetExe: string): Boolean;
-var
-  Importer: TPortappixImporter;
-  ManifestPath: string;
-  AppId: string;
-begin
-  Importer := TPortappixImporter.Create;
-  try
-    Result := Importer.GenerateManifest(SourceFolder, TargetExe, '', ManifestPath, AppId);
-  finally
-    Importer.Free;
-  end;
-end;
-
-function TPortappixImporter.GenerateManifest(const SourceFolder, TargetExe: string;
-  const APublisher: string): Boolean;
-var
-  ManifestPath: string;
-  AppId: string;
-begin
-  Result := GenerateManifest(SourceFolder, TargetExe, APublisher, ManifestPath, AppId);
-end;
-
-function TPortappixImporter.GenerateManifest(const SourceFolder, TargetExe: string;
-  const APublisher: string; out AManifestPath, AAppId: string): Boolean;
+class function TPortappixImporter.BuildManifestJson(const ASourceFolder, ATargetExe,
+  APublisher: string; out AAppId, AName: string): string;
 var
   Source: string;
   ExePath: string;
   ProductName: string;
   CompanyName: string;
   Version: string;
-  Name: string;
   IdBase: string;
   Publisher: string;
   RelativeExe: string;
@@ -236,17 +205,14 @@ var
   Registry: TJSONArray;
   Junctions: TJSONObject;
 begin
-  AManifestPath := '';
-  AAppId := '';
-
-  Source := ResolvePath(SourceFolder);
+  Source := TPath.GetFullPath(ASourceFolder);
   if not TDirectory.Exists(Source) then
     raise EPortappixImporterError.CreateFmt('Source folder not found: "%s".', [Source]);
 
-  if IsRelativePath(TargetExe) then
-    ExePath := TPath.GetFullPath(TPath.Combine(Source, TargetExe))
+  if IsRelativePath(ATargetExe) then
+    ExePath := TPath.GetFullPath(TPath.Combine(Source, ATargetExe))
   else
-    ExePath := TPath.GetFullPath(TargetExe);
+    ExePath := TPath.GetFullPath(ATargetExe);
 
   if not TFile.Exists(ExePath) then
     raise EPortappixImporterError.CreateFmt('Target executable not found: "%s".', [ExePath]);
@@ -256,9 +222,9 @@ begin
   Version := GetExeFileVersion(ExePath);
 
   if ProductName = '' then
-    Name := TPath.GetFileNameWithoutExtension(ExePath)
+    AName := TPath.GetFileNameWithoutExtension(ExePath)
   else
-    Name := ProductName;
+    AName := ProductName;
 
   IdBase := ProductName;
   if IdBase = '' then
@@ -273,8 +239,9 @@ begin
 
   Root := TJSONObject.Create;
   try
+    Root.AddPair('schema', TJSONNumber.Create(PortappixManifestSchema));
     Root.AddPair('id', AAppId);
-    Root.AddPair('name', Name);
+    Root.AddPair('name', AName);
     if Publisher <> '' then
       Root.AddPair('publisher', Publisher);
     if Version <> '' then
@@ -291,72 +258,184 @@ begin
     Junctions := TJSONObject.Create;
     Root.AddPair('junctions', Junctions);
 
-    AManifestPath := TPath.Combine(Source, 'app.json');
-    TFile.WriteAllText(AManifestPath, Root.Format(2), TEncoding.UTF8);
+    Result := Root.Format(2);
   finally
     Root.Free;
   end;
+end;
 
+procedure TPortappixImporter.WalkSource(const ADirectory: string;
+  var AAnalysis: TPortappixSourceAnalysis);
+var
+  Attributes: DWORD;
+begin
+  for var Directory in TDirectory.GetDirectories(ADirectory, '*',
+    TSearchOption.soTopDirectoryOnly) do
+  begin
+    Attributes := GetFileAttributes(PChar(Directory));
+    if (Attributes <> INVALID_FILE_ATTRIBUTES) and
+       ((Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0) then
+    begin
+      Inc(AAnalysis.ReparsePointsSkipped);
+      Continue;
+    end;
+    WalkSource(Directory, AAnalysis);
+  end;
+
+  for var FileName in TDirectory.GetFiles(ADirectory, '*', TSearchOption.soTopDirectoryOnly) do
+  begin
+    Attributes := GetFileAttributes(PChar(FileName));
+    if (Attributes <> INVALID_FILE_ATTRIBUTES) and
+       ((Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0) then
+    begin
+      Inc(AAnalysis.ReparsePointsSkipped);
+      Continue;
+    end;
+    Inc(AAnalysis.FileCount);
+    AAnalysis.TotalBytes := AAnalysis.TotalBytes + TFile.GetSize(FileName);
+  end;
+end;
+
+function TPortappixImporter.AnalyzeSource(
+  const ASourceFolder: string): TPortappixSourceAnalysis;
+var
+  Source: string;
+begin
+  Source := ResolvePath(ASourceFolder);
+  FillChar(Result, SizeOf(Result), 0);
+  if not TDirectory.Exists(Source) then
+    raise EPortappixImporterError.CreateFmt('Source folder not found: "%s".', [Source]);
+
+  Result.IsDriveRoot := SameText(TPath.GetPathRoot(Source),
+    IncludeTrailingPathDelimiter(Source));
+  WalkSource(Source, Result);
+end;
+
+function TPortappixImporter.GenerateManifest(const SourceFolder, TargetExe: string;
+  const APublisher: string; out AManifestPath, AAppId: string): Boolean;
+var
+  Source: string;
+  Json: string;
+  AppName: string;
+begin
+  AManifestPath := '';
+  AAppId := '';
+  Source := ResolvePath(SourceFolder);
+  Json := BuildManifestJson(Source, TargetExe, APublisher, AAppId, AppName);
+  AManifestPath := TPath.Combine(Source, 'app.json');
+  TFile.WriteAllText(AManifestPath, Json, TEncoding.UTF8);
   Result := True;
 end;
 
-procedure TPortappixImporter.CopyDirectory(const ASourceDir, ADestinationDir: string);
+class function TPortappixImporter.GenerateManifest(const SourceFolder,
+  TargetExe: string): Boolean;
+var
+  Importer: TPortappixImporter;
+  ManifestPath: string;
+  AppId: string;
 begin
-  if TDirectory.Exists(ADestinationDir) then
-    raise EPortappixImporterError.CreateFmt('Destination directory already exists: "%s".',
-      [ADestinationDir]);
+  Importer := TPortappixImporter.Create;
+  try
+    Result := Importer.GenerateManifest(SourceFolder, TargetExe, '', ManifestPath, AppId);
+  finally
+    Importer.Free;
+  end;
+end;
 
+procedure TPortappixImporter.CopyDirectory(const ASourceDir,
+  ADestinationDir: string; var AAnalysis: TPortappixSourceAnalysis);
+var
+  Attributes: DWORD;
+begin
   TDirectory.CreateDirectory(ADestinationDir);
 
-  for var Directory in TDirectory.GetDirectories(ASourceDir, '*', TSearchOption.soTopDirectoryOnly) do
-    CopyDirectory(Directory, TPath.Combine(ADestinationDir, TPath.GetFileName(Directory)));
+  for var Directory in TDirectory.GetDirectories(ASourceDir, '*',
+    TSearchOption.soTopDirectoryOnly) do
+  begin
+    Attributes := GetFileAttributes(PChar(Directory));
+    if (Attributes <> INVALID_FILE_ATTRIBUTES) and
+       ((Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0) then
+    begin
+      Inc(AAnalysis.ReparsePointsSkipped);
+      Log('Skipping reparse point: ' + Directory);
+      Continue;
+    end;
+    CopyDirectory(Directory, TPath.Combine(ADestinationDir,
+      TPath.GetFileName(Directory)), AAnalysis);
+  end;
 
-  for var FileName in TDirectory.GetFiles(ASourceDir, '*', TSearchOption.soTopDirectoryOnly) do
+  for var FileName in TDirectory.GetFiles(ASourceDir, '*',
+    TSearchOption.soTopDirectoryOnly) do
+  begin
+    Attributes := GetFileAttributes(PChar(FileName));
+    if (Attributes <> INVALID_FILE_ATTRIBUTES) and
+       ((Attributes and FILE_ATTRIBUTE_REPARSE_POINT) <> 0) then
+    begin
+      Inc(AAnalysis.ReparsePointsSkipped);
+      Log('Skipping reparse point: ' + FileName);
+      Continue;
+    end;
     TFile.Copy(FileName, TPath.Combine(ADestinationDir, TPath.GetFileName(FileName)), False);
+  end;
 end;
 
 function TPortappixImporter.ImportToApps(const SourceFolder, TargetExe: string;
   const APublisher: string; const AAppsRoot: string): string;
 var
   Source: string;
-  ManifestPath: string;
+  Json: string;
   AppId: string;
+  AppName: string;
   AppsRoot: string;
   Destination: string;
+  TempDir: string;
+  Analysis: TPortappixSourceAnalysis;
+
+  procedure DeleteTempQuiet;
+  begin
+    try
+      if TDirectory.Exists(TempDir) then
+        TDirectory.Delete(TempDir, True);
+    except
+      on E: Exception do
+        Log('Unable to remove partial import directory: ' + E.Message);
+    end;
+  end;
+
 begin
   Source := ResolvePath(SourceFolder);
-
-  if not GenerateManifest(Source, TargetExe, APublisher, ManifestPath, AppId) then
-    raise EPortappixImporterError.Create('Unable to generate app.json manifest.');
+  Json := BuildManifestJson(Source, TargetExe, APublisher, AppId, AppName);
 
   if AAppsRoot.Trim = '' then
     AppsRoot := TPath.Combine(FRootPath, 'Apps')
-  else if IsRelativePath(AAppsRoot) then
-    AppsRoot := TPath.GetFullPath(TPath.Combine(FRootPath, AAppsRoot))
   else
-    AppsRoot := TPath.GetFullPath(AAppsRoot);
+    AppsRoot := ResolveFromRoot(FRootPath, AAppsRoot);
 
   ForceDirectories(AppsRoot);
   Destination := TPath.Combine(AppsRoot, AppId);
-  CopyDirectory(Source, Destination);
-  Result := Destination;
-end;
+  TempDir := Destination + '.new';
 
-class function TPortappixImporter.ImportToApps(const SourceFolder, TargetExe: string;
-  const APublisher, AAppsRoot: string): string;
-var
-  Importer: TPortappixImporter;
-  RootPath: string;
-begin
-  RootPath := LauncherDirectory;
-  if AAppsRoot.Trim <> '' then
-    RootPath := TPath.GetDirectoryName(TPath.GetFullPath(AAppsRoot));
-  Importer := TPortappixImporter.Create(RootPath);
+  if TDirectory.Exists(Destination) then
+    raise EPortappixImporterError.CreateFmt('Destination app already exists: "%s".', [Destination]);
+
+  if TDirectory.Exists(TempDir) then
+    DeleteTempQuiet;
+
+  FillChar(Analysis, SizeOf(Analysis), 0);
   try
-    Result := Importer.ImportToApps(SourceFolder, TargetExe, APublisher, AAppsRoot);
-  finally
-    Importer.Free;
+    CopyDirectory(Source, TempDir, Analysis);
+    TFile.WriteAllText(TPath.Combine(TempDir, 'app.json'), Json, TEncoding.UTF8);
+    if not RenameFile(TempDir, Destination) then
+      raise EPortappixImporterError.CreateFmt(
+        'Unable to finalize imported app directory "%s": %s',
+        [Destination, SysErrorMessage(Integer(GetLastError))]);
+  except
+    DeleteTempQuiet;
+    raise;
   end;
+
+  Log(Format('Imported %s as %s.', [AppName, AppId]));
+  Result := Destination;
 end;
 
 end.
