@@ -12,6 +12,13 @@
     <DCC_Namespace>System;Vcl;Winapi</DCC_Namespace>
   </PropertyGroup>
 
+  <!-- Always on: engine units live one folder up. -->
+  <PropertyGroup>
+    <DCC_UnitSearchPath>..\src;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+    <DCC_DcuOutput>$(Platform)\$(Config)</DCC_DcuOutput>
+    <DCC_ExeOutput>$(Platform)\$(Config)</DCC_ExeOutput>
+  </PropertyGroup>
+
   <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">
     <Base>true</Base>
     <DCC_UnitSearchPath>..\src;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>

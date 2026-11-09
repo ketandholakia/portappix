@@ -203,18 +203,28 @@ preserved. Scanning skips `.new`/`.old` folders and manifests whose id does not 
 
 ## Build
 
-Delphi 12 Athens, Win32 and Win64 targets: open `Portappix.dproj` and build, or:
+Delphi 12 Athens, Win32 and Win64 targets: open **`src\Portappix.dproj`** (the project file lives
+next to the sources so unit paths resolve from the project folder), or build from a command
+prompt:
+
+```bash
+cd src
+dcc32 -B Launcher.dpr                 # Win32
+dcc64 -B Launcher.dpr                 # Win64
+```
+
+or from the repository root:
 
 ```bash
 dcc32 -B -Usrc src\Launcher.dpr
 dcc64 -B -Usrc src\Launcher.dpr
 ```
 
-`src\Launcher.dpr` lists its units by name only (no `in '...'` paths), so it resolves whether it
-is built through the `.dproj` (unit search path `src`) or straight from the `src` folder. The
-`.dpr` does not reference `Launcher.res`, so a clean clone builds without pre-generated
-resource files (add version info/icon in the IDE if desired). `*.res`, DCUs and the runtime
-`Apps`/`Data`/`Cache` folders are ignored by git.
+`src\Launcher.dpr` lists its units by name only (no `in '...'` paths), so it resolves from the
+project folder or from any `-U` search path you provide. The `.dpr` does not reference
+`Launcher.res`, so a clean clone builds without pre-generated resource files (add version
+info/icon in the IDE if desired). `*.res`, DCUs and the runtime `Apps`/`Data`/`Cache` folders are
+ignored by git.
 
 ## Tests
 
@@ -222,14 +232,16 @@ resource files (add version info/icon in the IDE if desired). `*.res`, DCUs and 
 framework):
 
 ```bash
-dcc32 -B -Usrc tests\PortappixTests.dpr
-tests\PortappixTests.exe
+cd tests
+dcc32 -B -U../src PortappixTests.dpr
+PortappixTests.exe
 ```
 
-or open `tests\PortappixTests.dproj`. Coverage: manifest parsing/validation, token expansion,
-policy allow/deny, catalog parsing with atomic swap, zip-slip rejection, subfolder-preserving
-extraction, SHA-256 reference value, journal save/recover/corrupt handling, and
-export-before-delete ordering with an injected registry-ops fake.
+or open `tests\PortappixTests.dproj` (it adds `..\src` to the unit search path).
+Coverage: manifest parsing/validation, token expansion, policy allow/deny, catalog parsing
+with atomic swap, zip-slip rejection, subfolder-preserving extraction, SHA-256 reference value,
+journal save/recover/corrupt handling, and export-before-delete ordering with an injected
+registry-ops fake.
 
 ## Storefront CI
 

@@ -1,0 +1,109 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Project xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <PropertyGroup>
+    <ProjectGuid>{6C1E6A6E-5B0B-4E5B-9A4A-3C8D1B7E2F10}</ProjectGuid>
+    <MainSource>Launcher.dpr</MainSource>
+    <Base>True</Base>
+    <Config Condition="'$(Config)'==''">Debug</Config>
+    <Platform Condition="'$(Platform)'==''">Win32</Platform>
+    <TargetedPlatforms>3</TargetedPlatforms>
+    <AppType>Application</AppType>
+    <FrameworkType>VCL</FrameworkType>
+    <ProjectVersion>20.3</ProjectVersion>
+    <DCC_Namespace>System;Vcl;Winapi;Data;Xml</DCC_Namespace>
+  </PropertyGroup>
+
+  <!-- Always on: the sources live in this same folder. -->
+  <PropertyGroup>
+    <DCC_UnitSearchPath>.;$(DCC_UnitSearchPath)</DCC_UnitSearchPath>
+    <DCC_DcuOutput>$(Platform)\$(Config)</DCC_DcuOutput>
+    <DCC_ExeOutput>$(Platform)\$(Config)</DCC_ExeOutput>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Config)'=='Base' or '$(Base)'!=''">
+    <Base>true</Base>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="('$(Platform)'=='Win32' and '$(Base)'=='true') or '$(Base_Win32)'!=''">
+    <Base_Win32>true</Base_Win32>
+    <CfgParent>Base</CfgParent>
+    <Base>true</Base>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="('$(Platform)'=='Win64' and '$(Base)'=='true') or '$(Base_Win64)'!=''">
+    <Base_Win64>true</Base_Win64>
+    <CfgParent>Base</CfgParent>
+    <Base>true</Base>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Config)'=='Debug' or '$(Cfg_1)'!=''">
+    <Cfg_1>true</Cfg_1>
+    <CfgParent>Base</CfgParent>
+    <Base>true</Base>
+    <DCC_Define>DEBUG;$(DCC_Define)</DCC_Define>
+    <DCC_Optimize>false</DCC_Optimize>
+    <DCC_GenerateStackFrames>true</DCC_GenerateStackFrames>
+    <DCC_DebugInformation>2</DCC_DebugInformation>
+    <DCC_SymbolReferenceInfo>0</DCC_SymbolReferenceInfo>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Config)'=='Release' or '$(Cfg_2)'!=''">
+    <Cfg_2>true</Cfg_2>
+    <CfgParent>Base</CfgParent>
+    <Base>true</Base>
+    <DCC_Define>RELEASE;$(DCC_Define)</DCC_Define>
+    <DCC_Optimize>true</DCC_Optimize>
+    <DCC_DebugInformation>0</DCC_DebugInformation>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <DelphiCompile Include="$(MainSource)">
+      <MainSource>MainSource</MainSource>
+    </DelphiCompile>
+    <DCCReference Include="Portappix.Common.pas" />
+    <DCCReference Include="Portappix.Manifest.pas" />
+    <DCCReference Include="Portappix.Process.pas" />
+    <DCCReference Include="Portappix.Junction.pas" />
+    <DCCReference Include="Portappix.Registry.pas" />
+    <DCCReference Include="Portappix.Policy.pas" />
+    <DCCReference Include="Portappix.Signature.pas" />
+    <DCCReference Include="Portappix.Consent.pas" />
+    <DCCReference Include="Portappix.Runner.pas" />
+    <DCCReference Include="Portappix.State.pas" />
+    <DCCReference Include="Portappix.Catalog.pas" />
+    <DCCReference Include="Portappix.PackageManager.pas" />
+    <DCCReference Include="Portappix.Importer.pas" />
+    <DCCReference Include="Portappix.TrayUI.pas" />
+    <DCCReference Include="MainForm.pas">
+      <Form>MainLauncherForm</Form>
+    </DCCReference>
+  </ItemGroup>
+
+  <ItemGroup>
+    <BuildConfiguration Include="Base">
+      <Key>Base</Key>
+    </BuildConfiguration>
+    <BuildConfiguration Include="Debug">
+      <Key>Cfg_1</Key>
+      <CfgParent>Base</CfgParent>
+    </BuildConfiguration>
+    <BuildConfiguration Include="Release">
+      <Key>Cfg_2</Key>
+      <CfgParent>Base</CfgParent>
+    </BuildConfiguration>
+  </ItemGroup>
+
+  <ProjectExtensions>
+    <Borland.Personality>Delphi.Personality.12</Borland.Personality>
+    <Borland.ProjectType>Application</Borland.ProjectType>
+    <BorlandProject>
+      <Delphi.Personality>
+        <Source>
+          <Source Name="MainSource">Launcher.dpr</Source>
+        </Source>
+      </Delphi.Personality>
+    </BorlandProject>
+  </ProjectExtensions>
+
+  <Import Project="$(BDS)\Bin\CodeGear.Delphi.Targets" Condition="Exists('$(BDS)\Bin\CodeGear.Delphi.Targets')" />
+</Project>
