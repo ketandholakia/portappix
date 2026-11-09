@@ -1,0 +1,49 @@
+name: Lint Recipes
+
+on:
+  pull_request:
+    paths:
+      - "recipes/**"
+      - recipe.schema.json
+      - "tools/**"
+      - scripts/validate_catalog.py
+      - scripts/sign_catalog.py
+      - ".github/workflows/recipes.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  lint-recipes:
+    name: Lint recipes (schema + policy)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Set up Python
+        uses: actions/setup-python@0b93645e9fea7318ecaed2b359559ac225c90a2b # v5.3.0
+        with:
+          python-version: "3.x"
+
+      - name: Install lint dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install jsonschema requests
+
+      - name: Lint every recipe (no network)
+        run: |
+          exists=0
+          for recipe in recipes/*.json; do
+            [ -e "$recipe" ] || continue
+            exists=1
+            echo "::group::$recipe"
+            python tools/build_recipe.py "$recipe" --schema recipe.schema.json --lint-only || status=1
+            echo "::endgroup::"
+          done
+          if [ "$exists" -eq 0 ]; then
+            echo "No recipe files found; nothing to lint."
+          fi
+          exit ${status:-0}

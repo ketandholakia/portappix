@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "autoruns",
+  "name": "Autoruns",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/autoruns",
+  "notes": "Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers, so each re-pin bumps this. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/Autoruns.zip",
+    "sha256": "7b3a8eed819f732a3e4c134aecaeaebb8d643a46490ccddb82cc8a1a745c4cf7",
+    "size": 3183752,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "Autoruns64.exe",
+    "registry": ["HKCU\\Software\\Sysinternals\\Autoruns"]
+  }
+}

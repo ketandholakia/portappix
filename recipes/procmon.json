@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "procmon",
+  "name": "Process Monitor",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/procmon",
+  "notes": "Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers, so each re-pin bumps this. First run shows the Sysinternals EULA once. Settings live under HKCU\\Software\\Sysinternals\\Process Monitor and are hijacked into the portable registry.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/ProcessMonitor.zip",
+    "sha256": "97330813853e0e514a11ee16a47d4c6fe90148fae834649839afb30487cc8b0b",
+    "size": 3203536,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "Procmon64.exe",
+    "registry": ["HKCU\\Software\\Sysinternals\\Process Monitor"]
+  }
+}

@@ -55,6 +55,15 @@
         "size": {
           "type": "integer",
           "minimum": 0
+        },
+        "kind": {
+          "type": "string",
+          "enum": ["package", "recipe"],
+          "default": "package"
+        },
+        "recipe": {
+          "type": "string",
+          "pattern": "^recipes/[A-Za-z0-9][A-Za-z0-9._-]*\\.json$"
         }
       }
     }

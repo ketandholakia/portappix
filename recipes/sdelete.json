@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "sdelete",
+  "name": "SDelete",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/sdelete",
+  "notes": "Command-line secure file deletion. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/SDelete.zip",
+    "sha256": "c6b2518d217c8619f11543d59ed014d57c0afacafef453af56db9daf287edede",
+    "size": 336182,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "sdelete64.exe"
+  }
+}

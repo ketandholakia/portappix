@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "autologon",
+  "name": "Autologon",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/autologon",
+  "notes": "Configures Windows automatic logon. Stores credentials in the machine's LSA secrets — this tool is machine-bound by design and only useful on a dedicated test VM. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/AutoLogon.zip",
+    "sha256": "9a477624ea6488acfbd2cefcc392fac082383a3a8db1c6d867af1b410f4731b7",
+    "size": 507115,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "Autologon64.exe",
+    "registry": ["HKCU\\Software\\Sysinternals\\Autologon"]
+  }
+}

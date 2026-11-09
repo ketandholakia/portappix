@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "x64dbg",
+  "name": "x64dbg",
+  "publisher": "x64dbg contributors",
+  "version": "2026.05.27",
+  "category": "Development",
+  "homepage": "https://x64dbg.com/",
+  "notes": "Open-source Windows debugger. The snapshot archive ships both the 32-bit and 64-bit debugger under release\\x32 and release\\x64; the manifest launches the 64-bit one. Settings are stored inside the release folder (x64dbg.ini), keeping the install portable. Version follows the vendor's snapshot date tag.",
+  "source": {
+    "url": "https://github.com/x64dbg/x64dbg/releases/download/2026.05.27/snapshot_2026-05-27_12-11.zip",
+    "sha256": "d41966dfc5b435a372798245300ca0ab7bb8e48bdbf48512c6fb20fcca427697",
+    "size": 31526833,
+    "hashSource": "computed from the vendor download on 2026-11-09"
+  },
+  "manifest": {
+    "exe": "release/x64/x64dbg.exe"
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "desktops",
+  "name": "Desktops",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/desktops",
+  "notes": "Virtual desktop switcher. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/Desktops.zip",
+    "sha256": "fbba8b7267911c55bcd0252002b407603e9b0569f4e18eee0b7c664a195857f2",
+    "size": 204628,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "Desktops64.exe",
+    "registry": ["HKCU\\Software\\Sysinternals\\Desktops"]
+  }
+}

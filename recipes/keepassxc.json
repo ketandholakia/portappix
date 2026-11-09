@@ -1,0 +1,26 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "keepassxc",
+  "name": "KeePassXC",
+  "publisher": "KeePassXC Team",
+  "version": "2.8.0",
+  "category": "Security",
+  "homepage": "https://keepassxc.org/",
+  "notes": "Password manager. The official Windows archive is portable (it contains a .portable marker), so KeePassXC stores its configuration next to the executable inside Apps\\keepassxc. Password databases belong in Data\\keepassxc (the default save dialog resolves there when APPDATA is redirected).",
+  "source": {
+    "url": "https://github.com/keepassxreboot/keepassxc/releases/download/2.8.0/KeePassXC-2.8.0-x64.zip",
+    "sha256": "48ff4f088e9ce70e241da1270e5081528dba77c38b17dae4aa6690ffc50fc828",
+    "size": 70348471,
+    "hashSource": "computed from the vendor download on 2026-11-09"
+  },
+  "manifest": {
+    "exe": "KeePassXC-2.8.0-x64/KeePassXC.exe",
+    "env": {
+      "APPDATA": "{data}\\AppData",
+      "LOCALAPPDATA": "{data}\\LocalAppData",
+      "TEMP": "{data}\\Temp",
+      "TMP": "{data}\\Temp"
+    }
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "vmmap",
+  "name": "VMMap",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/vmmap",
+  "notes": "Virtual memory analyzer. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/VMMap.zip",
+    "sha256": "71c9bb73f1ba63f69096cc5ab11aaad4f1969b060931f19c97f7ca6458ca1c1e",
+    "size": 7983735,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "vmmap64.exe",
+    "registry": ["HKCU\\Software\\Sysinternals\\VMMap"]
+  }
+}

@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "winobj",
+  "name": "WinObj",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/winobj",
+  "notes": "Object manager namespace browser. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/WinObj.zip",
+    "sha256": "585c75e0c2fb82fc43d8b986deac305fa3711db8d5f369dd874b66e721e6f5b3",
+    "size": 1870010,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "Winobj64.exe",
+    "registry": ["HKCU\\Software\\Sysinternals\\WinObj"]
+  }
+}

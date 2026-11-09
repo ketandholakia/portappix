@@ -26,7 +26,10 @@ type
     FUrl: string;
     FSha256: string;
     FSize: Int64;
+    FKind: string;
+    FRecipe: string;
   public
+    constructor Create;
     property Id: string read FId write FId;
     property Name: string read FName write FName;
     property Publisher: string read FPublisher write FPublisher;
@@ -35,6 +38,12 @@ type
     property Url: string read FUrl write FUrl;
     property Sha256: string read FSha256 write FSha256;
     property Size: Int64 read FSize write FSize;
+    // "package" (default) or "recipe" (the entry was built from a pinned
+    // recipe file under recipes\). Purely descriptive for the UI; install
+    // handling is identical.
+    property Kind: string read FKind write FKind;
+    // Repo-relative path of the recipe file (e.g. recipes/7zip.json).
+    property Recipe: string read FRecipe write FRecipe;
   end;
 
   TPortappixCatalog = class
@@ -120,6 +129,12 @@ begin
   finally
     Client.Free;
   end;
+end;
+
+constructor TCatalogApp.Create;
+begin
+  inherited Create;
+  FKind := 'package';
 end;
 
 constructor TPortappixCatalog.Create;
@@ -260,6 +275,18 @@ begin
               'Catalog app "%s" must use an https:// package URL.', [App.Id]);
           App.Sha256 := NormalizeSha256(ReadRequiredString(AppObject, 'sha256'));
           App.Size := ReadSize(AppObject);
+
+          // Optional provenance fields; old catalogs do not carry them.
+          App.Kind := ReadOptionalString(AppObject, 'kind').Trim;
+          if App.Kind = '' then
+            App.Kind := 'package';
+          if (App.Kind <> 'package') and (App.Kind <> 'recipe') then
+            raise EPortappixCatalogError.CreateFmt(
+              'Catalog app "%s" has an unknown kind "%s".', [App.Id, App.Kind]);
+          App.Recipe := ReadOptionalString(AppObject, 'recipe').Trim;
+          if (App.Kind = 'recipe') and (App.Recipe = '') then
+            raise EPortappixCatalogError.CreateFmt(
+              'Catalog app "%s" has kind "recipe" but no recipe path.', [App.Id]);
 
           if NewListContainsId(App.Id) then
             raise EPortappixCatalogError.CreateFmt('Duplicate catalog app id "%s".', [App.Id]);

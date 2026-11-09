@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "pstools",
+  "name": "PsTools",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/pstools",
+  "notes": "Command-line toolbox (PsExec, PsList, PsKill, PsService, ...). The manifest launches PsExec64; the other tools live in the same folder and can be run from a shell. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run of each tool shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/PSTools.zip",
+    "sha256": "740ac6fb1131e51e3698615388143e2a43ff45d65b8169be20ea8a40aaa6efb3",
+    "size": 5150080,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "PsExec64.exe"
+  }
+}

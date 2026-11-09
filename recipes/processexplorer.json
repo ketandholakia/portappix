@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "processexplorer",
+  "name": "Process Explorer",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/process-explorer",
+  "notes": "Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers, so each re-pin bumps this. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/ProcessExplorer.zip",
+    "sha256": "22551d0181dde6cb6af1bc134a190d867d883673f9c35c33039e4e8f9ac75df1",
+    "size": 3871135,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "procexp64.exe",
+    "registry": ["HKCU\\Software\\Sysinternals\\Process Explorer"]
+  }
+}

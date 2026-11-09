@@ -33,6 +33,8 @@ signatures). No third-party components.
 | `src/Portappix.TrayUI.pas` | Tray icon/popup menu; category grouping; background launches; app locks; consent. |
 | `src/MainForm.pas` / `.dfm` | Dashboard (installed apps + signed store + updates) and importer UI. |
 | `src/Launcher.dpr` | Entry point; acquires the launcher single-instance mutex before anything else. |
+| `tools/build_recipe.py` / `tools/build_catalog.py` | Recipe tooling: lint, verify, package known portable apps; combine into a signed `catalog.json`. |
+| `recipes/` | 25 pinned known-app recipes (`recipes/README.md`); `SKIPPED.md` documents apps that cannot be wrapped. |
 
 Engine units (`Portappix.*`) have no VCL/Forms dependency. UI logic lives in `MainForm` and
 `Portappix.TrayUI`.
@@ -407,13 +409,22 @@ the launcher self-update swap/confirm/rollback state machine against a local zip
 ## Storefront CI
 
 - `catalog.json` — public app catalog (`apps[]` with `id`, `name`, optional `publisher`,
-  `manifestSchema`, `version`, `category`, `url` (https only), `sha256`, `size`).
+  `manifestSchema`, `version`, `category`, `url` (https only), `sha256`, `size`, and optional
+  provenance fields `kind` (`package`|`recipe`) and `recipe` (`recipes/<id>.json`)).
+- `recipes/` — pinned recipes for known portable apps (25 apps; see `recipes/README.md`),
+  validated against `recipe.schema.json`. Vendor binaries are never committed — recipes
+  reference vendor URLs + pinned hashes only.
 - `catalog.schema.json` — strict JSON Schema (no extra properties).
-- `scripts/validate_catalog.py` — schema validation, duplicate ids, streaming download with
-  SHA-256 and byte-size checks, zip inspection (root `app.json`, id match, zip-slip, entry/size
-  caps) and the same registry/junction/env policy rules as the launcher.
+- `scripts/validate_catalog.py` — schema validation, duplicate ids, recipe provenance
+  cross-checks, streaming download with SHA-256 and byte-size checks, zip inspection
+  (root `app.json`, id match, zip-slip, entry/size caps) and the same
+  registry/junction/env policy rules as the launcher.
 - `scripts/sign_catalog.py` — creates/verifies `catalog.json.sig`.
+- `tools/build_recipe.py` — lint (schema + policy, no network), verify (download + hash
+  check) and build (inject `app.json`, deterministic re-zip) for recipes.
+- `tools/build_catalog.py` — combines built recipes into a signed `catalog.json`.
 - `.github/workflows/validate-pr.yml` — PR validation with GitHub Actions pinned to commit SHAs.
+- `.github/workflows/recipes.yml` — recipe lint job (schema + policy per recipe, pinned SHAs).
 
 ## Notes and limitations
 

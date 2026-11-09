@@ -1,0 +1,73 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portappix.dev/recipe.schema.json",
+  "title": "Portappix Recipe",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "id", "name", "version", "category", "homepage", "source", "manifest"],
+  "properties": {
+    "schema": { "const": 1 },
+    "kind": { "const": "recipe" },
+    "id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[a-z0-9][a-z0-9._-]*$"
+    },
+    "name": { "type": "string", "minLength": 1 },
+    "publisher": { "type": "string", "minLength": 1 },
+    "version": { "type": "string", "minLength": 1 },
+    "category": { "type": "string", "minLength": 1 },
+    "homepage": {
+      "type": "string",
+      "format": "uri",
+      "pattern": "^https://"
+    },
+    "notes": { "type": "string" },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["url", "sha256", "size"],
+      "properties": {
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https://"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "hashSource": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["exe"],
+      "properties": {
+        "exe": { "type": "string", "minLength": 1 },
+        "args": { "type": "string" },
+        "dataVersion": { "type": "integer", "minimum": 0 },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "junctions": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "registry": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      }
+    }
+  }
+}

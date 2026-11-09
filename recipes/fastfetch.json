@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "fastfetch",
+  "name": "Fastfetch",
+  "publisher": "fastfetch-cli contributors",
+  "version": "2.71.0",
+  "category": "System",
+  "homepage": "https://github.com/fastfetch-cli/fastfetch",
+  "notes": "System information tool (successor to neofetch). Command-line tool; run it from a shell inside Apps\\fastfetch. Custom presets can be stored next to the executable.",
+  "source": {
+    "url": "https://github.com/fastfetch-cli/fastfetch/releases/download/2.71.0/fastfetch-windows-amd64.zip",
+    "sha256": "58eeee82c52120e981891826be1c5810788bc0083b13d870684bbc85b03628e9",
+    "size": 1506088,
+    "hashSource": "computed from the vendor download on 2026-11-09"
+  },
+  "manifest": {
+    "exe": "fastfetch.exe"
+  }
+}

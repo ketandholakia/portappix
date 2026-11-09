@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "tcpview",
+  "name": "TCPView",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/tcpview",
+  "notes": "Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers, so each re-pin bumps this. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/TCPView.zip",
+    "sha256": "4fc5ceba3e1b27ad95a24df35d094b454ec5f9478e12a8ca2b1b222705b9683b",
+    "size": 1604604,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "tcpview64.exe",
+    "registry": ["HKCU\\Software\\Sysinternals\\TCPView"]
+  }
+}

@@ -1,0 +1,24 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "mpchc",
+  "name": "Media Player Classic HC",
+  "publisher": "MPC-HC (clsid2 fork)",
+  "version": "2.8.5",
+  "category": "Media",
+  "homepage": "https://github.com/clsid2/mpc-hc",
+  "notes": "The official archive is portable: settings are saved as mpc-hc.ini next to the executable inside Apps\\mpchc. The build bundles its own LAV Filters, so no codec installation happens.",
+  "source": {
+    "url": "https://github.com/clsid2/mpc-hc/releases/download/2.8.5/MPC-HC.2.8.5.x64.zip",
+    "sha256": "164372dc972c3980ba4bbe89df68e2afa517dca6f3a7613b21039db0ffc98db6",
+    "size": 28574866,
+    "hashSource": "computed from the vendor download on 2026-11-09"
+  },
+  "manifest": {
+    "exe": "mpc-hc64.exe",
+    "env": {
+      "TEMP": "{data}\\Temp",
+      "TMP": "{data}\\Temp"
+    }
+  }
+}

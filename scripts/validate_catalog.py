@@ -352,10 +352,78 @@ def verify_app(app: dict[str, Any], index: int, workdir: Path) -> bool:
     return True
 
 
+def validate_recipe_provenance(apps: list[Any], recipe_schema_path: Path) -> int:
+    """Cross-check catalog entries that reference recipes (kind: "recipe")."""
+    from jsonschema import Draft202012Validator, FormatChecker
+
+    if not recipe_schema_path.exists():
+        print(f"ERROR: recipe schema not found: {recipe_schema_path}")
+        return 1
+
+    schema = load_json(recipe_schema_path, "recipe.schema.json")
+    validator = Draft202012Validator(schema, format_checker=FormatChecker())
+    failures = 0
+
+    for index, app in enumerate(apps):
+        if not isinstance(app, dict):
+            continue
+        kind = app.get("kind", "package")
+        recipe_ref = app.get("recipe", "")
+        label = app_label(app, index)
+
+        if kind not in ("package", "recipe"):
+            print(f"ERROR: {label} has unknown kind '{kind}'.")
+            failures += 1
+            continue
+        if kind == "recipe" and not recipe_ref:
+            print(f"ERROR: {label} has kind 'recipe' but no recipe path.")
+            failures += 1
+            continue
+        if kind == "package" and recipe_ref:
+            print(f"ERROR: {label} references a recipe but kind is 'package'.")
+            failures += 1
+            continue
+        if kind != "recipe":
+            continue
+
+        recipe_path = Path(recipe_ref)
+        if not recipe_path.exists():
+            print(f"ERROR: {label} references missing recipe file: {recipe_path}")
+            failures += 1
+            continue
+
+        recipe = load_json(recipe_path, f"recipe for {label}")
+        errors = sorted(
+            validator.iter_errors(recipe), key=lambda error: list(error.absolute_path)
+        )
+        if errors:
+            print(f"ERROR: recipe for {label} fails {recipe_schema_path.name}:")
+            for error in errors:
+                location = "/".join(str(part) for part in error.absolute_path)
+                print(f"  - {location}: {error.message}" if location else f"  - {error.message}")
+            failures += 1
+            continue
+
+        if recipe.get("id") != app.get("id"):
+            print(f"ERROR: recipe id {recipe.get('id')} != catalog id {app.get('id')} for {label}.")
+            failures += 1
+        if recipe.get("version") != app.get("version"):
+            print(
+                f"ERROR: recipe version {recipe.get('version')} != catalog version "
+                f"{app.get('version')} for {label}; rebuild the package."
+            )
+            failures += 1
+
+    return failures
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate Portappix catalog.json")
     parser.add_argument("--catalog", default="catalog.json")
     parser.add_argument("--schema", default="catalog.schema.json")
+    parser.add_argument("--recipe-schema", default="recipe.schema.json")
+    parser.add_argument("--skip-provenance", action="store_true",
+                        help="Skip recipe cross-checks (recipe files not present)")
     args = parser.parse_args(argv)
 
     catalog_path = Path(args.catalog)
@@ -404,6 +472,13 @@ def main(argv: list[str] | None = None) -> int:
         print("No apps to verify.")
         print("Validation: OK")
         return 0
+
+    if not args.skip_provenance:
+        recipe_failures = validate_recipe_provenance(apps, Path(args.recipe_schema))
+        if recipe_failures:
+            print(f"Recipe provenance: FAILED ({recipe_failures} error(s))")
+            return 1
+        print("Recipe provenance: OK")
 
     print(f"Verifying {len(apps)} app package(s)...")
     failures = 0

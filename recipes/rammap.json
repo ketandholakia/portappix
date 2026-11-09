@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "rammap",
+  "name": "RAMMap",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/rammap",
+  "notes": "Physical memory usage analyzer. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/RAMMap.zip",
+    "sha256": "6536a8107a3fb391e4443f2742366067341a7da50de89f99ca0b2390120dd0cc",
+    "size": 737190,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "RAMMap64.exe",
+    "registry": ["HKCU\\Software\\Sysinternals\\RAMMap"]
+  }
+}

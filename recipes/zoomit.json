@@ -1,0 +1,21 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "zoomit",
+  "name": "ZoomIt",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/zoomit",
+  "notes": "Screen zoom/annotation/recording tool. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. The archive is large (~254 MB) because ZoomIt 9 bundles its screen-recording encoders. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/ZoomIt.zip",
+    "sha256": "5cea173602dd59bf018db9dab938b81bfac0b98002aa2eaa7ecff981f1d01992",
+    "size": 253800158,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "ZoomIt64.exe",
+    "registry": ["HKCU\\Software\\Sysinternals\\ZoomIt"]
+  }
+}

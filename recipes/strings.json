@@ -1,0 +1,20 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "strings",
+  "name": "Strings",
+  "publisher": "Microsoft (Sysinternals)",
+  "version": "2026.11.09",
+  "category": "Sysinternals",
+  "homepage": "https://learn.microsoft.com/sysinternals/downloads/strings",
+  "notes": "Command-line printable-string extractor for binary files. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "source": {
+    "url": "https://download.sysinternals.com/files/Strings.zip",
+    "sha256": "b1a0a3dc5f639af1c98ae5832676727646eb3d543640e65e310dff747e733a25",
+    "size": 547485,
+    "hashSource": "computed from the vendor download on 2026-11-09 (no vendor checksum file published)"
+  },
+  "manifest": {
+    "exe": "strings64.exe"
+  }
+}

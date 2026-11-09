@@ -286,6 +286,27 @@ begin
     ExpectException(
       procedure
       begin
+        Catalog.LoadFromJson('{"apps":[{"id":"demo","name":"Demo","version":"1.0",' +
+          '"url":"https://example.com/demo.zip","sha256":"' + Sha + '","size":1,' +
+          '"kind":"mystery"}]}');
+      end,
+      'Catalog rejects unknown kinds');
+
+    Catalog.LoadFromJson('{"apps":[{"id":"demo","name":"Demo","version":"1.0",' +
+      '"category":"Utilities","url":"https://example.com/demo.zip","sha256":"' + Sha +
+      '","size":1,"kind":"recipe","recipe":"recipes/demo.json"}]}');
+    Check(Catalog.FindById('demo').Kind = 'recipe', 'Catalog parses the kind field');
+    Check(Catalog.FindById('demo').Recipe = 'recipes/demo.json',
+      'Catalog parses the recipe field');
+
+    Catalog.LoadFromJson(GoodJson);
+    Check((Catalog.FindById('demo').Kind = 'package') and
+      (Catalog.FindById('demo').Recipe = ''),
+      'Catalog defaults to kind=package without provenance fields');
+
+    ExpectException(
+      procedure
+      begin
         Catalog.LoadFromJson('{"apps":[]}');
         Catalog.LoadFromFile(TPath.Combine(ARoot, 'missing.json'));
       end,
