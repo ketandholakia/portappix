@@ -206,11 +206,13 @@ preserved. Scanning skips `.new`/`.old` folders and manifests whose id does not 
 Delphi 12 Athens, Win32 and Win64 targets: open `Portappix.dproj` and build, or:
 
 ```bash
-dcc32 -B -U src src\Launcher.dpr
-dcc64 -B -U src src\Launcher.dpr
+dcc32 -B -Usrc src\Launcher.dpr
+dcc64 -B -Usrc src\Launcher.dpr
 ```
 
-The `.dpr` does not reference `Launcher.res`, so a clean clone builds without pre-generated
+`src\Launcher.dpr` lists its units by name only (no `in '...'` paths), so it resolves whether it
+is built through the `.dproj` (unit search path `src`) or straight from the `src` folder. The
+`.dpr` does not reference `Launcher.res`, so a clean clone builds without pre-generated
 resource files (add version info/icon in the IDE if desired). `*.res`, DCUs and the runtime
 `Apps`/`Data`/`Cache` folders are ignored by git.
 
@@ -220,8 +222,8 @@ resource files (add version info/icon in the IDE if desired). `*.res`, DCUs and 
 framework):
 
 ```bash
-dcc32 -B -U src -N0tests\Win32\Debug tests\PortappixTests.dpr
-tests\Win32\Debug\PortappixTests.exe
+dcc32 -B -Usrc tests\PortappixTests.dpr
+tests\PortappixTests.exe
 ```
 
 or open `tests\PortappixTests.dproj`. Coverage: manifest parsing/validation, token expansion,
