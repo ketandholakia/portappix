@@ -4,6 +4,7 @@ interface
 
 uses
   System.SysUtils,
+  System.DateUtils,
   System.IOUtils,
   System.JSON,
   System.StrUtils,
@@ -21,6 +22,7 @@ type
     FExe: string;
     FArgs: string;
     FVersion: string;
+    FDataVersion: Integer;
     FCategory: string;
     FSchema: Integer;
     FEnvironment: TDictionary<string, string>;
@@ -42,11 +44,15 @@ type
     constructor Create;
     destructor Destroy; override;
     class function LoadFromFile(const AFileName: string): TPortappixManifest; static;
+    class function ReadDataVersion(const ADataDir: string): Integer; static;
+    class procedure WriteDataVersion(const ADataDir, AAppId: string;
+      ADataVersion: Integer); static;
     property Id: string read FId;
     property Name: string read FName;
     property Exe: string read FExe;
     property Args: string read FArgs;
     property Version: string read FVersion;
+    property DataVersion: Integer read FDataVersion;
     property Category: string read FCategory;
     property Schema: Integer read FSchema;
     property Environment: TDictionary<string, string> read FEnvironment;
@@ -89,6 +95,55 @@ begin
   except
     Result.Free;
     raise;
+  end;
+end;
+
+class function TPortappixManifest.ReadDataVersion(const ADataDir: string): Integer;
+var
+  FileName: string;
+  JsonValue: TJSONValue;
+  VersionValue: TJSONValue;
+begin
+  Result := 0;
+  FileName := TPath.Combine(ADataDir, 'data_version.json');
+  if not TFile.Exists(FileName) then
+    Exit;
+
+  try
+    JsonValue := TJSONObject.ParseJSONValue(TFile.ReadAllText(FileName, TEncoding.UTF8));
+    try
+      if JsonValue = nil then
+        Exit;
+      VersionValue := JsonValue.FindValue('dataVersion');
+      if VersionValue is TJSONNumber then
+        Result := TJSONNumber(VersionValue).AsInt;
+    finally
+      JsonValue.Free;
+    end;
+  except
+    Result := 0;
+  end;
+end;
+
+class procedure TPortappixManifest.WriteDataVersion(const ADataDir, AAppId: string;
+  ADataVersion: Integer);
+var
+  Json: TJSONObject;
+begin
+  if ADataVersion <= 0 then
+    Exit;
+
+  ForceDirectories(ADataDir);
+  Json := TJSONObject.Create;
+  try
+    Json.AddPair('appId', AAppId);
+    Json.AddPair('dataVersion', TJSONNumber.Create(ADataVersion));
+    Json.AddPair('writtenAt', DateToISO8601(Now));
+    if not WriteTextFileAtomic(TPath.Combine(ADataDir, 'data_version.json'),
+      Json.Format(2)) then
+      raise EPortappixManifestError.Create('Unable to write data_version.json.');
+  finally
+    Json.Free;
   end;
 end;
 
@@ -143,6 +198,10 @@ begin
     FExe := ReadString(RootObject, 'exe', True).Trim;
     FArgs := ReadString(RootObject, 'args', False);
     FVersion := ReadString(RootObject, 'version', False).Trim;
+    FDataVersion := ReadInteger(RootObject, 'dataVersion', 0);
+    if FDataVersion < 0 then
+      raise EPortappixManifestError.CreateFmt(
+        'Manifest "%s" has an invalid dataVersion value.', [FSourceFile]);
 
     FCategory := ReadString(RootObject, 'category', False).Trim;
     if FCategory = '' then

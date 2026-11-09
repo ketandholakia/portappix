@@ -190,7 +190,9 @@ end;
 
 function IsTransientAppFolder(const AFolderName: string): Boolean;
 begin
-  Result := TextEndsWith(AFolderName, '.new') or TextEndsWith(AFolderName, '.old');
+  Result := TextEndsWith(AFolderName, '.new') or
+    TextEndsWith(AFolderName, '.old') or
+    TextEndsWith(AFolderName, '.prev');
 end;
 
 function IsPathUnder(const APath, ARootPath: string): Boolean;

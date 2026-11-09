@@ -18,8 +18,10 @@ uses
   Portappix.PackageManager,
   Portappix.Registry,
   Portappix.Runner,
+  Portappix.Settings,
   Portappix.State,
-  Portappix.Trace;
+  Portappix.Trace,
+  Portappix.Version;
 
 type
   TFakeRegistryOps = class(TInterfacedObject, IPortappixRegistryOps)
@@ -946,6 +948,262 @@ begin
   end;
 end;
 
+{ Update tests }
+
+procedure TestSemVer;
+begin
+  Check(TPortappixSemVer.CompareText('1.0.0', '1.0.0') = 0, 'SemVer equal versions compare as equal');
+  Check(TPortappixSemVer.CompareText('1.0.0', '1.0.1') < 0, 'SemVer patch increments sort upward');
+  Check(TPortappixSemVer.CompareText('1.9.0', '1.10.0') < 0, 'SemVer minor numbers compare numerically');
+  Check(TPortappixSemVer.CompareText('1.0.0', '2.0.0') < 0, 'SemVer major numbers sort upward');
+  Check(TPortappixSemVer.CompareText('1.0', '1.0.0') = 0, 'SemVer missing numbers default to zero');
+  Check(TPortappixSemVer.CompareText('1.0.0-alpha', '1.0.0') < 0,
+    'SemVer pre-releases sort before the stable release');
+  Check(TPortappixSemVer.CompareText('1.0.0-alpha', '1.0.0-beta') < 0,
+    'SemVer alphanumeric pre-release identifiers sort lexically');
+  Check(TPortappixSemVer.CompareText('1.0.0-alpha', '1.0.0-alpha.1') < 0,
+    'SemVer longer pre-release lists sort after their prefixes');
+  Check(TPortappixSemVer.CompareText('1.0.0-2', '1.0.0-10') < 0,
+    'SemVer numeric pre-release identifiers compare numerically');
+  Check(TPortappixSemVer.CompareText('1.0.0+build5', '1.0.0') = 0,
+    'SemVer build metadata is ignored for ordering');
+
+  var Parsed := TPortappixSemVer.Parse('1.2.3-beta.4');
+  Check((Parsed.Major = 1) and (Parsed.Minor = 2) and (Parsed.Patch = 3) and
+    (Parsed.PreRelease = 'beta.4'), 'SemVer parses core numbers and pre-release');
+
+  var Broken: TPortappixSemVer;
+  Check(not TPortappixSemVer.TryParse('not-a-version', Broken),
+    'SemVer rejects non-numeric versions');
+  Check(not TPortappixSemVer.TryParse('v1.9.0', Broken),
+    'SemVer rejects a leading v prefix');
+  Check(not TPortappixSemVer.TryParse('1.2.3.4', Broken),
+    'SemVer rejects more than three core numbers');
+end;
+
+procedure TestDataVersion(const ARoot: string);
+var
+  DataDir: string;
+begin
+  DataDir := TPath.Combine(ARoot, 'Data\demo');
+  Check(TPortappixManifest.ReadDataVersion(DataDir) = 0,
+    'Data version defaults to 0 when no marker exists');
+
+  TPortappixManifest.WriteDataVersion(DataDir, 'demo', 3);
+  Check(TPortappixManifest.ReadDataVersion(DataDir) = 3,
+    'Data version round-trips through data_version.json');
+
+  TPortappixManifest.WriteDataVersion(DataDir, 'demo', 0);
+  Check(TPortappixManifest.ReadDataVersion(DataDir) = 3,
+    'A dataVersion of 0 writes nothing and keeps the previous marker');
+
+  var ManifestPath := WriteTextFile(TPath.Combine(ARoot, 'm1\app.json'),
+    '{"exe":"x.exe","dataVersion":7}');
+  var Manifest := TPortappixManifest.LoadFromFile(ManifestPath);
+  try
+    Check(Manifest.DataVersion = 7, 'Manifest parses dataVersion');
+  finally
+    Manifest.Free;
+  end;
+
+  ManifestPath := WriteTextFile(TPath.Combine(ARoot, 'm2\app.json'), '{"exe":"x.exe"}');
+  Manifest := TPortappixManifest.LoadFromFile(ManifestPath);
+  try
+    Check(Manifest.DataVersion = 0, 'Manifest dataVersion defaults to 0');
+  finally
+    Manifest.Free;
+  end;
+
+  WriteTextFile(TPath.Combine(ARoot, 'm3\app.json'), '{"exe":"x.exe","dataVersion":-1}');
+  ExpectException(
+    procedure
+    begin
+      TPortappixManifest.LoadFromFile(TPath.Combine(ARoot, 'm3\app.json'));
+    end,
+    'Manifest rejects negative dataVersion');
+end;
+
+procedure TestPendingUpdatesAndRollback(const ARoot: string);
+var
+  Manager: TPortappixPackageManager;
+  App: TCatalogApp;
+begin
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    Check(Length(Manager.PendingUpdateIds) = 0, 'Pending updates start empty');
+
+    App := TCatalogApp.Create;
+    try
+      App.Id := 'demo';
+      App.Version := '2.0';
+      App.Url := 'https://example.com/demo.zip';
+      App.Sha256 := StringOfChar('a', 64);
+      App.Size := 10;
+      Manager.QueueUpdate(App);
+      App.Version := '2.1';
+      Manager.QueueUpdate(App);   // same id: refreshed, not duplicated
+      Check(Length(Manager.PendingUpdateIds) = 1,
+        'Queueing the same app twice refreshes one entry');
+      Check(Manager.HasPendingUpdate('demo'), 'HasPendingUpdate finds queued entries');
+      Check(not Manager.HasPendingUpdate('other'), 'HasPendingUpdate ignores other apps');
+
+      var Second := TCatalogApp.Create;
+      try
+        Second.Id := 'other';
+        Second.Version := '1.0';
+        Second.Url := 'https://example.com/other.zip';
+        Second.Sha256 := StringOfChar('b', 64);
+        Second.Size := 5;
+        Manager.QueueUpdate(Second);
+        Check(Length(Manager.PendingUpdateIds) = 2, 'Two apps can be queued');
+      finally
+        Second.Free;
+      end;
+    finally
+      App.Free;
+    end;
+
+    // Entries survive a new manager instance (disk persistence).
+    var Reopened := TPortappixPackageManager.Create(ARoot);
+    try
+      Check(Length(Reopened.PendingUpdateIds) = 2,
+        'Pending updates persist on disk');
+      Reopened.RemovePendingUpdate('demo');
+      Check((not Reopened.HasPendingUpdate('demo')) and Reopened.HasPendingUpdate('other'),
+        'RemovePendingUpdate deletes only the target entry');
+    finally
+      Reopened.Free;
+    end;
+
+    // A corrupt queue file behaves like an empty queue.
+    ForceDirectories(TPath.Combine(ARoot, 'Cache'));
+    TFile.WriteAllText(TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'pending_updates.json'),
+      '{ not json', TEncoding.UTF8);
+    Check(Length(Manager.PendingUpdateIds) = 0,
+      'A corrupt pending_updates.json is treated as an empty queue');
+  finally
+    Manager.Free;
+  end;
+end;
+
+procedure TestRollback(const ARoot: string);
+var
+  Manager: TPortappixPackageManager;
+begin
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    WriteTextFile(TPath.Combine(ARoot, 'Apps\demo\app.json'), '{"exe":"new.exe","version":"2.0"}');
+    WriteTextFile(TPath.Combine(ARoot, 'Apps\demo.prev\app.json'), '{"exe":"old.exe","version":"1.0"}');
+    Manager.RollbackApp('demo');
+    Check(ContainsStr(TFile.ReadAllText(TPath.Combine(ARoot, 'Apps\demo\app.json')), 'old.exe'),
+      'Rollback restores Apps\<id>.prev into place');
+    Check(not TDirectory.Exists(TPath.Combine(ARoot, 'Apps\demo.prev')),
+      'Rollback consumes the .prev folder');
+    Check(not TDirectory.Exists(TPath.Combine(ARoot, 'Apps\demo.stale')),
+      'Rollback removes the stale folder');
+
+    ExpectException(
+      procedure
+      begin
+        Manager.RollbackApp('demo');
+      end,
+      'Rollback without a .prev folder is refused');
+
+    // Downgrade protection: newer installed version refuses an older package.
+    WriteTextFile(TPath.Combine(ARoot, 'Apps\demo\app.json'),
+      '{"exe":"new.exe","version":"2.0.0"}');
+    var IncomingPath := WriteTextFile(TPath.Combine(ARoot, 'incoming\app.json'),
+      '{"id":"demo","exe":"old.exe","version":"1.9.0"}');
+    var Incoming := TPortappixManifest.LoadFromFile(IncomingPath);
+    try
+      ExpectException(
+        procedure
+        begin
+          Manager.ValidateUpdateAllowed(Incoming);
+        end,
+        'Updates refuse version downgrades');
+    finally
+      Incoming.Free;
+    end;
+
+    IncomingPath := WriteTextFile(TPath.Combine(ARoot, 'incoming2\app.json'),
+      '{"id":"demo","exe":"newer.exe","version":"2.0.1"}');
+    Incoming := TPortappixManifest.LoadFromFile(IncomingPath);
+    try
+      Manager.ValidateUpdateAllowed(Incoming);
+      Check(True, 'Updates allow version upgrades');
+    finally
+      Incoming.Free;
+    end;
+
+    // Data downgrade protection.
+    WriteTextFile(TPath.Combine(ARoot, 'Data\demo\data_version.json'),
+      '{"dataVersion":3}');
+    IncomingPath := WriteTextFile(TPath.Combine(ARoot, 'incoming3\app.json'),
+      '{"id":"demo","exe":"newer.exe","version":"2.1.0","dataVersion":2}');
+    Incoming := TPortappixManifest.LoadFromFile(IncomingPath);
+    try
+      ExpectException(
+        procedure
+        begin
+          Manager.ValidateUpdateAllowed(Incoming);
+        end,
+        'Updates refuse data-version downgrades');
+    finally
+      Incoming.Free;
+    end;
+
+    IncomingPath := WriteTextFile(TPath.Combine(ARoot, 'incoming4\app.json'),
+      '{"id":"demo","exe":"newer.exe","version":"2.1.0","dataVersion":4}');
+    Incoming := TPortappixManifest.LoadFromFile(IncomingPath);
+    try
+      Manager.ValidateUpdateAllowed(Incoming);
+      Check(True, 'Updates allow data-version upgrades');
+    finally
+      Incoming.Free;
+    end;
+  finally
+    Manager.Free;
+  end;
+end;
+
+procedure TestSettings(const ARoot: string);
+var
+  Settings: TPortappixSettings;
+begin
+  Settings := TPortappixSettings.Create(ARoot);
+  try
+    Settings.Load;
+    Check(Settings.UpdateUrl = '', 'Settings default to no update URL');
+    Check(not Settings.AutoCheckUpdates, 'Settings default to no automatic update checks');
+    Check(Settings.AutoApplyPendingUpdates, 'Settings default to applying pending updates');
+
+    Settings.UpdateUrl := 'https://example.com/releases.json';
+    Settings.AutoCheckUpdates := True;
+    Settings.AutoApplyPendingUpdates := False;
+    Settings.Save;
+
+    var Reopened := TPortappixSettings.Create(ARoot);
+    try
+      Reopened.Load;
+      Check(Reopened.UpdateUrl = 'https://example.com/releases.json',
+        'Settings round-trip the update URL');
+      Check(Reopened.AutoCheckUpdates, 'Settings round-trip autoCheckUpdates');
+      Check(not Reopened.AutoApplyPendingUpdates, 'Settings round-trip autoApplyPendingUpdates');
+    finally
+      Reopened.Free;
+    end;
+
+    TFile.WriteAllText(TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'settings.json'),
+      '{ corrupt', TEncoding.UTF8);
+    Settings.Load;
+    Check((Settings.UpdateUrl = '') and Settings.AutoApplyPendingUpdates,
+      'A corrupt settings file behaves like defaults');
+  finally
+    Settings.Free;
+  end;
+end;
+
 var
   Root: string;
 begin
@@ -966,6 +1224,11 @@ begin
     TestTraceSnapshotCaps(Root);
     TestTraceSuggestions(Root);
     TestTraceReports(Root);
+    TestSemVer;
+    TestDataVersion(Root);
+    TestPendingUpdatesAndRollback(Root);
+    TestRollback(Root);
+    TestSettings(Root);
   finally
     try
       TDirectory.Delete(Root, True);

@@ -8,13 +8,18 @@ uses
   System.Classes,
   System.IOUtils,
   System.Hash,
+  System.JSON,
   System.Zip,
   System.Net.HttpClient,
   System.Net.URLClient,
+  System.Generics.Collections,
+  System.Generics.Defaults,
   Portappix.Common,
   Portappix.Catalog,
   Portappix.Manifest,
-  Portappix.Policy;
+  Portappix.Policy,
+  Portappix.Process,
+  Portappix.Version;
 
 type
   EPortappixPackageError = class(Exception);
@@ -36,12 +41,23 @@ type
     procedure VerifyPackage(const AppDef: TCatalogApp; const AFileName: string);
     procedure DeleteDirectoryQuiet(const ADirectory: string);
     procedure DeleteFileQuiet(const AFileName: string);
-    procedure AtomicSwap(const ATempDir, AFinalDir: string);
+    procedure AtomicSwap(const ATempDir, AFinalDir, APrevDir: string);
     function SanitizeFileComponent(const AValue: string): string;
     procedure ValidateExtractedManifest(const AppDef: TCatalogApp; const ATempDir: string);
+    function PendingFile: string;
+    function LoadPendingUpdates: TObjectList<TCatalogApp>;
+    procedure SavePendingUpdates(const AUpdates: TObjectList<TCatalogApp>);
   public
     constructor Create(const ARootPath: string = '');
     procedure InstallApp(const AppDef: TCatalogApp; const AProgress: TDownloadProgressEvent = nil);
+    procedure RollbackApp(const AAppId: string);
+    procedure QueueUpdate(const AppDef: TCatalogApp);
+    procedure RemovePendingUpdate(const AAppId: string);
+    procedure ApplyPendingUpdates(const AProgress: TDownloadProgressEvent = nil);
+    function PendingUpdateIds: TArray<string>;
+    function HasPendingUpdate(const AAppId: string): Boolean;
+    procedure ValidateUpdateAllowed(const AIncoming: TPortappixManifest);
+    class function IsAppRunning(const ARootPath, AAppId: string): Boolean; static;
     procedure ExtractArchive(const AZipFile, ADestinationDir: string);
     class function ComputeSha256(const AFileName: string): string; static;
     property RootPath: string read FRootPath;
@@ -281,19 +297,18 @@ begin
   end;
 end;
 
-procedure TPortappixPackageManager.AtomicSwap(const ATempDir, AFinalDir: string);
-var
-  OldDir: string;
+procedure TPortappixPackageManager.AtomicSwap(const ATempDir, AFinalDir,
+  APrevDir: string);
 begin
-  OldDir := AFinalDir + '.old';
-  if TDirectory.Exists(OldDir) then
-    TDirectory.Delete(OldDir, True);
+  // Keep exactly one previous generation so an update can be rolled back.
+  if TDirectory.Exists(APrevDir) then
+    TDirectory.Delete(APrevDir, True);
 
   if TDirectory.Exists(AFinalDir) then
   begin
-    if not RenameFile(AFinalDir, OldDir) then
+    if not RenameFile(AFinalDir, APrevDir) then
       raise EPortappixPackageError.CreateFmt('Unable to move existing app directory "%s" to "%s": %s',
-        [AFinalDir, OldDir, SysErrorMessage(Integer(GetLastError))]);
+        [AFinalDir, APrevDir, SysErrorMessage(Integer(GetLastError))]);
   end;
 
   try
@@ -301,13 +316,11 @@ begin
       raise EPortappixPackageError.CreateFmt('Unable to install app directory "%s": %s',
         [AFinalDir, SysErrorMessage(Integer(GetLastError))]);
   except
-    if TDirectory.Exists(OldDir) and not TDirectory.Exists(AFinalDir) then
-      if not RenameFile(OldDir, AFinalDir) then
+    if TDirectory.Exists(APrevDir) and not TDirectory.Exists(AFinalDir) then
+      if not RenameFile(APrevDir, AFinalDir) then
         Log(Format('Unable to restore previous app directory "%s".', [AFinalDir]));
     raise;
   end;
-
-  DeleteDirectoryQuiet(OldDir);
 end;
 
 procedure TPortappixPackageManager.ValidateExtractedManifest(const AppDef: TCatalogApp;
@@ -343,12 +356,53 @@ begin
   end;
 end;
 
+procedure TPortappixPackageManager.ValidateUpdateAllowed(
+  const AIncoming: TPortappixManifest);
+var
+  InstalledManifestPath: string;
+  Installed: TPortappixManifest;
+  DataDir: string;
+  InstalledDataVersion: Integer;
+begin
+  // Downgrade protection: never silently replace a newer app with an older one.
+  InstalledManifestPath := TPath.Combine(FAppsDir,
+    SanitizeFileComponent(AIncoming.Id) + '\app.json');
+  if TFile.Exists(InstalledManifestPath) then
+  begin
+    Installed := TPortappixManifest.LoadFromFile(InstalledManifestPath);
+    try
+      if (AIncoming.Version <> '') and (Installed.Version <> '') then
+        if TPortappixSemVer.CompareText(AIncoming.Version, Installed.Version) < 0 then
+          raise EPortappixPackageError.CreateFmt(
+            'Refusing to downgrade "%s" from %s to %s. Install the older ' +
+            'package manually with downgrade protection disabled if this is intended.',
+            [AIncoming.Id, Installed.Version, AIncoming.Version]);
+    finally
+      Installed.Free;
+    end;
+  end;
+
+  // Data written by a newer data version must not be opened by an older app.
+  DataDir := TPath.Combine(TPath.Combine(FRootPath, 'Data'),
+    SanitizeFileComponent(AIncoming.Id));
+  InstalledDataVersion := TPortappixManifest.ReadDataVersion(DataDir);
+  if (InstalledDataVersion > 0) and (AIncoming.DataVersion > 0) and
+     (InstalledDataVersion > AIncoming.DataVersion) then
+    raise EPortappixPackageError.CreateFmt(
+      'Refusing to update "%s": its portable data was written by data version %d, ' +
+      'but this package ships data version %d. Rolling back or forcing this ' +
+      'update risks losing data.',
+      [AIncoming.Id, InstalledDataVersion, AIncoming.DataVersion]);
+end;
+
 procedure TPortappixPackageManager.InstallApp(const AppDef: TCatalogApp;
   const AProgress: TDownloadProgressEvent);
 var
   PackageFile: string;
   TempDir: string;
   FinalDir: string;
+  PrevDir: string;
+  Incoming: TPortappixManifest;
 begin
   if AppDef = nil then
     raise EPortappixPackageError.Create('App definition must not be nil.');
@@ -365,6 +419,7 @@ begin
   PackageFile := CacheFile(AppDef);
   TempDir := TPath.Combine(FAppsDir, SanitizeFileComponent(AppDef.Id) + '.new');
   FinalDir := TPath.Combine(FAppsDir, SanitizeFileComponent(AppDef.Id));
+  PrevDir := FinalDir + '.prev';
 
   Log(Format('Downloading %s %s.', [AppDef.Id, AppDef.Version]));
   DownloadPackage(AppDef, PackageFile, AProgress);
@@ -373,19 +428,323 @@ begin
   VerifyPackage(AppDef, PackageFile);
 
   Log(Format('Extracting %s.', [PackageFile]));
+  Incoming := nil;
   try
-    ExtractArchive(PackageFile, TempDir);
-    ValidateExtractedManifest(AppDef, TempDir);
+    try
+      ExtractArchive(PackageFile, TempDir);
+      ValidateExtractedManifest(AppDef, TempDir);
+      Incoming := TPortappixManifest.LoadFromFile(TPath.Combine(TempDir, 'app.json'));
+      ValidateUpdateAllowed(Incoming);
 
-    Log(Format('Installing %s.', [AppDef.Id]));
-    AtomicSwap(TempDir, FinalDir);
-  except
-    DeleteDirectoryQuiet(TempDir);
-    raise;
+      Log(Format('Installing %s.', [AppDef.Id]));
+      AtomicSwap(TempDir, FinalDir, PrevDir);
+    except
+      DeleteDirectoryQuiet(TempDir);
+      raise;
+    end;
+  finally
+    Incoming.Free;
   end;
 
   DeleteFileQuiet(PackageFile);
   Log(Format('Installed %s %s.', [AppDef.Id, AppDef.Version]));
+end;
+
+class function TPortappixPackageManager.IsAppRunning(const ARootPath,
+  AAppId: string): Boolean;
+var
+  AppDir: string;
+begin
+  // The per-app mutex is authoritative while a launcher instance is alive;
+  // the process-path scan catches apps that outlived a launcher crash.
+  Result := Portappix.Common.IsAppRunning(ARootPath, AAppId);
+  if Result then
+    Exit;
+
+  AppDir := TPath.Combine(TPath.Combine(ResolveRootPath(ARootPath), 'Apps'),
+    AAppId);
+  if TDirectory.Exists(AppDir) then
+    Result := IsProcessRunningUnderPath(AppDir);
+end;
+
+procedure TPortappixPackageManager.RollbackApp(const AAppId: string);
+var
+  SafeId: string;
+  FinalDir: string;
+  PrevDir: string;
+  StaleDir: string;
+begin
+  SafeId := SanitizeFileComponent(AAppId);
+  FinalDir := TPath.Combine(FAppsDir, SafeId);
+  PrevDir := FinalDir + '.prev';
+  StaleDir := FinalDir + '.stale';
+
+  if not TDirectory.Exists(PrevDir) then
+    raise EPortappixPackageError.CreateFmt(
+      'No previous version of "%s" is available ("%s" does not exist).',
+      [AAppId, PrevDir]);
+  if IsAppRunning(FRootPath, AAppId) then
+    raise EPortappixPackageError.CreateFmt(
+      '"%s" is running; close it before rolling back.', [AAppId]);
+
+  EnsureDirectories;
+  DeleteDirectoryQuiet(StaleDir);
+
+  if TDirectory.Exists(FinalDir) then
+  begin
+    if not RenameFile(FinalDir, StaleDir) then
+      raise EPortappixPackageError.CreateFmt(
+        'Unable to move "%s" to "%s": %s',
+        [FinalDir, StaleDir, SysErrorMessage(Integer(GetLastError))]);
+  end;
+
+  try
+    if not RenameFile(PrevDir, FinalDir) then
+      raise EPortappixPackageError.CreateFmt('Unable to restore "%s": %s',
+        [FinalDir, SysErrorMessage(Integer(GetLastError))]);
+  except
+    if TDirectory.Exists(StaleDir) and not TDirectory.Exists(FinalDir) then
+      if not RenameFile(StaleDir, FinalDir) then
+        Log(Format('Unable to restore the current version of "%s".', [AAppId]));
+    raise;
+  end;
+
+  DeleteDirectoryQuiet(StaleDir);
+  Log(Format('Rolled back "%s" to the previous version. Data\<id> was untouched.',
+    [AAppId]));
+end;
+
+function TPortappixPackageManager.PendingFile: string;
+begin
+  Result := TPath.Combine(FCacheDir, 'pending_updates.json');
+end;
+
+function TPortappixPackageManager.LoadPendingUpdates: TObjectList<TCatalogApp>;
+var
+  JsonValue: TJSONValue;
+  UpdatesValue: TJSONValue;
+  UpdatesArray: TJSONArray;
+  Item: TJSONValue;
+  Entry: TJSONObject;
+  App: TCatalogApp;
+
+  function ReadStringField(const AObject: TJSONObject; const AName: string): string;
+  var
+    Value: TJSONValue;
+  begin
+    Result := '';
+    Value := AObject.GetValue(AName);
+    if Value is TJSONString then
+      Result := TJSONString(Value).Value.Trim;
+  end;
+
+begin
+  Result := TObjectList<TCatalogApp>.Create(True);
+  if not TFile.Exists(PendingFile) then
+    Exit;
+
+  try
+    JsonValue := TJSONObject.ParseJSONValue(
+      TFile.ReadAllText(PendingFile, TEncoding.UTF8));
+    try
+      if (JsonValue = nil) or not (JsonValue is TJSONObject) then
+        Exit;
+      UpdatesValue := TJSONObject(JsonValue).GetValue('updates');
+      if not (UpdatesValue is TJSONArray) then
+        Exit;
+
+      UpdatesArray := TJSONArray(UpdatesValue);
+      for var Index := 0 to UpdatesArray.Count - 1 do
+      begin
+        Item := UpdatesArray.Items[Index];
+        if not (Item is TJSONObject) then
+          Continue;
+        Entry := TJSONObject(Item);
+        App := TCatalogApp.Create;
+        App.Id := ReadStringField(Entry, 'id');
+        if not IsSafeFileComponent(App.Id) then
+        begin
+          App.Free;
+          Continue;
+        end;
+        App.Version := ReadStringField(Entry, 'version');
+        App.Url := ReadStringField(Entry, 'url');
+        App.Sha256 := ReadStringField(Entry, 'sha256').ToLower;
+        var SizeValue := Entry.GetValue('size');
+        if SizeValue is TJSONNumber then
+          App.Size := TJSONNumber(SizeValue).AsInt64;
+        Result.Add(App);
+      end;
+    finally
+      JsonValue.Free;
+    end;
+  except
+    on E: Exception do
+      Log(Format('Unable to read pending updates ("%s"); treating the queue as empty.',
+        [E.Message]));
+  end;
+end;
+
+procedure TPortappixPackageManager.SavePendingUpdates(
+  const AUpdates: TObjectList<TCatalogApp>);
+var
+  Root: TJSONObject;
+  Updates: TJSONArray;
+begin
+  Root := TJSONObject.Create;
+  Updates := TJSONArray.Create;
+  try
+    for var App in AUpdates do
+    begin
+      var Entry := TJSONObject.Create;
+      Entry.AddPair('id', App.Id);
+      Entry.AddPair('version', App.Version);
+      Entry.AddPair('url', App.Url);
+      Entry.AddPair('sha256', App.Sha256);
+      Entry.AddPair('size', TJSONNumber.Create(App.Size));
+      Updates.Add(Entry);
+    end;
+    Root.AddPair('schema', TJSONNumber.Create(1));
+    Root.AddPair('updates', Updates);
+    ForceDirectories(FCacheDir);
+    if not WriteTextFileAtomic(PendingFile, Root.Format(2)) then
+      raise EPortappixPackageError.Create('Unable to write pending_updates.json.');
+  finally
+    Root.Free;
+  end;
+end;
+
+procedure TPortappixPackageManager.QueueUpdate(const AppDef: TCatalogApp);
+var
+  Pending: TObjectList<TCatalogApp>;
+begin
+  if (AppDef = nil) or (AppDef.Id.Trim = '') then
+    raise EPortappixPackageError.Create('App definition must not be nil.');
+
+  Pending := LoadPendingUpdates;
+  try
+    for var Existing in Pending do
+      if SameText(Existing.Id, AppDef.Id) then
+      begin
+        // Refresh the entry: version, URL, hash and size may have changed.
+        Existing.Version := AppDef.Version;
+        Existing.Url := AppDef.Url;
+        Existing.Sha256 := AppDef.Sha256.Trim.ToLower;
+        Existing.Size := AppDef.Size;
+        SavePendingUpdates(Pending);
+        Log(Format('Update for "%s" is already queued; the entry was refreshed.',
+          [AppDef.Id]));
+        Exit;
+      end;
+
+    var Clone := TCatalogApp.Create;
+    Clone.Id := AppDef.Id;
+    Clone.Name := AppDef.Name;
+    Clone.Version := AppDef.Version;
+    Clone.Category := AppDef.Category;
+    Clone.Url := AppDef.Url;
+    Clone.Sha256 := AppDef.Sha256;
+    Clone.Size := AppDef.Size;
+    Pending.Add(Clone);
+    SavePendingUpdates(Pending);
+    Log(Format('Update for "%s" %s queued; it will install after the app closes.',
+      [AppDef.Id, AppDef.Version]));
+  finally
+    Pending.Free;
+  end;
+end;
+
+procedure TPortappixPackageManager.RemovePendingUpdate(const AAppId: string);
+var
+  Pending: TObjectList<TCatalogApp>;
+  Removed: Boolean;
+begin
+  Removed := False;
+  Pending := LoadPendingUpdates;
+  try
+    for var Index := Pending.Count - 1 downto 0 do
+      if SameText(Pending[Index].Id, AAppId) then
+      begin
+        Pending.Delete(Index);
+        Removed := True;
+      end;
+
+    if Removed then
+    begin
+      SavePendingUpdates(Pending);
+      Log(Format('Removed the queued update for "%s".', [AAppId]));
+    end;
+  finally
+    Pending.Free;
+  end;
+end;
+
+procedure TPortappixPackageManager.ApplyPendingUpdates(
+  const AProgress: TDownloadProgressEvent);
+var
+  Pending: TObjectList<TCatalogApp>;
+begin
+  Pending := LoadPendingUpdates;
+  try
+    // Iterate downwards: applied entries are removed from the same list.
+    for var Index := Pending.Count - 1 downto 0 do
+    begin
+      var Def := Pending[Index];
+
+      if IsAppRunning(FRootPath, Def.Id) then
+      begin
+        Log(Format('"%s" is still running; keeping its queued update to %s.',
+          [Def.Id, Def.Version]));
+        Continue;
+      end;
+
+      try
+        Log(Format('Applying the queued update for "%s" to %s.', [Def.Id, Def.Version]));
+        InstallApp(Def, AProgress);
+        Pending.Delete(Index);
+        SavePendingUpdates(Pending);
+        Log(Format('Queued update for "%s" applied. Data\<id> was untouched.', [Def.Id]));
+      except
+        on E: Exception do
+          Log(Format('Queued update for "%s" failed and stays queued: %s',
+            [Def.Id, E.Message]));
+      end;
+    end;
+  finally
+    Pending.Free;
+  end;
+end;
+
+function TPortappixPackageManager.PendingUpdateIds: TArray<string>;
+var
+  Pending: TObjectList<TCatalogApp>;
+  Ids: TList<string>;
+begin
+  Pending := LoadPendingUpdates;
+  Ids := TList<string>.Create;
+  try
+    for var App in Pending do
+      Ids.Add(App.Id);
+    Result := Ids.ToArray;
+  finally
+    Ids.Free;
+    Pending.Free;
+  end;
+end;
+
+function TPortappixPackageManager.HasPendingUpdate(const AAppId: string): Boolean;
+var
+  Pending: TObjectList<TCatalogApp>;
+begin
+  Result := False;
+  Pending := LoadPendingUpdates;
+  try
+    for var App in Pending do
+      if SameText(App.Id, AAppId) then
+        Exit(True);
+  finally
+    Pending.Free;
+  end;
 end;
 
 end.

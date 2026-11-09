@@ -4,8 +4,11 @@ interface
 
 uses
   Winapi.Windows,
+  Winapi.TlHelp32,
   System.SysUtils,
-  System.Classes;
+  System.Classes,
+  System.IOUtils,
+  Portappix.Common;
 
 type
   TJobObjectAccounting = record
@@ -36,8 +39,69 @@ type
 function QuoteArgument(const AValue: string): string;
 function RunHiddenProcess(const ACommandLine: string; out AExitCode: Cardinal;
   const ACurrentDirectory: string = ''): Boolean;
+function IsProcessRunningUnderPath(const ABaseDir: string): Boolean;
 
 implementation
+
+const
+  PROCESS_QUERY_LIMITED_INFORMATION = $1000;
+
+function QueryFullProcessImageNameW(hProcess: THandle; dwFlags: DWORD;
+  lpExeName: PChar; var lpdwSize: DWORD): BOOL; stdcall;
+  external kernel32 name 'QueryFullProcessImageNameW';
+
+function ProcessImagePath(const AProcessId: DWORD): string;
+var
+  Handle: THandle;
+  Buffer: array[0..1023] of Char;
+  Size: DWORD;
+begin
+  Result := '';
+  Handle := OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, False, AProcessId);
+  if Handle = 0 then
+    Exit;
+  try
+    Size := Length(Buffer);
+    if QueryFullProcessImageNameW(Handle, 0, @Buffer[0], Size) and (Size > 0) then
+      SetString(Result, PChar(@Buffer[0]), Size);
+  finally
+    CloseHandle(Handle);
+  end;
+end;
+
+function IsProcessRunningUnderPath(const ABaseDir: string): Boolean;
+var
+  Snapshot: THandle;
+  Entry: TProcessEntry32;
+  Base: string;
+  ImagePath: string;
+begin
+  Result := False;
+  Base := IncludeTrailingPathDelimiter(TPath.GetFullPath(ABaseDir));
+  if SameText(Base, IncludeTrailingPathDelimiter(TPath.GetPathRoot(Base))) then
+    Exit;   // refuse drive roots: everything runs "under" them
+
+  Snapshot := CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+  if Snapshot = INVALID_HANDLE_VALUE then
+    Exit;
+  try
+    FillChar(Entry, SizeOf(Entry), 0);
+    Entry.dwSize := SizeOf(Entry);
+    if Process32First(Snapshot, Entry) then
+    begin
+      repeat
+        if Entry.th32ProcessID = GetCurrentProcessId then
+          Continue;
+        ImagePath := ProcessImagePath(Entry.th32ProcessID);
+        if (ImagePath <> '') and
+           TextStartsWith(ImagePath.ToLower, Base.ToLower) then
+          Exit(True);
+      until not Process32Next(Snapshot, Entry);
+    end;
+  finally
+    CloseHandle(Snapshot);
+  end;
+end;
 
 function QuoteArgument(const AValue: string): string;
 begin

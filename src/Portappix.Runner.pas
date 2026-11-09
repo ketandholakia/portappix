@@ -393,6 +393,14 @@ begin
     raise EPortappixRunnerError.CreateFmt('Executable not found: "%s".', [FExePath]);
 
   PrepareDataDirectories;
+  // Record which data schema version last wrote here (used by update
+  // downgrade protection). A declared dataVersion of 0 writes nothing.
+  try
+    TPortappixManifest.WriteDataVersion(FDataDir, FManifest.Id, FManifest.DataVersion);
+  except
+    on E: Exception do
+      Log('Unable to record the data version: ' + E.Message);
+  end;
   BuildEnvironment;
   EnvironmentBlock := BuildEnvironmentBlock;
   try

@@ -24,6 +24,7 @@ uses
   Portappix.Manifest,
   Portappix.Catalog,
   Portappix.PackageManager,
+  Portappix.Settings,
   Portappix.State,
   Portappix.Runner,
   Portappix.TrayUI,
@@ -76,6 +77,7 @@ type
     FJournal: IPortappixJournal;
     FTrayUI: TPortappixTrayUI;
     FCatalog: TPortappixCatalog;
+    FSettings: TPortappixSettings;
     FPackageManager: TPortappixPackageManager;
     FInstalledPaths: TStringList;
     FInstalledVersions: TDictionary<string, string>;
@@ -101,6 +103,7 @@ type
     procedure QueueStatus(const AMessage: string);
     procedure SetInstallProgress(const AAppId: string; ASent, ATotal: Int64);
     procedure InstallSelectedAppInBackground;
+    procedure ApplyPendingUpdatesInBackground;
     procedure TraceSelectedAppInBackground(const AManifestPath: string);
     function AskConsent(const AAppId, ADescription, AManifestHash: string): Boolean;
     function WaitForRunningApps(const ATimeoutMs: Cardinal): Boolean;
@@ -139,6 +142,7 @@ begin
   LoadInstalledApps;
   LoadCatalogFromCache;   // instant local cache
   RefreshCatalogInBackground; // fetch latest catalog in background thread
+  ApplyPendingUpdatesInBackground; // install updates queued while apps ran
 end;
 
 procedure TMainLauncherForm.InitializePaths;
@@ -147,6 +151,8 @@ begin
   FAppsDir := TPath.Combine(FRootPath, 'Apps');
   FCatalogCacheFile := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), 'catalog.json');
   FCatalogUrlFile := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), 'catalog_url.txt');
+  FSettings := TPortappixSettings.Create(FRootPath);
+  FSettings.Load;
 end;
 
 procedure TMainLauncherForm.LoadCatalogUrl;
@@ -280,6 +286,7 @@ begin
   FTrayUI.Free;
   FPackageManager.Free;
   FCatalog.Free;
+  FSettings.Free;
   FJournal := nil;
 end;
 
@@ -469,6 +476,8 @@ procedure TMainLauncherForm.UninstallButtonClick(Sender: TObject);
 var
   Item: TListItem;
   AppDir: string;
+  PrevDir: string;
+  AppId: string;
 begin
   Item := InstalledListView.Selected;
   if (Item = nil) or (Item.SubItems.Count < 2) then
@@ -477,6 +486,7 @@ begin
     Exit;
   end;
 
+  AppId := Item.SubItems[0];
   AppDir := Item.SubItems[1];
   if not TDirectory.Exists(AppDir) then
   begin
@@ -484,12 +494,17 @@ begin
     Exit;
   end;
 
-  if MessageDlg('Uninstall "' + Item.Caption + '"? This removes Apps\<id> but leaves Data\<id> intact.',
+  if MessageDlg('Uninstall "' + Item.Caption + '"? This removes Apps\<id> (and its rollback copy) but leaves Data\<id> intact.',
     mtConfirmation, [mbYes, mbNo], 0) <> mrYes then
     Exit;
 
   try
     TDirectory.Delete(AppDir, True);
+    PrevDir := AppDir + '.prev';
+    if TDirectory.Exists(PrevDir) then
+      TDirectory.Delete(PrevDir, True);
+    if Assigned(FPackageManager) then
+      FPackageManager.RemovePendingUpdate(AppId);
     QueueStatus('Uninstalled ' + Item.Caption + '. Data was preserved.');
     LoadInstalledApps;
   except
@@ -555,7 +570,9 @@ begin
 
       if FInstalledVersions.TryGetValue(App.Id, InstalledVersion) then
       begin
-        if SameText(InstalledVersion, App.Version) then
+        if FPackageManager.HasPendingUpdate(App.Id) then
+          Status := 'Update pending'
+        else if SameText(InstalledVersion, App.Version) then
           Status := 'Installed'
         else
           Status := 'Update available';
@@ -697,6 +714,23 @@ begin
   if SameText(InstalledVersion, App.Version) then
   begin
     MessageDlg('That app is already up to date.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+
+  if TPortappixPackageManager.IsAppRunning(FRootPath, App.Id) then
+  begin
+    // Safe update: queue it; it installs once the app has fully exited.
+    try
+      FPackageManager.QueueUpdate(App);
+      MessageDlg(Format('"%s" is running. The update to %s is queued and installs ' +
+        'automatically after the app closes (or at the next launcher start). ' +
+        'Data\<%s> is never touched.', [App.Id, App.Version, App.Id]),
+        mtInformation, [mbOK], 0);
+      LoadInstalledApps;
+    except
+      on E: Exception do
+        MessageDlg('Unable to queue the update: ' + E.Message, mtError, [mbOK], 0);
+    end;
     Exit;
   end;
 
@@ -860,6 +894,58 @@ begin
     on E: Exception do
       ShowMessage('Import failed: ' + E.Message);
   end;
+end;
+
+procedure TMainLauncherForm.ApplyPendingUpdatesInBackground;
+var
+  RootPath: string;
+begin
+  if (FSettings = nil) or not FSettings.AutoApplyPendingUpdates then
+    Exit;
+  if FPackageManager = nil then
+    Exit;
+  if Length(FPackageManager.PendingUpdateIds) = 0 then
+    Exit;
+
+  RootPath := FRootPath;
+  FInstallInProgress := True;
+  InstallButton.Enabled := False;
+  UpdateButton.Enabled := False;
+  ProgressBar.Style := pbstMarquee;
+  SetStatus('Applying queued updates...');
+
+  TThread.CreateAnonymousThread(
+    procedure
+    var
+      Manager: TPortappixPackageManager;
+    begin
+      Manager := TPortappixPackageManager.Create(RootPath);
+      try
+        Manager.OnLog :=
+          procedure(AMsg: string)
+          begin
+            QueueStatus(AMsg);
+          end;
+        try
+          Manager.ApplyPendingUpdates;
+        except
+          on E: Exception do
+            QueueStatus('Applying queued updates failed: ' + E.Message);
+        end;
+      finally
+        Manager.Free;
+        TThread.Queue(nil,
+          procedure
+          begin
+            FInstallInProgress := False;
+            InstallButton.Enabled := True;
+            UpdateButton.Enabled := True;
+            ProgressBar.Style := pbstNormal;
+            SetStatus('Queued updates processed.');
+            LoadInstalledApps;
+          end);
+      end;
+    end).Start;
 end;
 
 procedure TMainLauncherForm.TraceButtonClick(Sender: TObject);
