@@ -9,6 +9,7 @@ uses
   System.IOUtils,
   System.StrUtils,
   System.Generics.Collections,
+  System.Generics.Defaults,
   Portappix.Common,
   Portappix.Junction,
   Portappix.Manifest,
@@ -103,7 +104,7 @@ var
   EntryText: string;
   SeparatorPosition: Integer;
 begin
-  Result := TDictionary<string, string>.Create(TStringComparer.OrdinalIgnoreCase);
+  Result := TDictionary<string, string>.Create(TStringComparer.IgnoredCase);
   EnvironmentBlock := GetEnvironmentStrings;
   if EnvironmentBlock = nil then
     Exit;
@@ -344,7 +345,7 @@ begin
     FManifestPath := ResolveFromRoot(FRootPath, AManifestPath);
     FManifest := TPortappixManifest.LoadFromFile(FManifestPath);
     FAppDir := TPath.GetDirectoryName(FManifestPath);
-    FEnvironment := TDictionary<string, string>.Create(TStringComparer.OrdinalIgnoreCase);
+    FEnvironment := TDictionary<string, string>.Create(TStringComparer.IgnoredCase);
     FJunctions := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
     ResolvePaths;
   except
@@ -638,7 +639,7 @@ begin
       Continue;
     if (Value = '') or (Pos(';', Value) > 0) then
       Continue;
-    if Value.StartsWith(DataPrefix, True) then
+    if TextStartsWith(Value, DataPrefix) then
       ForceDirectories(TrimTrailingPathDelimiter(Value));
   end;
 end;

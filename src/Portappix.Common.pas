@@ -22,6 +22,8 @@ function ExpandManifestTokens(const AValue, ARootPath, AAppDir, ADataDir, AAppId
 function ExpandPercentVariables(const AValue: string): string;
 function IsSafeFileComponent(const AValue: string): Boolean;
 function IsTransientAppFolder(const AFolderName: string): Boolean;
+function TextStartsWith(const AValue, APrefix: string): Boolean;
+function TextEndsWith(const AValue, ASuffix: string): Boolean;
 function IsPathUnder(const APath, ARootPath: string): Boolean;
 function IsZipSlip(const ABaseDir, AEntryName: string): Boolean;
 function Sha256File(const AFileName: string): string;
@@ -164,9 +166,28 @@ begin
       Exit(False);
 end;
 
+function TextStartsWith(const AValue, APrefix: string): Boolean;
+begin
+  if APrefix = '' then
+    Exit(True);
+  if Length(AValue) < Length(APrefix) then
+    Exit(False);
+  Result := SameText(Copy(AValue, 1, Length(APrefix)), APrefix);
+end;
+
+function TextEndsWith(const AValue, ASuffix: string): Boolean;
+var
+  StartPosition: Integer;
+begin
+  if ASuffix = '' then
+    Exit(True);
+  StartPosition := Length(AValue) - Length(ASuffix) + 1;
+  Result := (StartPosition > 0) and SameText(Copy(AValue, StartPosition, Length(ASuffix)), ASuffix);
+end;
+
 function IsTransientAppFolder(const AFolderName: string): Boolean;
 begin
-  Result := AFolderName.EndsWith('.new', True) or AFolderName.EndsWith('.old', True);
+  Result := TextEndsWith(AFolderName, '.new') or TextEndsWith(AFolderName, '.old');
 end;
 
 function IsPathUnder(const APath, ARootPath: string): Boolean;
@@ -176,7 +197,7 @@ var
 begin
   FullPath := IncludeTrailingPathDelimiter(TPath.GetFullPath(APath));
   FullRoot := IncludeTrailingPathDelimiter(TPath.GetFullPath(ARootPath));
-  Result := FullPath.StartsWith(FullRoot, True);
+  Result := TextStartsWith(FullPath, FullRoot);
 end;
 
 function IsZipSlip(const ABaseDir, AEntryName: string): Boolean;
@@ -186,7 +207,7 @@ var
 begin
   BasePath := IncludeTrailingPathDelimiter(TPath.GetFullPath(ABaseDir));
   FullPath := TPath.GetFullPath(TPath.Combine(ABaseDir, AEntryName));
-  Result := not FullPath.StartsWith(BasePath, True);
+  Result := not TextStartsWith(FullPath, BasePath);
 end;
 
 function BytesToHexString(const AData: TBytes): string;

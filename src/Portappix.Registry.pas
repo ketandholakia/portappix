@@ -8,6 +8,7 @@ uses
   System.Classes,
   System.IOUtils,
   System.Win.Registry,
+  Portappix.Common,
   Portappix.Process;
 
 const
@@ -94,7 +95,10 @@ begin
   else
     Exit;
 
-  ASubKey := ASubKey.Trim(['\']);
+  while (Length(ASubKey) > 0) and (ASubKey[1] = '\') do
+    Delete(ASubKey, 1, 1);
+  while (Length(ASubKey) > 0) and (ASubKey[Length(ASubKey)] = '\') do
+    Delete(ASubKey, Length(ASubKey), 1);
   Result := ASubKey <> '';
 end;
 
@@ -214,7 +218,7 @@ begin
       Lines.Text := Content;
       var StartLine := 0;
       if (Lines.Count > 0) and
-         (Lines[0].Trim.StartsWith('Windows Registry Editor', True) or
+         (TextStartsWith(Lines[0].Trim, 'Windows Registry Editor') or
           SameText(Lines[0].Trim, 'REGEDIT4')) then
         StartLine := 1;
 

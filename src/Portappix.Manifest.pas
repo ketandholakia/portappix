@@ -63,7 +63,7 @@ implementation
 constructor TPortappixManifest.Create;
 begin
   inherited Create;
-  FEnvironment := TDictionary<string, string>.Create(TStringComparer.OrdinalIgnoreCase);
+  FEnvironment := TDictionary<string, string>.Create(TStringComparer.IgnoredCase);
   FJunctions := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
   FCategory := 'Apps';
   FSchema := PortappixManifestSchema;
@@ -247,7 +247,7 @@ procedure TPortappixManifest.ReadEnvironment(const AObject: TJSONObject);
 begin
   ReadStringDictionary(AObject, 'env', FEnvironment);
   for var Pair in FEnvironment.ToArray do
-    if ContainsStr(Pair.Key, '=') then
+    if ContainsStr('=', Pair.Key) then
       raise EPortappixManifestError.CreateFmt('Invalid environment variable name: "%s".',
         [Pair.Key]);
 end;

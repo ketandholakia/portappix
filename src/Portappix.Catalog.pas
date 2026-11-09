@@ -10,6 +10,7 @@ uses
   System.Generics.Collections,
   System.Net.HttpClient,
   System.Net.URLClient,
+  Portappix.Common,
   Portappix.Signature;
 
 type
@@ -68,7 +69,7 @@ implementation
 
 function IsHttpsUrl(const AUrl: string): Boolean;
 begin
-  Result := AUrl.Trim.StartsWith('https://', True);
+  Result := TextStartsWith(AUrl.Trim, 'https://');
 end;
 
 function IsSafeIdentifier(const AValue: string): Boolean;

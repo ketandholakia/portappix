@@ -84,7 +84,7 @@ var
   Language: Word;
   CodePage: Word;
   SubBlock: string;
-  ValuePtr: PChar;
+  RawValue: Pointer;
   ValueLength: UINT;
 begin
   Result := '';
@@ -94,10 +94,10 @@ begin
     Exit;
 
   SetLength(Buffer, Size);
-  if not GetFileVersionInfo(PChar(AExePath), Handle, Size, Buffer) then
+  if not GetFileVersionInfo(PChar(AExePath), Handle, Size, @Buffer[0]) then
     Exit;
 
-  if not VerQueryValue(Buffer, '\VarFileInfo\Translation', TranslationPtr, TranslationLength) then
+  if not VerQueryValue(@Buffer[0], '\VarFileInfo\Translation', TranslationPtr, TranslationLength) then
     Exit;
   if TranslationLength < SizeOf(DWORD) then
     Exit;
@@ -106,9 +106,10 @@ begin
   CodePage := PWord(NativeUInt(TranslationPtr) + SizeOf(Word))^;
   SubBlock := Format('\StringFileInfo\%.4x%.4x\%s', [Language, CodePage, AValueName]);
 
-  if VerQueryValue(Buffer, PChar(SubBlock), Pointer(ValuePtr), ValueLength) and
-     (ValueLength > 0) then
-    Result := Trim(ValuePtr);
+  RawValue := nil;
+  if VerQueryValue(@Buffer[0], PChar(SubBlock), RawValue, ValueLength) and
+     (RawValue <> nil) and (ValueLength > 0) then
+    Result := Trim(PChar(RawValue)^);
 end;
 
 class function TPortappixImporter.GetExeFileVersion(const AExePath: string): string;
@@ -116,6 +117,7 @@ var
   Handle: DWORD;
   Size: DWORD;
   Buffer: TBytes;
+  RawValue: Pointer;
   FixedInfo: PVSFixedFileInfo;
   FixedLength: UINT;
 begin
@@ -129,14 +131,18 @@ begin
     Exit;
 
   SetLength(Buffer, Size);
-  if not GetFileVersionInfo(PChar(AExePath), Handle, Size, Buffer) then
+  if not GetFileVersionInfo(PChar(AExePath), Handle, Size, @Buffer[0]) then
     Exit;
 
-  if VerQueryValue(Buffer, '\', Pointer(FixedInfo), FixedLength) and
-     (FixedLength >= SizeOf(TVSFixedFileInfo)) then
+  RawValue := nil;
+  if VerQueryValue(@Buffer[0], '\', RawValue, FixedLength) and
+     (RawValue <> nil) and (FixedLength >= SizeOf(TVSFixedFileInfo)) then
+  begin
+    FixedInfo := PVSFixedFileInfo(RawValue);
     Result := Format('%d.%d.%d.%d',
       [HiWord(FixedInfo.dwFileVersionMS), LoWord(FixedInfo.dwFileVersionMS),
        HiWord(FixedInfo.dwFileVersionLS), LoWord(FixedInfo.dwFileVersionLS)]);
+  end;
 end;
 
 class function TPortappixImporter.MakeId(const ABaseName: string): string;

@@ -5,6 +5,7 @@ program PortappixTests;
 uses
   Winapi.Windows,
   System.SysUtils,
+  System.StrUtils,
   System.Classes,
   System.IOUtils,
   System.Zip,
@@ -331,15 +332,16 @@ begin
     StateFile := Journal.StateFile;
     Journal.AddActiveApp('demo', ['HKCU\Software\Vendor\Demo'], nil);
     Check(TFile.Exists(StateFile), 'Journal writes run_state.json');
-    Check(TFile.ReadAllText(StateFile).Contains('demo'), 'Journal records the active app');
+    Check(ContainsStr('demo', TFile.ReadAllText(StateFile)),
+      'Journal records the active app');
 
     Journal.RemoveActiveApp('demo');
-    Check(not TFile.ReadAllText(StateFile).Contains('"demo"'),
+    Check(not ContainsStr('"demo"', TFile.ReadAllText(StateFile)),
       'Journal removes the active app');
 
     Journal.AddActiveApp('demo', nil, nil);
     Journal.RecoverPendingCleanups;
-    Check(not TFile.ReadAllText(StateFile).Contains('"demo"'),
+    Check(not ContainsStr('"demo"', TFile.ReadAllText(StateFile)),
       'RecoverPendingCleanups clears entries with no remaining backups');
 
     TFile.WriteAllText(StateFile, '{ this is not json', TEncoding.UTF8);

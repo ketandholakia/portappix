@@ -157,7 +157,7 @@ var
   Manifest: TPortappixManifest;
   Separator: TMenuItem;
 begin
-  Categories := TDictionary<string, TMenuItem>.Create(TIStringComparer.OrdinalIgnoreCase);
+  Categories := TDictionary<string, TMenuItem>.Create(TIStringComparer.IgnoredCase);
   Entries := TObjectList<TInstalledAppEntry>.Create(True);
   try
     if TDirectory.Exists(FAppsDir) then

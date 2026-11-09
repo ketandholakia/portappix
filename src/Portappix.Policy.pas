@@ -5,6 +5,7 @@ interface
 uses
   System.SysUtils,
   System.Classes,
+  System.StrUtils,
   System.IOUtils,
   System.Generics.Collections,
   Portappix.Common,
@@ -164,7 +165,7 @@ begin
   Result := '';
   FullPath := TrimTrailingPathDelimiter(TPath.GetFullPath(APath));
   FullRoot := TrimTrailingPathDelimiter(TPath.GetFullPath(ARootPath));
-  if not FullPath.StartsWith(FullRoot + '\', True) then
+  if not TextStartsWith(FullPath, FullRoot + '\') then
     Exit;
   Result := FullPath.Substring(Length(FullRoot) + 1);
   Parts := Result.Split(['\']);
@@ -199,7 +200,7 @@ begin
     Exit;
   end;
 
-  if (AHostPath.Contains('..\')) or (AHostPath.Contains('../')) then
+  if ContainsStr('..\', AHostPath) or ContainsStr('../', AHostPath) then
   begin
     AResult.AddError(Format('Junction host path "%s" must not contain path traversal.',
       [AHostPath]));
@@ -270,15 +271,15 @@ begin
     Exit;
   end;
 
-  if ATargetPath.Contains('..\') or ATargetPath.Contains('../') then
+  if ContainsStr('..\', ATargetPath) or ContainsStr('../', ATargetPath) then
   begin
     AResult.AddError(Format('Junction target "%s" must not contain path traversal.',
       [ATargetPath]));
     Exit;
   end;
 
-  if ATargetPath.Contains('{data}') or ATargetPath.Contains('{app}') or
-     ATargetPath.Contains('{root}') or IsRelativePath(ATargetPath) then
+  if ContainsText('{data}', ATargetPath) or ContainsText('{app}', ATargetPath) or
+     ContainsText('{root}', ATargetPath) or IsRelativePath(ATargetPath) then
     Exit(True);
 
   AResult.AddError(Format('Junction target "%s" must live inside the portable {data} directory.',
@@ -319,8 +320,8 @@ begin
         Break;
       end;
 
-    if IsPathLike and not Pair.Value.Contains('{app}') and
-       not Pair.Value.Contains('{data}') then
+    if IsPathLike and not ContainsText('{app}', Pair.Value) and
+       not ContainsText('{data}', Pair.Value) then
     begin
       AResult.AddError(Format(
         'Path-like environment variable "%s" must reference {app} or {data} so host PATH is not inherited wholesale.',

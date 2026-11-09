@@ -11,6 +11,7 @@ uses
   System.StrUtils,
   System.UITypes,
   System.Generics.Collections,
+  System.Generics.Defaults,
   Vcl.Graphics,
   Vcl.Controls,
   Vcl.Forms,
@@ -119,7 +120,7 @@ begin
   FWaitingForApps := False;
   FAllowUnsignedCatalog := False;
   FInstalledPaths := TStringList.Create;
-  FInstalledVersions := TDictionary<string, string>.Create(TStringComparer.OrdinalIgnoreCase);
+  FInstalledVersions := TDictionary<string, string>.Create(TStringComparer.IgnoredCase);
   // Set CatalogUrl to your hosted catalog.json URL (or leave empty to use local cache only).
   FCatalogUrl := '';
   InitializePaths;
@@ -472,9 +473,9 @@ begin
     for var App in FCatalog.Apps do
     begin
       if (FilterText <> '') and
-         not App.Name.ToLower.Contains(FilterText) and
-         not App.Id.ToLower.Contains(FilterText) and
-         not App.Category.ToLower.Contains(FilterText) then
+         not ContainsStr(FilterText, App.Name.ToLower) and
+         not ContainsStr(FilterText, App.Id.ToLower) and
+         not ContainsStr(FilterText, App.Category.ToLower) then
         Continue;
 
       if FInstalledVersions.TryGetValue(App.Id, InstalledVersion) then
