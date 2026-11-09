@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://portappix.dev/catalog.schema.json",
+  "title": "Portappix Catalog",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apps"],
+  "properties": {
+    "apps": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/app" }
+    }
+  },
+  "$defs": {
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "name", "version", "category", "url", "sha256", "size"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1
+        },
+        "version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "category": {
+          "type": "string",
+          "minLength": 1
+        },
+        "url": {
+          "type": "string",
+          "format": "uri",
+          "pattern": "^https?://"
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[A-Fa-f0-9]{64}$"
+        },
+        "size": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    }
+  }
+}

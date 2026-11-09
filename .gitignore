@@ -1,0 +1,30 @@
+# Delphi build artifacts
+__history/
+__recovery/
+*.dcu
+*.exe
+*.dll
+*.bpl
+*.dcp
+*.local
+*.identcache
+*.stat
+*.res
+Win32/
+Win64/
+Debug/
+Release/
+
+# Portappix runtime data
+Cache/
+Data/
+Apps/
+run_state.json
+run_state.json.tmp
+
+# OS/editor
+.DS_Store
+Thumbs.db
+*.swp
+*.tmp
+~*
