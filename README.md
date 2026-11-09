@@ -26,6 +26,7 @@ signatures). No third-party components.
 | `src/Portappix.Catalog.pas` | `TPortappixCatalog` — signed `catalog.json` download/parse. |
 | `src/Portappix.PackageManager.pas` | Download, SHA-256/size verification, safe unzip, atomic install/update. |
 | `src/Portappix.Importer.pas` | Version-info extraction and non-destructive import into `Apps\<id>`. |
+| `src/Portappix.Trace.pas` | "What did this app touch" trace reports: before/after snapshots, diff, noise filter, sandboxing suggestions. |
 | `src/Portappix.TrayUI.pas` | Tray icon/popup menu; category grouping; background launches; app locks; consent. |
 | `src/MainForm.pas` / `.dfm` | Dashboard (installed apps + signed store + updates) and importer UI. |
 | `src/Launcher.dpr` | Entry point; acquires the launcher single-instance mutex before anything else. |
@@ -159,6 +160,7 @@ running, and vice versa):
 | --- | --- |
 | `--run <app-id\|app.json>` | Run an installed app and wait for its whole process tree. The process exit code is the app's own exit code. |
 | `--wait` | Accepted for readability; `--run` always waits for the tree. |
+| `--trace <app-id\|app.exe>` | Run an app **without virtualization** and write a "what did it touch" report (see "Writing a manifest with Trace"). VM/Sandbox only. |
 | `--accept-policy` | Test-only: records first-run consent without a prompt. Never use on a real desktop. |
 | `--check-manifest <app.json>` | Validate a manifest against `Portappix.Policy` without running anything. |
 | `--recover` | Run the crash journal's pending cleanups and exit. |
@@ -166,9 +168,10 @@ running, and vice versa):
 | `--exit-code-file <path>` | Write a JSON record: `{"command", "app", "exitCode", "alreadyRunning", "message"}`. |
 | `--log-file <path>` | Append a timestamped run log. |
 
-Exit codes: `0` success (for `--run`, the app's own exit code), `2` manifest/policy rejection,
-`3` usage error, `4` app already running, `5` consent required but `--accept-policy` missing,
-`7` other failure, `740` `ERROR_ELEVATION_REQUIRED`.
+Exit codes: `0` success (for `--run`, the app's own exit code; for `--trace`, "report written" —
+the app's exit code is inside the report), `2` manifest/policy rejection, `3` usage error, `4`
+app already running, `5` consent required but `--accept-policy` missing, `7` other failure,
+`740` `ERROR_ELEVATION_REQUIRED`.
 
 ## Compatibility suite
 
@@ -227,6 +230,55 @@ into the copy, and only then renames the directory. The user's source folder is 
 to by the import flow. `AnalyzeSource` reports size/file count/drive-root so the UI can ask for
 confirmation above 2 GiB or 20,000 files.
 
+## Writing a manifest with Trace
+
+Portappix can watch an app run **without any sandboxing** and produce a report of what it wrote,
+then draft the Level 2 manifest for it. Trace mode is for **virtual machines or Windows
+Sandbox** — the app runs unrestricted on the host.
+
+Two entry points:
+
+- **UI** — select an installed app on the *Installed* tab and press **Trace** (a warning dialog
+  reminds you that the app is not sandboxed).
+- **CLI** — `Launcher.exe --trace <app-id|app.exe> [--accept-policy]`. First-run consent applies
+  like `--run`; a loose `app.exe` is only accepted when an `app.json` sits next to it.
+
+The run writes `Trace\<id>_<timestamp>\` inside the launcher root:
+
+| File | Content |
+| --- | --- |
+| `report.json` | Full machine-readable diff: files added/modified/deleted, registry keys added/modified/deleted, suggestions, snapshot stats, notes. |
+| `report.md` | Human-readable summary of the same data. |
+| `suggested_app.json` | Draft `app.json` with the discovered `env`, `junctions` and `registry` surface. `_warnings` / `_manualReview` entries must be reviewed before use. |
+
+How suggestions are derived:
+
+- Writes under `%APPDATA%`, `%LOCALAPPDATA%`, `%TEMP%` become **env overrides**
+  (`APPDATA={data}\AppData`, `LOCALAPPDATA={data}\LocalAppData`, `TEMP`/`TMP={data}\Temp`).
+- Writes under `%PROGRAMDATA%` become **junction** suggestions
+  (`%PROGRAMDATA%\<vendor>` → `{data}\ProgramData\<vendor>`), validated by the same policy as
+  real manifests.
+- Changed registry keys collapse to the shortest common `HKCU\Software\<vendor>\<app>` prefix
+  and become **registry** suggestions; anything outside that hive or shallower than
+  `\<vendor>\<app>` is flagged for manual review.
+- Writes into `Documents`, `Desktop`, `%PUBLIC%`, the profile root or elsewhere produce
+  **warnings** — Portappix cannot redirect those folders.
+- Known host noise (Prefetch, thumbnail caches, Explorer MRUs/`UserAssist`, Windows Search
+  index, crash dumps, and the launcher's own `Cache`/`Data`/`Apps`/`Trace` folders) is filtered
+  out before diffing.
+
+Snapshot limits (per before/after pass): 20,000 files, 20,000 keys, 256 values per key,
+4096 bytes per registry value, 1 MiB per hashed file (larger files are compared by size and
+timestamp only), and a 5 second time budget; truncated snapshots are marked in the report.
+Registry **reads** are not captured — only keys that appeared or whose values changed are listed.
+
+For scripts and CI the scan can be re-pointed without touching real folders:
+
+```bash
+PORTAPPIX_TRACE_ROOTS=C:\vm\appdata=6;C:\vm\programdata=4   # replaces the default file roots
+PORTAPPIX_TRACE_REGISTRY=HKCU\Software                      # replaces the default registry roots
+```
+
 ## Store and updates
 
 The Store tab shows catalog entries with a **Status** column (`Installed` / `Update available`).
@@ -267,10 +319,10 @@ injected fakes and all file writes go to a temporary directory.
 
 ```bash
 cd tests
-dcc32 -B -U..\src PortappixTests.dpr
+dcc32 -B -U..\src PortappixTests.dpr   # Win32 build, output: tests\PortappixTests.exe
 PortappixTests.exe
-dcc64 -B -U..\src PortappixTests.dpr
-Win64\Debug\PortappixTests.exe
+dcc64 -B -U..\src PortappixTests.dpr   # Win64 build, overwrites tests\PortappixTests.exe
+PortappixTests.exe
 ```
 
 or open `tests\PortappixTests.dproj` (it adds `..\src` to the unit search path). The program
@@ -280,8 +332,10 @@ compatibility suite in `tests\suite\` (see "Compatibility suite" below) has its 
 run instructions and must only be executed in a VM / Windows Sandbox.
 Coverage: manifest parsing/validation, token expansion, policy allow/deny, catalog parsing
 with atomic swap, zip-slip rejection, subfolder-preserving extraction, SHA-256 reference value,
-journal save/recover/corrupt handling, and export-before-delete ordering with an injected
-registry-ops fake.
+journal save/recover/corrupt handling, export-before-delete ordering with an injected
+registry-ops fake, and the trace engine (noise filter, snapshot caps, snapshot diff,
+suggestion generation and report writing) with injected file/registry probes — the trace tests
+never launch a process and never touch the host.
 
 ## Storefront CI
 
@@ -315,4 +369,5 @@ registry-ops fake.
 Job-object process-tree waiting, junction create/delete/restore, registry backup/export/delete/
 restore ordering, first-run consent dialogs, data-size confirmation during import,
 `ERROR_ELEVATION_REQUIRED`, single-instance mutex, per-app lock, tray Exit with running apps,
-and logoff/shutdown handling.
+the Trace button warning dialog and a full `--trace` report on a real app (VM/Sandbox), and
+logoff/shutdown handling.

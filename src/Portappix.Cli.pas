@@ -8,6 +8,9 @@ unit Portappix.Cli;
     --run <app-id|path-to-app.json>   Run an installed app and wait for its
                                       whole process tree (always; --wait is
                                       accepted for readability).
+    --trace <app-id|path-to-exe>      Run an app WITHOUT virtualization and
+                                      write a "what did it touch" report
+                                      (Trace\<id>_<timestamp>\). Use in a VM.
     --check-manifest <path>           Validate app.json against Portappix.Policy
                                       without running anything.
     --recover                         Run the crash journal's pending cleanups.
@@ -50,11 +53,15 @@ const
   CliUsageText =
     'Usage: Launcher.exe --run <app-id|app.json> [--wait] [--accept-policy]' + sLineBreak +
     '                    [--root <path>] [--exit-code-file <path>] [--log-file <path>]' + sLineBreak +
+    '       Launcher.exe --trace <app-id|app.exe> [--accept-policy] [--root <path>]' + sLineBreak +
+    '                    [--exit-code-file <path>] [--log-file <path>]' + sLineBreak +
     '       Launcher.exe --check-manifest <app.json> [--exit-code-file <path>]' + sLineBreak +
     '       Launcher.exe --recover [--root <path>] [--log-file <path>]' + sLineBreak +
     sLineBreak +
     'Headless mode never shows UI. --accept-policy records first-run consent' + sLineBreak +
-    'without a prompt and must only be used in test environments (VM/Sandbox).';
+    'without a prompt and must only be used in test environments (VM/Sandbox).' + sLineBreak +
+    'Trace mode (--trace) runs the app WITHOUT virtualization to record what it' + sLineBreak +
+    'writes on the host; only trace apps you trust, ideally in a VM/Sandbox.';
 
 type
   EPortappixCliError = class(Exception);
@@ -72,7 +79,9 @@ type
     procedure WriteExitCodeFile(const AExitCode: Integer; const AAppId,
       AMessage: string; const AAlreadyRunning: Boolean = False);
     function ResolveManifestPath(const AReference: string; out AAppId: string): string;
+    function ResolveTraceReference(const AReference: string; out AAppId: string): string;
     function ExecuteRun: Integer;
+    function ExecuteTrace: Integer;
     function ExecuteCheckManifest: Integer;
     function ExecuteRecover: Integer;
   public
@@ -92,6 +101,7 @@ uses
   Portappix.Manifest,
   Portappix.Policy,
   Portappix.Runner,
+  Portappix.Trace,
   Portappix.State,
   Portappix.Consent;
 
@@ -223,6 +233,13 @@ begin
       FCommand := 'run';
       Inc(Index);
     end
+    else if SameText(Arg, '--trace') then
+    begin
+      if not TakeValue(Arg, FArgument) then
+        Exit;
+      FCommand := 'trace';
+      Inc(Index);
+    end
     else if SameText(Arg, '--check-manifest') then
     begin
       if not TakeValue(Arg, FArgument) then
@@ -258,10 +275,10 @@ begin
     Inc(Index);
   end;
 
-  Result := (FCommand = 'run') or (FCommand = 'check-manifest') or
-    (FCommand = 'recover');
+  Result := (FCommand = 'run') or (FCommand = 'trace') or
+    (FCommand = 'check-manifest') or (FCommand = 'recover');
   if not Result then
-    Log('No command switch found (--run, --check-manifest or --recover).');
+    Log('No command switch found (--run, --trace, --check-manifest or --recover).');
 end;
 
 function TPortappixCli.ResolveManifestPath(const AReference: string;
@@ -410,6 +427,151 @@ begin
   Result := FinalCode;
 end;
 
+function TPortappixCli.ResolveTraceReference(const AReference: string;
+  out AAppId: string): string;
+var
+  Candidate: string;
+begin
+  if TFile.Exists(AReference) and
+     SameText(TPath.GetExtension(AReference), '.exe') then
+  begin
+    // Tracing a loose executable: its app.json must sit next to it.
+    Candidate := TPath.Combine(
+      TPath.GetDirectoryName(TPath.GetFullPath(AReference)), 'app.json');
+    if not TFile.Exists(Candidate) then
+      raise EPortappixCliError.CreateFmt(
+        'No app.json found next to "%s"; place the executable in an Apps\<id> ' +
+        'folder first (Import App creates one).', [AReference]);
+    Result := TPath.GetFullPath(Candidate);
+  end
+  else
+    Result := ResolveManifestPath(AReference, AAppId);
+end;
+
+function TPortappixCli.ExecuteTrace: Integer;
+var
+  AppReference: string;
+  ManifestPath: string;
+  AppId: string;
+  Manifest: TPortappixManifest;
+  Consent: TPortappixConsent;
+  Runner: TPortappixTraceRunner;
+  LockHandle: THandle;
+  FinalCode: Integer;
+  FinalMessage: string;
+  TraceResult: TPortappixTraceResult;
+begin
+  AppReference := FArgument;
+  FinalMessage := '';
+  LockHandle := 0;
+  Manifest := nil;
+
+  try
+    try
+      ManifestPath := ResolveTraceReference(AppReference, AppId);
+      Manifest := TPortappixManifest.LoadFromFile(ManifestPath);
+      AppId := Manifest.Id;
+
+      if not SameText(AppId, TPath.GetFileName(ExcludeTrailingPathDelimiter(
+        TPath.GetDirectoryName(ManifestPath)))) then
+        raise EPortappixCliError.CreateFmt(
+          'Manifest id "%s" does not match its folder name "%s".',
+          [AppId, TPath.GetFileName(TPath.GetDirectoryName(ManifestPath))]);
+
+      if not TryAcquireMutex(AppMutexName(FRootPath, AppId), LockHandle) then
+      begin
+        Log(Format('%s is already running.', [AppId]));
+        WriteExitCodeFile(CliExitAlreadyRunning, AppId,
+          'App is already running (per-app mutex is held).', True);
+        Exit(CliExitAlreadyRunning);
+      end;
+
+      Consent := TPortappixConsent.Create(FRootPath);
+      try
+        if Consent.NeedsConsent(Manifest) then
+        begin
+          if not FAcceptPolicy then
+          begin
+            Log(Format('First-run consent is required for "%s"; pass --accept-policy ' +
+              'in test environments only. Trace mode is more dangerous than a ' +
+              'normal run because the app is not sandboxed.', [AppId]));
+            WriteExitCodeFile(CliExitConsentRequired, AppId,
+              'First-run consent was required but --accept-policy was not passed.');
+            Exit(CliExitConsentRequired);
+          end;
+          Consent.Approve(Manifest);
+          Log(Format('First-run consent recorded for "%s" (--accept-policy).', [AppId]));
+        end;
+      finally
+        Consent.Free;
+      end;
+
+      Log('WARNING: trace mode runs the app WITHOUT virtualization so Portappix ' +
+        'can record what it writes on this PC. Only trace apps you trust, ' +
+        'ideally in a VM or Windows Sandbox.');
+
+      Runner := TPortappixTraceRunner.Create(FRootPath, ManifestPath);
+      try
+        Runner.OnLog :=
+          procedure(AMsg: string)
+          begin
+            Log(AMsg);
+          end;
+        TraceResult := Runner.Execute;
+        FinalCode := CliExitOk;
+        FinalMessage := Format('Trace report written to "%s" (app exit code %d).',
+          [TraceResult.ReportDirectory, TraceResult.AppExitCode]);
+        Log(FinalMessage);
+      finally
+        Runner.Free;
+      end;
+    except
+      on E: EPortappixTraceElevationRequired do
+      begin
+        FinalCode := CliExitElevationRequired;
+        FinalMessage := E.Message;
+        Log('Elevation required: ' + E.Message);
+      end;
+      on E: EPortappixTracePolicyError do
+      begin
+        FinalCode := CliExitRejected;
+        FinalMessage := E.Message;
+        Log('Policy rejection: ' + E.Message);
+      end;
+      on E: EPortappixManifestError do
+      begin
+        FinalCode := CliExitRejected;
+        FinalMessage := E.Message;
+        Log('Manifest error: ' + E.Message);
+      end;
+      on E: EPortappixCliError do
+      begin
+        FinalCode := CliExitUsage;
+        FinalMessage := E.Message;
+        Log(E.Message);
+      end;
+      on E: EPortappixTraceError do
+      begin
+        FinalCode := CliExitGenericFailure;
+        FinalMessage := E.Message;
+        Log('Trace failed: ' + E.Message);
+      end;
+      on E: Exception do
+      begin
+        FinalCode := CliExitGenericFailure;
+        FinalMessage := E.Message;
+        Log('Trace failed: ' + E.Message);
+      end;
+    end;
+  finally
+    ReleaseMutexHandle(LockHandle);
+    Manifest.Free;
+  end;
+
+  WriteExitCodeFile(FinalCode, AppId, FinalMessage);
+  Result := FinalCode;
+end;
+
 function TPortappixCli.ExecuteCheckManifest: Integer;
 var
   ManifestPath: string;
@@ -509,6 +671,8 @@ function TPortappixCli.Execute: Integer;
 begin
   if FCommand = 'run' then
     Result := ExecuteRun
+  else if FCommand = 'trace' then
+    Result := ExecuteTrace
   else if FCommand = 'check-manifest' then
     Result := ExecuteCheckManifest
   else if FCommand = 'recover' then

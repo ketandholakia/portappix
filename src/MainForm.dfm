@@ -93,6 +93,15 @@ object MainLauncherForm: TMainLauncherForm
           TabOrder = 3
           OnClick = btnImportAppClick
         end
+        object TraceButton: TButton
+          Left = 512
+          Top = 8
+          Width = 120
+          Height = 25
+          Caption = 'Trace'
+          TabOrder = 4
+          OnClick = TraceButtonClick
+        end
       end
     end
     object StoreTab: TTabSheet

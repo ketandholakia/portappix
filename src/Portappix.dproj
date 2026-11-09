@@ -74,6 +74,7 @@
     <DCCReference Include="Portappix.Catalog.pas" />
     <DCCReference Include="Portappix.PackageManager.pas" />
     <DCCReference Include="Portappix.Importer.pas" />
+    <DCCReference Include="Portappix.Trace.pas" />
     <DCCReference Include="Portappix.TrayUI.pas" />
     <DCCReference Include="MainForm.pas">
       <Form>MainLauncherForm</Form>

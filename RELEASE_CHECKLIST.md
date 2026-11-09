@@ -9,8 +9,8 @@ machine.
 - [ ] `git status` is clean and `git pull` done; you are on the release commit.
 - [ ] Win32 build of the launcher: `cd src && dcc32 -B Launcher.dpr`
 - [ ] Win64 build of the launcher: `dcc64 -B Launcher.dpr`
-- [ ] Win32 tests build and run green: `cd tests && dcc32 -B -U..\src PortappixTests.dpr && Win32\Debug\PortappixTests.exe`
-- [ ] Win64 tests build and run green: `dcc64 -B -U..\src PortappixTests.dpr && Win64\Debug\PortappixTests.exe`
+- [ ] Win32 tests build and run green: `cd tests && dcc32 -B -U..\src PortappixTests.dpr && PortappixTests.exe`
+- [ ] Win64 tests build and run green: `dcc64 -B -U..\src PortappixTests.dpr && PortappixTests.exe`
 - [ ] No new compiler hints/errors introduced (`-Q` output clean except the known W1002).
 
 ## 2. Catalog and recipes

@@ -18,7 +18,8 @@ uses
   Portappix.PackageManager,
   Portappix.Registry,
   Portappix.Runner,
-  Portappix.State;
+  Portappix.State,
+  Portappix.Trace;
 
 type
   TFakeRegistryOps = class(TInterfacedObject, IPortappixRegistryOps)
@@ -36,6 +37,32 @@ type
     function ImportFile(const AFileName: string): Boolean;
     function DeleteKey(const AKey: string): Boolean;
     function CallOrder: string;
+  end;
+
+  TFakeFileProbe = class(TInterfacedObject, IPortappixFileProbe)
+  private
+    FPaths: TList<string>;
+    FSizes: TList<Int64>;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure Add(const APath: string; ASize: Int64);
+    procedure EnumerateFiles(const ARootPath: string; AMaxDepth: Integer;
+      const AOnFile: TPortappixFileVisit);
+  end;
+
+  TFakeRegistryProbe = class(TInterfacedObject, IPortappixRegistryProbe)
+  private
+    FKeys: TStringList;
+    FValues: TList<TList<TPortappixRegistryValue>>;
+  public
+    constructor Create;
+    destructor Destroy; override;
+    procedure AddValue(const AKeyPath, AValueName: string; AKind: Integer;
+      const AData: string);
+    procedure EnumerateKeys(const AKeyPath: string; AMaxDepth: Integer;
+      AMaxValueBytes, AMaxValuesPerKey: Integer;
+      const AOnKey: TPortappixKeyVisit);
   end;
 
 var
@@ -445,6 +472,480 @@ begin
   Result := FCalls.Text;
 end;
 
+{ Fake trace probes }
+
+constructor TFakeFileProbe.Create;
+begin
+  inherited Create;
+  FPaths := TList<string>.Create;
+  FSizes := TList<Int64>.Create;
+end;
+
+destructor TFakeFileProbe.Destroy;
+begin
+  FPaths.Free;
+  FSizes.Free;
+  inherited;
+end;
+
+procedure TFakeFileProbe.Add(const APath: string; ASize: Int64);
+begin
+  FPaths.Add(APath);
+  FSizes.Add(ASize);
+end;
+
+procedure TFakeFileProbe.EnumerateFiles(const ARootPath: string;
+  AMaxDepth: Integer; const AOnFile: TPortappixFileVisit);
+var
+  Stop: Boolean;
+begin
+  Stop := False;
+  for var Index := 0 to FPaths.Count - 1 do
+  begin
+    AOnFile(FPaths[Index], FSizes[Index], 45000.0, Stop);
+    if Stop then
+      Exit;
+  end;
+end;
+
+constructor TFakeRegistryProbe.Create;
+begin
+  inherited Create;
+  FKeys := TStringList.Create;
+  FValues := TList<TList<TPortappixRegistryValue>>.Create;
+end;
+
+destructor TFakeRegistryProbe.Destroy;
+begin
+  for var Index := 0 to FValues.Count - 1 do
+    FValues[Index].Free;
+  FValues.Free;
+  FKeys.Free;
+  inherited;
+end;
+
+procedure TFakeRegistryProbe.AddValue(const AKeyPath, AValueName: string;
+  AKind: Integer; const AData: string);
+var
+  KeyIndex: Integer;
+  Value: TPortappixRegistryValue;
+begin
+  KeyIndex := FKeys.IndexOf(AKeyPath);
+  if KeyIndex < 0 then
+  begin
+    FKeys.Add(AKeyPath);
+    KeyIndex := FKeys.IndexOf(AKeyPath);
+    FValues.Add(TList<TPortappixRegistryValue>.Create);
+  end;
+
+  Value.Name := AValueName;
+  Value.Kind := AKind;
+  Value.Data := TEncoding.UTF8.GetBytes(AData);
+  Value.Truncated := False;
+  FValues[KeyIndex].Add(Value);
+end;
+
+procedure TFakeRegistryProbe.EnumerateKeys(const AKeyPath: string;
+  AMaxDepth: Integer; AMaxValueBytes, AMaxValuesPerKey: Integer;
+  const AOnKey: TPortappixKeyVisit);
+var
+  Stop: Boolean;
+begin
+  Stop := False;
+  for var Index := 0 to FKeys.Count - 1 do
+  begin
+    AOnKey(FKeys[Index], FValues[Index].ToArray, Stop);
+    if Stop then
+      Exit;
+  end;
+end;
+
+{ Trace tests }
+
+function CountFileDiffs(const ADiff: TPortappixDiff;
+  AKind: TPortappixDiffKind): Integer;
+begin
+  Result := 0;
+  for var Diff in ADiff.Files do
+    if Diff.Kind = AKind then
+      Inc(Result);
+end;
+
+function CountKeyDiffs(const ADiff: TPortappixDiff;
+  AKind: TPortappixDiffKind): Integer;
+begin
+  Result := 0;
+  for var Diff in ADiff.Keys do
+    if Diff.Kind = AKind then
+      Inc(Result);
+end;
+
+function FindSuggestion(const ASuggestions: TArray<TPortappixSuggestion>;
+  AKind: TPortappixSuggestionKind; const AKey: string): Integer;
+begin
+  Result := -1;
+  for var Index := 0 to High(ASuggestions) do
+    if (ASuggestions[Index].Kind = AKind) and
+       SameText(ASuggestions[Index].Key, AKey) then
+      Exit(Index);
+end;
+
+function OneAddedFileDiff(const APath: string): TPortappixDiff;
+begin
+  Result := Default(TPortappixDiff);
+  SetLength(Result.Files, 1);
+  Result.Files[0].Kind := dkAdded;
+  Result.Files[0].Path := APath;
+end;
+
+procedure TestTraceNoiseFilter;
+var
+  Filter: TPortappixTraceNoiseFilter;
+begin
+  Filter := TPortappixTraceNoiseFilter.Create('C:\Root');
+  try
+    Check(Filter.IsNoiseFile('C:\Windows\Prefetch\APP.EXE-AB12CD.pf'),
+      'Noise filter treats Prefetch as noise');
+    Check(Filter.IsNoiseFile(
+      'C:\Users\demo\AppData\Local\Microsoft\Windows\Explorer\thumbcache_1000.db'),
+      'Noise filter treats thumbnail caches as noise');
+    Check(Filter.IsNoiseFile('C:\Users\demo\ntuser.dat'),
+      'Noise filter treats user registry hive files as noise');
+    Check(Filter.IsNoiseFile('C:\Root\Cache\catalog.json'),
+      'Noise filter excludes the launcher root');
+    Check(Filter.IsNoiseFile(
+      'C:\Users\demo\AppData\Roaming\Microsoft\Windows\Recent\a.lnk'),
+      'Noise filter treats Explorer Recent items as noise');
+    Check(not Filter.IsNoiseFile('C:\Users\demo\AppData\Roaming\Vendor\App\settings.ini'),
+      'Noise filter keeps normal app files');
+    Check(Filter.IsNoiseFile('C:\tools\myappleftovers\junk.txt') = False,
+      'Noise filter ignores unrelated fragments before they are added');
+    Filter.AddFileFragment('myappleftovers');
+    Check(Filter.IsNoiseFile('C:\tools\myappleftovers\junk.txt'),
+      'Custom file fragments are honoured');
+
+    Check(Filter.IsNoiseKey(
+      'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\RecentDocs\file.txt'),
+      'Noise filter treats Explorer RecentDocs as noise');
+    Check(Filter.IsNoiseKey(
+      'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\UserAssist\{GUID}\Count'),
+      'Noise filter treats UserAssist as noise');
+    Check(not Filter.IsNoiseKey('HKCU\Software\Vendor\App\Settings'),
+      'Noise filter keeps normal app keys');
+    Check(not Filter.IsNoiseKey(
+      'HKCU\Software\Microsoft\Windows\CurrentVersion\Explorer\DocumentSanitizer'),
+      'Registry noise prefixes match on component boundaries');
+  finally
+    Filter.Free;
+  end;
+end;
+
+procedure TestTraceSnapshotAndDiff(const ARoot: string);
+var
+  Options: TPortappixTraceOptions;
+  Noise: TPortappixTraceNoiseFilter;
+  BeforeProbe: TFakeFileProbe;
+  AfterProbe: TFakeFileProbe;
+  BeforeRegProbe: TFakeRegistryProbe;
+  AfterRegProbe: TFakeRegistryProbe;
+  BeforeFiles: IPortappixFileProbe;
+  AfterFiles: IPortappixFileProbe;
+  BeforeKeys: IPortappixRegistryProbe;
+  AfterKeys: IPortappixRegistryProbe;
+  Before: TPortappixSnapshot;
+  After: TPortappixSnapshot;
+  Diff: TPortappixDiff;
+  SettingsFile: string;
+  CacheFile: string;
+  MissingFile: string;
+begin
+  SettingsFile := WriteTextFile(
+    TPath.Combine(ARoot, 'appdata\Vendor\App\settings.ini'), 'v1');
+  CacheFile := WriteTextFile(TPath.Combine(ARoot, 'appdata\Vendor\App\cache.dat'), 'c');
+  MissingFile := TPath.Combine(ARoot, 'appdata\Vendor\App\gone.dat');
+
+  Options := DefaultTraceOptions;
+  Options.FileRoots := [TPortappixFileRoot.Create(ARoot, 6)];
+  Options.RegistryRoots := ['HKCU\Software'];
+  Options.TimeBudgetMs := 60000;
+  Noise := TPortappixTraceNoiseFilter.Create('');
+
+  BeforeProbe := TFakeFileProbe.Create;
+  BeforeProbe.Add(SettingsFile, 2);
+  BeforeProbe.Add(MissingFile, 7);
+  BeforeFiles := BeforeProbe;
+
+  BeforeRegProbe := TFakeRegistryProbe.Create;
+  BeforeRegProbe.AddValue('HKCU\Software\Vendor\App', 'Settings', 1, '1');
+  BeforeKeys := BeforeRegProbe;
+
+  Before := TPortappixTrace.TakeSnapshot(Options, BeforeFiles, BeforeKeys, Noise);
+  Check(Before.FileCount = 2, 'Snapshot records files reported by the probe');
+  Check(Before.KeyCount = 1, 'Snapshot records keys reported by the probe');
+  if Before.FileCount = 2 then
+  begin
+    var SettingsEntry: TPortappixSnapshotFile;
+    var MissingEntry: TPortappixSnapshotFile;
+    for var SnapshotFile in Before.Files do
+      if SameText(SnapshotFile.Path, SettingsFile) then
+        SettingsEntry := SnapshotFile
+      else
+        MissingEntry := SnapshotFile;
+    Check(SettingsEntry.Hash <> '', 'Snapshot hashes file contents');
+    Check(MissingEntry.Hash = '',
+      'Missing files are tolerated with an empty hash');
+  end;
+  if Before.KeyCount > 0 then
+    Check(Before.Keys[0].ValuesHash <> '', 'Snapshot hashes registry values');
+
+  TFile.WriteAllText(SettingsFile, 'v2 with new content', TEncoding.UTF8);
+
+  AfterProbe := TFakeFileProbe.Create;
+  AfterProbe.Add(SettingsFile, 20);
+  AfterProbe.Add(CacheFile, 1);
+  AfterFiles := AfterProbe;
+
+  AfterRegProbe := TFakeRegistryProbe.Create;
+  AfterRegProbe.AddValue('HKCU\Software\Vendor\App', 'Settings', 1, '2');
+  AfterRegProbe.AddValue('HKCU\Software\Vendor\App\Sub', 'New', 1, 'x');
+  AfterKeys := AfterRegProbe;
+
+  After := TPortappixTrace.TakeSnapshot(Options, AfterFiles, AfterKeys, Noise);
+  Diff := TPortappixTrace.DiffSnapshots(Before, After);
+
+  Check(CountFileDiffs(Diff, dkModified) = 1, 'Diff detects modified file content');
+  Check(CountFileDiffs(Diff, dkAdded) = 1, 'Diff detects added files');
+  Check(CountFileDiffs(Diff, dkDeleted) = 1, 'Diff detects deleted files');
+  Check(CountKeyDiffs(Diff, dkModified) = 1, 'Diff detects modified registry values');
+  Check(CountKeyDiffs(Diff, dkAdded) = 1, 'Diff detects added registry keys');
+  Check(not Diff.IsEmpty, 'Diff is not empty when the host changed');
+
+  for var FileDiff in Diff.Files do
+    if (FileDiff.Kind = dkModified) and SameText(FileDiff.Path, SettingsFile) then
+      Check(not FileDiff.MetadataOnly,
+        'Modified detection uses content hashes when available');
+
+  Check(TPortappixTrace.DiffSnapshots(Before, Before).IsEmpty,
+    'Diffing a snapshot with itself is empty');
+end;
+
+procedure TestTraceSnapshotCaps(const ARoot: string);
+var
+  Options: TPortappixTraceOptions;
+  Noise: TPortappixTraceNoiseFilter;
+  Probe: TFakeFileProbe;
+  Files: IPortappixFileProbe;
+  Keys: IPortappixRegistryProbe;
+  Snapshot: TPortappixSnapshot;
+  FilePath: string;
+begin
+  Options := DefaultTraceOptions;
+  Options.FileRoots := [TPortappixFileRoot.Create(ARoot, 6)];
+  Options.RegistryRoots := ['HKCU\Software'];
+  Options.TimeBudgetMs := 60000;
+  Noise := TPortappixTraceNoiseFilter.Create('');
+
+  Probe := TFakeFileProbe.Create;
+  for var Index := 1 to 30 do
+  begin
+    FilePath := WriteTextFile(TPath.Combine(ARoot, Format('many\f%d.bin', [Index])), 'x');
+    Probe.Add(FilePath, 1);
+  end;
+  Probe.Add('C:\Windows\Prefetch\NOISE.EXE-AAAA.pf', 123);
+  Files := Probe;
+  Keys := TFakeRegistryProbe.Create;
+
+  Snapshot := TPortappixTrace.TakeSnapshot(Options, Files, Keys, Noise);
+  Check(Snapshot.FileCount = 30, 'Noise files are excluded from snapshots');
+  Check(not Snapshot.Truncated, 'Snapshot is not truncated below the caps');
+
+  Probe := TFakeFileProbe.Create;
+  for var Index := 1 to 30 do
+    Probe.Add(TPath.Combine(ARoot, Format('many\f%d.bin', [Index])), 1);
+  Files := Probe;
+
+  Options.MaxFiles := 10;
+  Snapshot := TPortappixTrace.TakeSnapshot(Options, Files, Keys, Noise);
+  Check(Snapshot.FileCount = 10, 'MaxFiles caps the snapshot');
+  Check(Snapshot.Truncated, 'Hitting MaxFiles marks the snapshot truncated');
+
+  Probe := TFakeFileProbe.Create;
+  FilePath := TPath.Combine(ARoot, 'many\f1.bin');
+  Probe.Add(FilePath, 1);
+  Probe.Add(FilePath, 1);
+  Files := Probe;
+  Options.MaxFiles := 1000;
+  Snapshot := TPortappixTrace.TakeSnapshot(Options, Files, Keys, Noise);
+  Check(Snapshot.FileCount = 1, 'Duplicate file reports collapse into one entry');
+end;
+
+procedure TestTraceSuggestions(const ARoot: string);
+var
+  Folders: TPortappixKnownFolders;
+  DataDir: string;
+  AppDir: string;
+  Diff: TPortappixDiff;
+  Suggestions: TArray<TPortappixSuggestion>;
+begin
+  DataDir := TPath.Combine(ARoot, 'Data\demo');
+  AppDir := TPath.Combine(ARoot, 'Apps\demo');
+
+  Folders := Default(TPortappixKnownFolders);
+  Folders.AppData := TPath.Combine(ARoot, 'AppData');
+  Folders.LocalAppData := TPath.Combine(ARoot, 'LocalAppData');
+  Folders.Temp := TPath.Combine(Folders.LocalAppData, 'Temp');
+  Folders.ProgramData := TPath.Combine(ARoot, 'ProgramData');
+  Folders.Profile := TPath.Combine(ARoot, 'Users\demo');
+  Folders.Documents := TPath.Combine(Folders.Profile, 'Documents');
+  Folders.Desktop := TPath.Combine(Folders.Profile, 'Desktop');
+  Folders.PublicFolder := TPath.Combine(ARoot, 'Public');
+
+  // Full diff: AppData write, ProgramData write, Documents write, a portable
+  // Data write (must be ignored) and registry keys.
+  Diff := Default(TPortappixDiff);
+  SetLength(Diff.Files, 4);
+  Diff.Files[0].Kind := dkAdded;
+  Diff.Files[0].Path := TPath.Combine(Folders.AppData, 'Vendor\App\settings.ini');
+  Diff.Files[1].Kind := dkAdded;
+  Diff.Files[1].Path := TPath.Combine(Folders.ProgramData, 'Vendor\cache.dat');
+  Diff.Files[2].Kind := dkAdded;
+  Diff.Files[2].Path := TPath.Combine(Folders.Documents, 'notes.txt');
+  Diff.Files[3].Kind := dkAdded;
+  Diff.Files[3].Path := TPath.Combine(DataDir, 'already_portable.txt');
+  SetLength(Diff.Keys, 3);
+  Diff.Keys[0].Kind := dkAdded;
+  Diff.Keys[0].Path := 'HKCU\Software\Vendor\App\Settings';
+  Diff.Keys[1].Kind := dkModified;
+  Diff.Keys[1].Path := 'HKCU\Software\Vendor\App\MRU';
+  Diff.Keys[2].Kind := dkAdded;
+  Diff.Keys[2].Path := 'HKLM\Software\Vendor\App';
+
+  Suggestions := TPortappixTrace.SuggestFromDiff(Diff, Folders, DataDir,
+    AppDir, TPath.Combine(ARoot, 'LauncherRoot'));
+
+  Check(FindSuggestion(Suggestions, skEnvironment, 'APPDATA') >= 0,
+    'Suggestions propose an APPDATA override for %APPDATA% writes');
+  Check(FindSuggestion(Suggestions, skEnvironment, 'LOCALAPPDATA') < 0,
+    'Suggestions skip the LOCALAPPDATA override when it was not touched');
+  Check(FindSuggestion(Suggestions, skJunction, '%PROGRAMDATA%\Vendor') >= 0,
+    'Suggestions propose a junction for %PROGRAMDATA% writes');
+  Check(FindSuggestion(Suggestions, skRegistry, 'HKCU\Software\Vendor\App') >= 0,
+    'Suggestions collapse registry keys to the common vendor\app prefix');
+  Check(FindSuggestion(Suggestions, skManualReview, 'HKLM\Software\Vendor\App') >= 0,
+    'Suggestions flag keys outside HKCU\Software for manual review');
+  Check(Length(Suggestions) > 0, 'Suggestions were produced');
+
+  var HasWarning := False;
+  for var Suggestion in Suggestions do
+    if Suggestion.Kind = skWarning then
+      HasWarning := True;
+  Check(HasWarning, 'Suggestions warn about protected user folders');
+
+  for var Suggestion in Suggestions do
+    Check(not ContainsStr(Suggestion.Message, 'already_portable'),
+      'Suggestions ignore writes inside the portable data folder');
+
+  // Registry keys too shallow for policy get a manual review entry.
+  Diff := Default(TPortappixDiff);
+  SetLength(Diff.Keys, 1);
+  Diff.Keys[0].Kind := dkAdded;
+  Diff.Keys[0].Path := 'HKCU\Software\Vendor';
+  Suggestions := TPortappixTrace.SuggestFromDiff(Diff, Folders, DataDir,
+    AppDir, '');
+  Check(FindSuggestion(Suggestions, skManualReview, 'HKCU\Software\Vendor') >= 0,
+    'Registry prefixes shallower than vendor\app need manual review');
+
+  // Temp writes propose TEMP and TMP overrides.
+  Suggestions := TPortappixTrace.SuggestFromDiff(
+    OneAddedFileDiff(TPath.Combine(Folders.Temp, 'scratch.tmp')),
+    Folders, DataDir, AppDir, '');
+  Check(FindSuggestion(Suggestions, skEnvironment, 'TEMP') >= 0,
+    'Suggestions propose a TEMP override for temp writes');
+  Check(FindSuggestion(Suggestions, skEnvironment, 'TMP') >= 0,
+    'Suggestions propose a TMP override for temp writes');
+end;
+
+procedure TestTraceReports(const ARoot: string);
+var
+  ManifestPath: string;
+  Runner: TPortappixTraceRunner;
+  Before: TPortappixSnapshot;
+  After: TPortappixSnapshot;
+  Suggestions: TArray<TPortappixSuggestion>;
+  TraceResult: TPortappixTraceResult;
+  Json: TJSONValue;
+  ReportText: string;
+  SuggestedText: string;
+begin
+  ManifestPath := WriteTextFile(
+    TPath.Combine(TPath.Combine(ARoot, 'Apps\demo'), 'app.json'),
+    '{"name":"Demo","exe":"demo.exe"}');
+
+  Runner := TPortappixTraceRunner.Create(ARoot, ManifestPath);
+  try
+    Before := Default(TPortappixSnapshot);
+    After := Default(TPortappixSnapshot);
+
+    SetLength(After.Files, 2);
+    // Outside every folder Portappix can redirect (never created on disk;
+    // the suggestion engine only compares paths): a redirect warning.
+    After.Files[0].Path := TPath.Combine(
+      TPath.GetPathRoot(ARoot), 'portappix-trace-tests', 'created.txt');
+    After.Files[0].Size := 5;
+    // Documents: protected folder warning.
+    After.Files[1].Path := TPath.Combine(
+      GetEnvironmentVariable('USERPROFILE'), 'Documents', 'trace-tests\notes.txt');
+    After.Files[1].Size := 9;
+
+    SetLength(After.Keys, 1);
+    After.Keys[0].Path := 'HKCU\Software\Vendor\App';
+
+    TraceResult := Runner.WriteReports(TPath.Combine(ARoot, 'Trace\out'),
+      Before, After, 3, Suggestions);
+
+    Check(TFile.Exists(TraceResult.ReportJsonFile), 'Trace writes report.json');
+    Check(TFile.Exists(TraceResult.ReportMarkdownFile), 'Trace writes report.md');
+    Check(TFile.Exists(TraceResult.SuggestedManifestFile),
+      'Trace writes suggested_app.json');
+    Check(TraceResult.FilesAdded = 2, 'Trace result counts added files');
+    Check(TraceResult.KeysAdded = 1, 'Trace result counts added keys');
+    Check(TraceResult.AppExitCode = 3, 'Trace result records the app exit code');
+    Check(TraceResult.SuggestionCount = 1,
+      'Trace result counts the registry suggestion');
+    Check(TraceResult.WarningCount = 2, 'Trace result counts the warnings');
+
+    Json := TJSONObject.ParseJSONValue(
+      TFile.ReadAllText(TraceResult.ReportJsonFile, TEncoding.UTF8));
+    try
+      Check(Json is TJSONObject, 'report.json parses as JSON');
+      Check(TJSONObject(Json).GetValue('files') <> nil,
+        'report.json has a files section');
+      Check(TJSONObject(Json).GetValue('registry') <> nil,
+        'report.json has a registry section');
+      Check(TJSONObject(Json).GetValue('suggestions') <> nil,
+        'report.json has a suggestions section');
+      Check(TJSONObject(Json).GetValue('snapshot') <> nil,
+        'report.json has a snapshot section');
+    finally
+      Json.Free;
+    end;
+
+    ReportText := TFile.ReadAllText(TraceResult.ReportMarkdownFile, TEncoding.UTF8);
+    Check(ContainsStr(ReportText, '## Files added'), 'report.md lists added files');
+    Check(ContainsStr(ReportText, '## Suggestions'), 'report.md lists suggestions');
+
+    SuggestedText := TFile.ReadAllText(TraceResult.SuggestedManifestFile, TEncoding.UTF8);
+    Check(ContainsStr(SuggestedText, '"id": "demo"'),
+      'suggested_app.json keeps the app id');
+    Check(ContainsStr(SuggestedText, 'HKCU\\Software\\Vendor\\App'),
+      'suggested_app.json contains the registry suggestion');
+    Check(ContainsStr(SuggestedText, '"_warnings"'),
+      'suggested_app.json carries warnings for manual review');
+  finally
+    Runner.Free;
+  end;
+end;
+
 var
   Root: string;
 begin
@@ -460,6 +961,11 @@ begin
     TestHashing;
     TestJournal(Root);
     TestRegistryOrdering(Root);
+    TestTraceNoiseFilter;
+    TestTraceSnapshotAndDiff(Root);
+    TestTraceSnapshotCaps(Root);
+    TestTraceSuggestions(Root);
+    TestTraceReports(Root);
   finally
     try
       TDirectory.Delete(Root, True);

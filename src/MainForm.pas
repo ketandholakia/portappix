@@ -43,6 +43,7 @@ type
     UninstallButton: TButton;
     RefreshInstalledButton: TButton;
     ImportAppButton: TButton;
+    TraceButton: TButton;
     SearchEdit: TEdit;
     SearchLabel: TLabel;
     RefreshCatalogButton: TButton;
@@ -64,6 +65,7 @@ type
     procedure SearchEditChange(Sender: TObject);
     procedure TrayIconDblClick(Sender: TObject);
     procedure btnImportAppClick(Sender: TObject);
+    procedure TraceButtonClick(Sender: TObject);
   private
     FRootPath: string;
     FAppsDir: string;
@@ -78,6 +80,7 @@ type
     FInstalledPaths: TStringList;
     FInstalledVersions: TDictionary<string, string>;
     FInstallInProgress: Boolean;
+    FTraceInProgress: Boolean;
     FAllowClose: Boolean;
     FWaitingForApps: Boolean;
     procedure InitializePaths;
@@ -98,6 +101,7 @@ type
     procedure QueueStatus(const AMessage: string);
     procedure SetInstallProgress(const AAppId: string; ASent, ATotal: Int64);
     procedure InstallSelectedAppInBackground;
+    procedure TraceSelectedAppInBackground(const AManifestPath: string);
     function AskConsent(const AAppId, ADescription, AManifestHash: string): Boolean;
     function WaitForRunningApps(const ATimeoutMs: Cardinal): Boolean;
     procedure SetAllowUnsignedCatalog(const AValue: Boolean);
@@ -114,11 +118,15 @@ var
 
 implementation
 
+uses
+  Portappix.Trace;
+
 {$R *.dfm}
 
 procedure TMainLauncherForm.FormCreate(Sender: TObject);
 begin
   FInstallInProgress := False;
+  FTraceInProgress := False;
   FAllowClose := False;
   FWaitingForApps := False;
   FAllowUnsignedCatalog := False;
@@ -852,6 +860,92 @@ begin
     on E: Exception do
       ShowMessage('Import failed: ' + E.Message);
   end;
+end;
+
+procedure TMainLauncherForm.TraceButtonClick(Sender: TObject);
+var
+  ManifestPath: string;
+begin
+  ManifestPath := SelectedInstalledManifestPath;
+  if ManifestPath = '' then
+  begin
+    MessageDlg('Select an installed app first.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+  if FTraceInProgress then
+  begin
+    MessageDlg('A trace is already in progress.', mtInformation, [mbOK], 0);
+    Exit;
+  end;
+
+  if MessageDlg(
+    'Trace runs the selected app WITHOUT sandboxing so Portappix can record ' +
+    'what it writes on this PC.' + sLineBreak + sLineBreak +
+    'Only trace apps you trust, ideally inside a virtual machine or ' +
+    'Windows Sandbox. Run the trace now?',
+    mtWarning, [mbYes, mbNo], 0) <> mrYes then
+    Exit;
+
+  TraceSelectedAppInBackground(ManifestPath);
+end;
+
+procedure TMainLauncherForm.TraceSelectedAppInBackground(const AManifestPath: string);
+var
+  RootPath: string;
+begin
+  RootPath := FRootPath;
+  FTraceInProgress := True;
+  TraceButton.Enabled := False;
+  ProgressBar.Style := pbstMarquee;
+  SetStatus('Tracing (no sandbox; the app can write to this PC)...');
+
+  TThread.CreateAnonymousThread(
+    procedure
+    var
+      Runner: TPortappixTraceRunner;
+      TraceResult: TPortappixTraceResult;
+    begin
+      try
+        try
+          Runner := TPortappixTraceRunner.Create(RootPath, AManifestPath);
+          try
+            Runner.OnLog :=
+              procedure(AMsg: string)
+              begin
+                QueueStatus(AMsg);
+              end;
+            TraceResult := Runner.Execute;
+            TThread.Queue(nil,
+              procedure
+              begin
+                SetStatus(Format('Trace finished (app exit code %d). Report: %s',
+                  [TraceResult.AppExitCode, TraceResult.ReportDirectory]));
+              end);
+          finally
+            Runner.Free;
+          end;
+        except
+          on E: Exception do
+          begin
+            var ErrorMsg := E.Message;
+            TThread.Queue(nil,
+              procedure
+              begin
+                SetStatus('Trace failed: ' + ErrorMsg);
+                MessageDlg('Trace failed: ' + ErrorMsg, mtError, [mbOK], 0);
+              end);
+          end;
+        end;
+      finally
+        TThread.Queue(nil,
+          procedure
+          begin
+            FTraceInProgress := False;
+            TraceButton.Enabled := True;
+            ProgressBar.Style := pbstNormal;
+          end);
+      end;
+    end).Start;
 end;
 
 procedure TMainLauncherForm.TrayIconDblClick(Sender: TObject);
