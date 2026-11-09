@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Portappix compatibility suite: Windows Sandbox configuration.
+
+  1. Edit <HostFolder> below to your local checkout of this repository.
+  2. Build on the HOST first (the repo is mapped read-only):
+       - build the launcher:        see README ("Build"), output bin\Launcher.exe
+       - build the fake apps:       tests\fakeapps\build.cmd
+  3. Open this file with Windows Sandbox (double-click), or:
+       wsb tests\suite\sandbox.wsb
+  4. The sandbox opens a console and runs run_suite.ps1 automatically.
+
+  The repository is mapped READ-ONLY. Results are written to the second
+  (read-write) mapped folder; adjust its host path to taste.
+
+  >>> NEVER run the suite on a daily-driver machine. <<<
+-->
+<Configuration>
+  <MappedFolders>
+    <MappedFolder>
+      <HostFolder>C:\Users\Public\portappix</HostFolder>
+      <ReadOnly>true</ReadOnly>
+    </MappedFolder>
+    <MappedFolder>
+      <HostFolder>C:\Users\Public\PortappixSuiteResults</HostFolder>
+      <ReadOnly>false</ReadOnly>
+    </MappedFolder>
+  </MappedFolders>
+  <LogonCommand>
+    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "C:\users\WDAGUtilityAccount\Desktop\portappix\tests\suite\run_suite.ps1 -Results C:\users\WDAGUtilityAccount\Desktop\results -Launcher C:\users\WDAGUtilityAccount\Desktop\portappix\bin\Launcher.exe"</Command>
+  </LogonCommand>
+</Configuration>

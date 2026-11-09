@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "badenvpathhijack",
+  "name": "Bad Manifest: Env PATH Hijack",
+  "publisher": "Portappix Tests",
+  "version": "1.0.0",
+  "category": "Tests",
+  "exe": "appdatawriter.exe",
+  "env": {
+    "PATH": "C:\\Windows\\System32"
+  }
+}

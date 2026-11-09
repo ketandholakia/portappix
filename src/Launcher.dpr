@@ -4,6 +4,7 @@ uses
   Vcl.Forms,
   Winapi.Windows,
   Portappix.Common,
+  Portappix.Cli,
   Portappix.Manifest,
   Portappix.Process,
   Portappix.Junction,
@@ -23,6 +24,12 @@ var
   SingleInstance: TPortappixSingleInstance;
 
 begin
+  // Headless mode (--run / --check-manifest / --recover) never creates forms
+  // and never touches the single-instance launcher mutex, so the compatibility
+  // suite can drive one app while another is already running.
+  if HasCliArguments then
+    Halt(ExecuteCli);
+
   SingleInstance := TPortappixSingleInstance.Create('');
   if not SingleInstance.IsOwner then
   begin

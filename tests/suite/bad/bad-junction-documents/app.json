@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "badjunctiondocuments",
+  "name": "Bad Manifest: Junction Into Documents",
+  "publisher": "Portappix Tests",
+  "version": "1.0.0",
+  "category": "Tests",
+  "exe": "appdatawriter.exe",
+  "junctions": {
+    "%USERPROFILE%\\Documents\\PortappixTest": "{data}\\Documents"
+  }
+}

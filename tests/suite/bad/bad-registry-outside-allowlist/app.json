@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "id": "badregistryoutside",
+  "name": "Bad Manifest: Registry Outside Allow-List",
+  "publisher": "Portappix Tests",
+  "version": "1.0.0",
+  "category": "Tests",
+  "exe": "registrywriter.exe",
+  "registry": [
+    "HKCU\\Software\\Microsoft\\Forbidden"
+  ]
+}

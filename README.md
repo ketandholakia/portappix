@@ -13,6 +13,7 @@ signatures). No third-party components.
 | Unit | Purpose |
 | --- | --- |
 | `src/Portappix.Common.pas` | Path/token helpers, SHA-256, named-mutex single-instance and per-app locks, atomic file replacement. |
+| `src/Portappix.Cli.pas` | Headless CLI mode (`--run`, `--check-manifest`, `--recover`); used by the compatibility suite; never shows UI. |
 | `src/Portappix.Process.pas` | Hidden process execution, job-object process-tree waiting. |
 | `src/Portappix.Junction.pas` | Direct Win32 directory junctions (`FSCTL_SET_REPARSE_POINT` / `FSCTL_DELETE_REPARSE_POINT`). |
 | `src/Portappix.Registry.pas` | `IPortappixRegistryOps`, `reg.exe` implementation, registry path parsing, `.reg` merging. |
@@ -146,6 +147,38 @@ Before an app with registry/junction/env surface runs for the first time, the UI
 what it will touch. Approval is stored in `Data\<id>\policy_consent.json` together with the
 SHA-256 of that exact `app.json`; changing the manifest invalidates the approval. The engine
 never prompts on its own — the UI passes a consent callback to `TPortappixTrayUI`.
+
+## Headless CLI
+
+`Launcher.exe` accepts command-line switches for scripts and the compatibility suite. With
+any `--` switch present it never creates forms, never shows a window and never takes the
+launcher single-instance mutex (so a headless run can start while the tray launcher is
+running, and vice versa):
+
+| Switch | Meaning |
+| --- | --- |
+| `--run <app-id\|app.json>` | Run an installed app and wait for its whole process tree. The process exit code is the app's own exit code. |
+| `--wait` | Accepted for readability; `--run` always waits for the tree. |
+| `--accept-policy` | Test-only: records first-run consent without a prompt. Never use on a real desktop. |
+| `--check-manifest <app.json>` | Validate a manifest against `Portappix.Policy` without running anything. |
+| `--recover` | Run the crash journal's pending cleanups and exit. |
+| `--root <path>` | Launcher root (defaults to the folder containing `Launcher.exe`). |
+| `--exit-code-file <path>` | Write a JSON record: `{"command", "app", "exitCode", "alreadyRunning", "message"}`. |
+| `--log-file <path>` | Append a timestamped run log. |
+
+Exit codes: `0` success (for `--run`, the app's own exit code), `2` manifest/policy rejection,
+`3` usage error, `4` app already running, `5` consent required but `--accept-policy` missing,
+`7` other failure, `740` `ERROR_ELEVATION_REQUIRED`.
+
+## Compatibility suite
+
+`tests\suite\` contains eight fake apps (built by `tests\fakeapps\build.cmd`), valid and
+deliberately-bad manifests, and `run_suite.ps1` which snapshots the host, runs every case
+headless, asserts marker data lands under `Data\<id>`, asserts the host snapshot is unchanged,
+and writes a JSON + Markdown summary. See **`tests\suite\README.md`** for build/run
+instructions — and note that the suite must only run in a VM or Windows Sandbox. The manual
+20-app checklist for release testing is `tests\suite\real_apps.md`; the release process is
+`RELEASE_CHECKLIST.md`.
 
 ## Catalog and signatures
 
