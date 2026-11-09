@@ -97,6 +97,9 @@ type
 
 implementation
 
+const
+  ERROR_ELEVATION_REQUIRED = 740;
+
 function GetHostEnvironment: TDictionary<string, string>;
 var
   EnvironmentBlock: PChar;
@@ -104,7 +107,7 @@ var
   EntryText: string;
   SeparatorPosition: Integer;
 begin
-  Result := TDictionary<string, string>.Create(TStringComparer.IgnoredCase);
+  Result := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
   EnvironmentBlock := GetEnvironmentStrings;
   if EnvironmentBlock = nil then
     Exit;
@@ -345,7 +348,7 @@ begin
     FManifestPath := ResolveFromRoot(FRootPath, AManifestPath);
     FManifest := TPortappixManifest.LoadFromFile(FManifestPath);
     FAppDir := TPath.GetDirectoryName(FManifestPath);
-    FEnvironment := TDictionary<string, string>.Create(TStringComparer.IgnoredCase);
+    FEnvironment := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
     FJunctions := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
     ResolvePaths;
   except

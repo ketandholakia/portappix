@@ -3,6 +3,7 @@ unit Portappix.Policy;
 interface
 
 uses
+  Winapi.Windows,
   System.SysUtils,
   System.Classes,
   System.StrUtils,
@@ -200,7 +201,7 @@ begin
     Exit;
   end;
 
-  if ContainsStr('..\', AHostPath) or ContainsStr('../', AHostPath) then
+  if ContainsStr(AHostPath, '..\') or ContainsStr(AHostPath, '../') then
   begin
     AResult.AddError(Format('Junction host path "%s" must not contain path traversal.',
       [AHostPath]));
@@ -271,15 +272,15 @@ begin
     Exit;
   end;
 
-  if ContainsStr('..\', ATargetPath) or ContainsStr('../', ATargetPath) then
+  if ContainsStr(ATargetPath, '..\') or ContainsStr(ATargetPath, '../') then
   begin
     AResult.AddError(Format('Junction target "%s" must not contain path traversal.',
       [ATargetPath]));
     Exit;
   end;
 
-  if ContainsText('{data}', ATargetPath) or ContainsText('{app}', ATargetPath) or
-     ContainsText('{root}', ATargetPath) or IsRelativePath(ATargetPath) then
+  if ContainsText(ATargetPath, '{data}') or ContainsText(ATargetPath, '{app}') or
+     ContainsText(ATargetPath, '{root}') or IsRelativePath(ATargetPath) then
     Exit(True);
 
   AResult.AddError(Format('Junction target "%s" must live inside the portable {data} directory.',
@@ -320,8 +321,8 @@ begin
         Break;
       end;
 
-    if IsPathLike and not ContainsText('{app}', Pair.Value) and
-       not ContainsText('{data}', Pair.Value) then
+    if IsPathLike and not ContainsText(Pair.Value, '{app}') and
+       not ContainsText(Pair.Value, '{data}') then
     begin
       AResult.AddError(Format(
         'Path-like environment variable "%s" must reference {app} or {data} so host PATH is not inherited wholesale.',

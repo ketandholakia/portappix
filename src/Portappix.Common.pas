@@ -86,11 +86,14 @@ begin
 end;
 
 function ResolveFromRoot(const ARootPath, APath: string): string;
+var
+  ResolvedRoot: string;
 begin
   if APath = '' then
     Exit('');
+  ResolvedRoot := ResolveRootPath(ARootPath);
   if IsRelativePath(APath) then
-    Result := TPath.GetFullPath(TPath.Combine(ARootPath, APath))
+    Result := TPath.GetFullPath(TPath.Combine(ResolvedRoot, APath))
   else
     Result := TPath.GetFullPath(APath);
 end;
@@ -269,13 +272,13 @@ end;
 
 function LauncherMutexName(const ARootPath: string): string;
 begin
-  Result := MutexNameFor('Launcher', TPath.GetFullPath(ARootPath).ToLower);
+  Result := MutexNameFor('Launcher', ResolveRootPath(ARootPath).ToLower);
 end;
 
 function AppMutexName(const ARootPath, AAppId: string): string;
 begin
   Result := MutexNameFor('App',
-    TPath.GetFullPath(ARootPath).ToLower + '|' + AAppId.ToLower);
+    ResolveRootPath(ARootPath).ToLower + '|' + AAppId.ToLower);
 end;
 
 function TryAcquireMutex(const AName: string; out AHandle: THandle): Boolean;

@@ -22,6 +22,9 @@ uses
 
 type
   TFakeRegistryOps = class(TInterfacedObject, IPortappixRegistryOps)
+  protected
+    function _AddRef: Integer; stdcall;
+    function _Release: Integer; stdcall;
   private
     FCalls: TStringList;
     FExportSucceeds: Boolean;
@@ -332,16 +335,16 @@ begin
     StateFile := Journal.StateFile;
     Journal.AddActiveApp('demo', ['HKCU\Software\Vendor\Demo'], nil);
     Check(TFile.Exists(StateFile), 'Journal writes run_state.json');
-    Check(ContainsStr('demo', TFile.ReadAllText(StateFile)),
+    Check(ContainsStr(TFile.ReadAllText(StateFile), 'demo'),
       'Journal records the active app');
 
     Journal.RemoveActiveApp('demo');
-    Check(not ContainsStr('"demo"', TFile.ReadAllText(StateFile)),
+    Check(not ContainsStr(TFile.ReadAllText(StateFile), '"demo"'),
       'Journal removes the active app');
 
     Journal.AddActiveApp('demo', nil, nil);
     Journal.RecoverPendingCleanups;
-    Check(not ContainsStr('"demo"', TFile.ReadAllText(StateFile)),
+    Check(not ContainsStr(TFile.ReadAllText(StateFile), '"demo"'),
       'RecoverPendingCleanups clears entries with no remaining backups');
 
     TFile.WriteAllText(StateFile, '{ this is not json', TEncoding.UTF8);
@@ -356,8 +359,10 @@ end;
 
 procedure TestRegistryOrdering(const ARoot: string);
 var
-  Fake: TFakeRegistryOps;
-  FailingFake: TFakeRegistryOps;
+  FakeOps: TFakeRegistryOps;
+  Fake: IPortappixRegistryOps;
+  FailingFakeOps: TFakeRegistryOps;
+  FailingFake: IPortappixRegistryOps;
   DataDir: string;
   Keys: TArray<string>;
   Order: string;
@@ -367,25 +372,19 @@ begin
   DataDir := TPath.Combine(ARoot, 'Data\demo');
   ForceDirectories(DataDir);
 
-  Fake := TFakeRegistryOps.Create(True);
-  try
-    TPortableAppRunner.PerformCleanup('demo', Keys, nil, DataDir, nil, Fake);
-    Order := Fake.CallOrder;
-    Check((Pos('export', Order) > 0) and (Pos('delete', Order) > 0) and
-      (Pos('export', Order) < Pos('delete', Order)),
-      'PerformCleanup exports registry keys before deleting them');
-  finally
-    Fake.Free;
-  end;
+  FakeOps := TFakeRegistryOps.Create(True);
+  Fake := FakeOps;
+  TPortableAppRunner.PerformCleanup('demo', Keys, nil, DataDir, nil, Fake);
+  Order := FakeOps.CallOrder;
+  Check((Pos('export', Order) > 0) and (Pos('delete', Order) > 0) and
+    (Pos('export', Order) < Pos('delete', Order)),
+    'PerformCleanup exports registry keys before deleting them');
 
-  FailingFake := TFakeRegistryOps.Create(False);
-  try
-    TPortableAppRunner.PerformCleanup('demo', Keys, nil, DataDir, nil, FailingFake);
-    Check(Pos('delete', FailingFake.CallOrder) = 0,
-      'PerformCleanup never deletes keys when the export fails');
-  finally
-    FailingFake.Free;
-  end;
+  FailingFakeOps := TFakeRegistryOps.Create(False);
+  FailingFake := FailingFakeOps;
+  TPortableAppRunner.PerformCleanup('demo', Keys, nil, DataDir, nil, FailingFake);
+  Check(Pos('delete', FailingFakeOps.CallOrder) = 0,
+    'PerformCleanup never deletes keys when the export fails');
 end;
 
 constructor TFakeRegistryOps.Create(const AExportSucceeds: Boolean);
@@ -393,6 +392,16 @@ begin
   inherited Create;
   FExportSucceeds := AExportSucceeds;
   FCalls := TStringList.Create;
+end;
+
+function TFakeRegistryOps._AddRef: Integer;
+begin
+  Result := -1;
+end;
+
+function TFakeRegistryOps._Release: Integer;
+begin
+  Result := -1;
 end;
 
 destructor TFakeRegistryOps.Destroy;

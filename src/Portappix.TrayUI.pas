@@ -157,7 +157,7 @@ var
   Manifest: TPortappixManifest;
   Separator: TMenuItem;
 begin
-  Categories := TDictionary<string, TMenuItem>.Create(TIStringComparer.IgnoredCase);
+  Categories := TDictionary<string, TMenuItem>.Create(TIStringComparer.Ordinal);
   Entries := TObjectList<TInstalledAppEntry>.Create(True);
   try
     if TDirectory.Exists(FAppsDir) then
@@ -236,25 +236,24 @@ begin
   if FPopupMenu = nil then
     Exit;
 
-  FPopupMenu.Items.BeginUpdate;
-  try
-    ClearMenuItems;
-    BuildStaticItems;
-    BuildCategoryMenus;
+  ClearMenuItems;
+  BuildStaticItems;
+  BuildCategoryMenus;
 
-    ExitItem := TMenuItem.Create(FPopupMenu);
-    ExitItem.Caption := 'Exit';
-    ExitItem.OnClick := ExitMenuClick;
-    FPopupMenu.Items.Add(ExitItem);
-  finally
-    FPopupMenu.Items.EndUpdate;
-  end;
+  ExitItem := TMenuItem.Create(FPopupMenu);
+  ExitItem.Caption := 'Exit';
+  ExitItem.OnClick := ExitMenuClick;
+  FPopupMenu.Items.Add(ExitItem);
 end;
 
 procedure TPortappixTrayUI.NotifyRefresh;
 begin
   if Assigned(FRefreshForm) then
-    TThread.Queue(nil, procedure begin FRefreshForm(); end);
+    TThread.Queue(nil,
+      procedure
+      begin
+        FRefreshForm();
+      end);
 end;
 
 procedure TPortappixTrayUI.AppMenuClick(Sender: TObject);
@@ -315,6 +314,7 @@ begin
       Description: string;
       ManifestHash: string;
       Approved: Boolean;
+      ErrorMsg: string;
     begin
       LockHandle := 0;
       try
@@ -372,9 +372,16 @@ begin
             Runner := TPortableAppRunner.Create(ManifestPath, Journal, RootPath);
             try
               Runner.OnLog :=
-                procedure(const Message: string)
+                procedure(AMsg: string)
+                var
+                  LogMsg: string;
                 begin
-                  TThread.Queue(nil, procedure begin Log(Message); end);
+                  LogMsg := AMsg;
+                  TThread.Queue(nil,
+                    procedure
+                    begin
+                      Log(LogMsg);
+                    end);
                 end;
               Runner.Run;
             finally
@@ -385,12 +392,15 @@ begin
           end;
         except
           on E: Exception do
+          begin
+            ErrorMsg := E.Message;
             TThread.Synchronize(nil,
               procedure
               begin
-                Log('Unable to launch app: ' + E.Message);
-                MessageDlg('Unable to launch app: ' + E.Message, mtError, [mbOK], 0);
+                Log('Unable to launch app: ' + ErrorMsg);
+                MessageDlg('Unable to launch app: ' + ErrorMsg, mtError, [mbOK], 0);
               end);
+          end;
         end;
       finally
         ReleaseMutexHandle(LockHandle);

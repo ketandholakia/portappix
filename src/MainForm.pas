@@ -68,6 +68,7 @@ type
     FRootPath: string;
     FAppsDir: string;
     FCatalogCacheFile: string;
+    FCatalogUrlFile: string;
     FCatalogUrl: string;
     FAllowUnsignedCatalog: Boolean;
     FJournal: IPortappixJournal;
@@ -80,6 +81,8 @@ type
     FAllowClose: Boolean;
     FWaitingForApps: Boolean;
     procedure InitializePaths;
+    procedure LoadCatalogUrl;
+    procedure SaveCatalogUrl;
     procedure InitializeRuntime;
     procedure InitializeTray;
     procedure LoadInstalledApps;
@@ -120,10 +123,9 @@ begin
   FWaitingForApps := False;
   FAllowUnsignedCatalog := False;
   FInstalledPaths := TStringList.Create;
-  FInstalledVersions := TDictionary<string, string>.Create(TStringComparer.IgnoredCase);
-  // Set CatalogUrl to your hosted catalog.json URL (or leave empty to use local cache only).
-  FCatalogUrl := '';
+  FInstalledVersions := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
   InitializePaths;
+  LoadCatalogUrl;
   InitializeRuntime;      // includes TPortappixJournal.RecoverPendingCleanups (boot)
   InitializeTray;
   LoadInstalledApps;
@@ -136,6 +138,26 @@ begin
   FRootPath := TPath.GetFullPath(LauncherDirectory);
   FAppsDir := TPath.Combine(FRootPath, 'Apps');
   FCatalogCacheFile := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), 'catalog.json');
+  FCatalogUrlFile := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), 'catalog_url.txt');
+end;
+
+procedure TMainLauncherForm.LoadCatalogUrl;
+begin
+  FCatalogUrl := GetEnvironmentVariable('PORTAPPIX_CATALOG_URL').Trim;
+  if (FCatalogUrl = '') and TFile.Exists(FCatalogUrlFile) then
+    try
+      FCatalogUrl := TFile.ReadAllText(FCatalogUrlFile, TEncoding.UTF8).Trim;
+    except
+    end;
+end;
+
+procedure TMainLauncherForm.SaveCatalogUrl;
+begin
+  try
+    ForceDirectories(TPath.GetDirectoryName(FCatalogUrlFile));
+    TFile.WriteAllText(FCatalogUrlFile, FCatalogUrl, TEncoding.UTF8);
+  except
+  end;
 end;
 
 procedure TMainLauncherForm.SetAllowUnsignedCatalog(const AValue: Boolean);
@@ -150,7 +172,11 @@ begin
   ForceDirectories(TPath.GetDirectoryName(FCatalogCacheFile));
 
   FJournal := TPortappixJournal.Create(FRootPath);
-  FJournal.OnLog := procedure(const Message: string) begin QueueStatus(Message); end;
+  FJournal.OnLog :=
+    procedure(AMsg: string)
+    begin
+      QueueStatus(AMsg);
+    end;
   try
     FJournal.RecoverPendingCleanups;
   except
@@ -160,22 +186,42 @@ begin
 
   FCatalog := TPortappixCatalog.Create;
   FPackageManager := TPortappixPackageManager.Create(FRootPath);
-  FPackageManager.OnLog := procedure(const Message: string) begin QueueStatus(Message); end;
+  FPackageManager.OnLog :=
+    procedure(AMsg: string)
+    begin
+      QueueStatus(AMsg);
+    end;
 end;
 
 procedure TMainLauncherForm.InitializeTray;
 begin
   TrayIcon.Visible := True;
   FTrayUI := TPortappixTrayUI.Create(TrayIcon, FRootPath, FJournal);
-  FTrayUI.OnShowForm := procedure begin TThread.Queue(nil, procedure begin ShowMainForm; end); end;
-  FTrayUI.OnRefreshForm := procedure begin TThread.Queue(nil, procedure begin LoadInstalledApps; end); end;
-  FTrayUI.OnExitRequested := procedure begin TThread.Queue(nil, procedure begin RequestExit; end); end;
+  FTrayUI.OnShowForm :=
+    procedure
+    begin
+      TThread.Queue(nil, ShowMainForm);
+    end;
+  FTrayUI.OnRefreshForm :=
+    procedure
+    begin
+      TThread.Queue(nil, LoadInstalledApps);
+    end;
+  FTrayUI.OnExitRequested :=
+    procedure
+    begin
+      TThread.Queue(nil, RequestExit);
+    end;
   FTrayUI.OnConsentRequired :=
     function(const AAppId, ADescription, AManifestHash: string): Boolean
     begin
       Result := AskConsent(AAppId, ADescription, AManifestHash);
     end;
-  FTrayUI.OnLog := procedure(const Message: string) begin QueueStatus(Message); end;
+  FTrayUI.OnLog :=
+    procedure(AMsg: string)
+    begin
+      QueueStatus(AMsg);
+    end;
 end;
 
 procedure TMainLauncherForm.FormCloseQuery(Sender: TObject; var CanClose: Boolean);
@@ -305,8 +351,15 @@ begin
 end;
 
 procedure TMainLauncherForm.QueueStatus(const AMessage: string);
+var
+  StatusMsg: string;
 begin
-  TThread.Queue(nil, procedure begin SetStatus(AMessage); end);
+  StatusMsg := AMessage;
+  TThread.Queue(nil,
+    procedure
+    begin
+      SetStatus(StatusMsg);
+    end);
 end;
 
 procedure TMainLauncherForm.LoadInstalledApps;
@@ -443,8 +496,22 @@ begin
 end;
 
 procedure TMainLauncherForm.LoadCatalogFromCache;
+var
+  LocalCatalog: string;
 begin
   try
+    if not TFile.Exists(FCatalogCacheFile) then
+    begin
+      LocalCatalog := TPath.Combine(FRootPath, 'catalog.json');
+      if TFile.Exists(LocalCatalog) then
+      begin
+        ForceDirectories(TPath.GetDirectoryName(FCatalogCacheFile));
+        TFile.Copy(LocalCatalog, FCatalogCacheFile, True);
+        if TFile.Exists(LocalCatalog + '.sig') then
+          TFile.Copy(LocalCatalog + '.sig', FCatalogCacheFile + '.sig', True);
+      end;
+    end;
+
     if TFile.Exists(FCatalogCacheFile) then
     begin
       FCatalog.LoadFromFile(FCatalogCacheFile);
@@ -473,9 +540,9 @@ begin
     for var App in FCatalog.Apps do
     begin
       if (FilterText <> '') and
-         not ContainsStr(FilterText, App.Name.ToLower) and
-         not ContainsStr(FilterText, App.Id.ToLower) and
-         not ContainsStr(FilterText, App.Category.ToLower) then
+         not ContainsStr(App.Name.ToLower, FilterText) and
+         not ContainsStr(App.Id.ToLower, FilterText) and
+         not ContainsStr(App.Category.ToLower, FilterText) then
         Continue;
 
       if FInstalledVersions.TryGetValue(App.Id, InstalledVersion) then
@@ -523,6 +590,7 @@ begin
     var
       Catalog: TPortappixCatalog;
       Json: string;
+      ErrorMsg: string;
     begin
       Catalog := TPortappixCatalog.Create;
       try
@@ -543,11 +611,14 @@ begin
             end);
         except
           on E: Exception do
+          begin
+            ErrorMsg := E.Message;
             TThread.Queue(nil,
               procedure
               begin
-                SetStatus('Unable to refresh catalog: ' + E.Message);
+                SetStatus('Unable to refresh catalog: ' + ErrorMsg);
               end);
+          end;
         end;
       finally
         Catalog.Free;
@@ -556,12 +627,24 @@ begin
 end;
 
 procedure TMainLauncherForm.RefreshCatalogButtonClick(Sender: TObject);
+var
+  PromptUrl: string;
 begin
-  if FCatalogUrl.Trim = '' then
+  if (FCatalogUrl.Trim = '') or (GetKeyState(VK_SHIFT) < 0) then
   begin
-    MessageDlg('Set CatalogUrl before refreshing the store catalog.', mtInformation, [mbOK], 0);
-    Exit;
+    PromptUrl := InputBox('Store Catalog URL',
+      'Enter the hosted catalog.json URL (must start with https://):', FCatalogUrl).Trim;
+    if PromptUrl = '' then
+      Exit;
+    if not IsHttpsUrl(PromptUrl) then
+    begin
+      MessageDlg('Catalog URL must start with https://', mtError, [mbOK], 0);
+      Exit;
+    end;
+    FCatalogUrl := PromptUrl;
+    SaveCatalogUrl;
   end;
+
   RefreshCatalogInBackground;
 end;
 
@@ -653,12 +736,17 @@ begin
     var
       PackageManager: TPortappixPackageManager;
       LastQueuedAt: UInt64;
+      ErrorMsg: string;
     begin
       LastQueuedAt := 0;
       PackageManager := TPortappixPackageManager.Create(RootPath);
       try
         try
-          PackageManager.OnLog := procedure(const Message: string) begin QueueStatus(Message); end;
+          PackageManager.OnLog :=
+            procedure(AMsg: string)
+            begin
+              QueueStatus(AMsg);
+            end;
           PackageManager.InstallApp(AppCopy,
             procedure(const AAppId: string; ASent, ATotal: Int64; var AAbort: Boolean)
             var
@@ -685,14 +773,17 @@ begin
             end);
         except
           on E: Exception do
+          begin
+            ErrorMsg := E.Message;
             TThread.Queue(nil,
               procedure
               begin
                 ProgressBar.Style := pbstNormal;
                 ProgressBar.Position := 0;
-                SetStatus('Install failed: ' + E.Message);
-                MessageDlg('Install failed: ' + E.Message, mtError, [mbOK], 0);
+                SetStatus('Install failed: ' + ErrorMsg);
+                MessageDlg('Install failed: ' + ErrorMsg, mtError, [mbOK], 0);
               end);
+          end;
         end;
       finally
         PackageManager.Free;
@@ -735,7 +826,11 @@ begin
   try
     Importer := TPortappixImporter.Create(FRootPath);
     try
-      Importer.OnLog := procedure(const Message: string) begin QueueStatus(Message); end;
+      Importer.OnLog :=
+        procedure(AMsg: string)
+        begin
+          QueueStatus(AMsg);
+        end;
       Analysis := Importer.AnalyzeSource(SourceFolder);
       if Analysis.RequiresConfirmation then
         if MessageDlg(Format(

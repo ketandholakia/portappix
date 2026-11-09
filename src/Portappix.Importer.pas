@@ -39,9 +39,9 @@ type
     class function BuildManifestJson(const ASourceFolder, ATargetExe, APublisher: string;
       out AAppId, AName: string): string; static;
     function AnalyzeSource(const ASourceFolder: string): TPortappixSourceAnalysis;
-    class function GenerateManifest(const SourceFolder, TargetExe: string): Boolean; static;
+    class function GenerateManifest(const SourceFolder, TargetExe: string): Boolean; overload; static;
     function GenerateManifest(const SourceFolder, TargetExe: string;
-      const APublisher: string; out AManifestPath, AAppId: string): Boolean;
+      const APublisher: string; out AManifestPath, AAppId: string): Boolean; overload;
     function ImportToApps(const SourceFolder, TargetExe: string;
       const APublisher: string = ''; const AAppsRoot: string = ''): string;
     property RootPath: string read FRootPath;

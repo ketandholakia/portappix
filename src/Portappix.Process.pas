@@ -39,9 +39,6 @@ function RunHiddenProcess(const ACommandLine: string; out AExitCode: Cardinal;
 
 implementation
 
-const
-  JobObjectBasicAccountingInfoClass = 1;
-
 function QuoteArgument(const AValue: string): string;
 begin
   Result := '"' + StringReplace(AValue, '"', '\"', [rfReplaceAll]) + '"';
@@ -121,7 +118,7 @@ var
 begin
   ACount := 0;
   Result := IsValid and QueryInformationJobObject(FHandle,
-    JobObjectBasicAccountingInfoClass, @Information, SizeOf(Information), nil);
+    JobObjectBasicAccountingInformation, @Information, SizeOf(Information), nil);
   if Result then
     ACount := Information.ActiveProcesses;
 end;

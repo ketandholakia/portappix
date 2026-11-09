@@ -101,16 +101,17 @@ var
   Stream: TFileStream;
   Response: IHTTPResponse;
   TempDestination: string;
+  Aborted: Boolean;
 begin
   TempDestination := ADestination + '.download';
   if TFile.Exists(TempDestination) then
     TFile.Delete(TempDestination);
 
+  Aborted := False;
   Stream := TFileStream.Create(TempDestination, fmCreate);
   Client := THTTPClient.Create;
   try
     Client.UserAgent := 'Portappix';
-    var Aborted := False;
     Client.ReceiveDataCallback :=
       procedure(const Sender: TObject; AContentLength, AReadCount: Int64; var AAbort: Boolean)
       var
