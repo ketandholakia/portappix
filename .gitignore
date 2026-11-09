@@ -26,6 +26,10 @@ run_state.json.bad
 # Signing material (keep the private key out of git)
 keys/
 
+# Local release artifacts
+portappix.zip
+dist/
+
 # Python
 __pycache__/
 *.pyc

@@ -229,15 +229,22 @@ ignored by git.
 ## Tests
 
 `tests\PortappixTests.dpr` is a console program with a tiny assertion helper (no third-party
-framework):
+framework). It never touches the host registry or user profile: registry interactions use
+injected fakes and all file writes go to a temporary directory.
 
 ```bash
 cd tests
-dcc32 -B -U../src PortappixTests.dpr
+dcc32 -B -U..\src PortappixTests.dpr
 PortappixTests.exe
+dcc64 -B -U..\src PortappixTests.dpr
+Win64\Debug\PortappixTests.exe
 ```
 
-or open `tests\PortappixTests.dproj` (it adds `..\src` to the unit search path).
+or open `tests\PortappixTests.dproj` (it adds `..\src` to the unit search path). The program
+exits with code `0` when everything passes and `1` on any failure, so it can be used in CI.
+A prebuilt copy of the launcher and the tests lives in `bin\` after a local build; the
+compatibility suite in `tests\suite\` (see "Compatibility suite" below) has its own build and
+run instructions and must only be executed in a VM / Windows Sandbox.
 Coverage: manifest parsing/validation, token expansion, policy allow/deny, catalog parsing
 with atomic swap, zip-slip rejection, subfolder-preserving extraction, SHA-256 reference value,
 journal save/recover/corrupt handling, and export-before-delete ordering with an injected
