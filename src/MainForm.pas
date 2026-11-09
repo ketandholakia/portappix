@@ -104,6 +104,7 @@ type
     procedure SetInstallProgress(const AAppId: string; ASent, ATotal: Int64);
     procedure InstallSelectedAppInBackground;
     procedure ApplyPendingUpdatesInBackground;
+    procedure CheckLauncherUpdateWatchdog;
     procedure TraceSelectedAppInBackground(const AManifestPath: string);
     function AskConsent(const AAppId, ADescription, AManifestHash: string): Boolean;
     function WaitForRunningApps(const ATimeoutMs: Cardinal): Boolean;
@@ -122,7 +123,8 @@ var
 implementation
 
 uses
-  Portappix.Trace;
+  Portappix.Trace,
+  Portappix.Update;
 
 {$R *.dfm}
 
@@ -136,6 +138,7 @@ begin
   FInstalledPaths := TStringList.Create;
   FInstalledVersions := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
   InitializePaths;
+  CheckLauncherUpdateWatchdog;
   LoadCatalogUrl;
   InitializeRuntime;      // includes TPortappixJournal.RecoverPendingCleanups (boot)
   InitializeTray;
@@ -893,6 +896,42 @@ begin
   except
     on E: Exception do
       ShowMessage('Import failed: ' + E.Message);
+  end;
+end;
+
+procedure TMainLauncherForm.CheckLauncherUpdateWatchdog;
+var
+  Manager: TPortappixUpdateManager;
+  PendingVersion: string;
+begin
+  Manager := TPortappixUpdateManager.Create(FRootPath);
+  try
+    Manager.OnLog :=
+      procedure(AMsg: string)
+      begin
+        QueueStatus(AMsg);
+      end;
+    if not Manager.NeedsRollbackOffer then
+      Exit;
+
+    PendingVersion := Manager.PendingUpdateVersion;
+    if MessageDlg(
+      Format('A launcher update to %s was applied but the new version never ' +
+        'confirmed that it started (no update_ok marker).' + sLineBreak + sLineBreak +
+        'Restore the previous version from Launcher.exe.old now?',
+        [PendingVersion]),
+      mtWarning, [mbYes, mbNo], 0) <> mrYes then
+    begin
+      QueueStatus('Rollback declined; the offer reappears on the next start ' +
+        'until the update is confirmed or Launcher.exe.old is deleted.');
+      Exit;
+    end;
+
+    Manager.RollbackToOldLauncher;
+    // The previous launcher was started; this (failing) process exits.
+    Halt(0);
+  finally
+    Manager.Free;
   end;
 end;
 

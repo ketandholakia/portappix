@@ -21,6 +21,7 @@ uses
   Portappix.Settings,
   Portappix.State,
   Portappix.Trace,
+  Portappix.Update,
   Portappix.Version;
 
 type
@@ -1204,6 +1205,149 @@ begin
   end;
 end;
 
+function ReleasesJsonFor(const AVersion, ASha256: string; ASize: Int64): string;
+begin
+  Result := Format('{"schema":1,"channel":"stable","version":"%s",' +
+    '"url":"https://example.com/portappix.zip","sha256":"%s","size":%d}',
+    [AVersion, ASha256, ASize]);
+end;
+
+procedure BuildLauncherZip(const AZipPath, ANewExeContent: string);
+var
+  TempFile: string;
+  Zip: TZipFile;
+begin
+  TempFile := AZipPath + '.payload';
+  TFile.WriteAllText(TempFile, ANewExeContent, TEncoding.UTF8);
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(AZipPath, TZipMode.zmWrite);
+    Zip.Add(TempFile, 'Launcher.exe');
+    Zip.Add(TempFile, 'readme.txt');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+  TFile.Delete(TempFile);
+end;
+
+procedure TestUpdateManager(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  ZipPath: string;
+  Release: TPortappixRelease;
+  FailedFiles: TArray<string>;
+begin
+  // releases.json parsing.
+  Release := ParseReleasesJson(ReleasesJsonFor('1.1.0', StringOfChar('a', 64), 5));
+  try
+    Check((Release.Version = '1.1.0') and (Release.Channel = 'stable') and
+      (Release.Size = 5), 'releases.json parses into a release record');
+  finally
+    Release.Free;
+  end;
+
+  ExpectException(
+    procedure
+    begin
+      ParseReleasesJson(ReleasesJsonFor('not-a-version', StringOfChar('a', 64), 5));
+    end,
+    'releases.json rejects non-semantic versions');
+
+  ExpectException(
+    procedure
+    begin
+      ParseReleasesJson('{"schema":9,"channel":"stable","version":"1.0",' +
+        '"url":"https://example.com/x.zip","sha256":"' + StringOfChar('a', 64) + '"}');
+    end,
+    'releases.json rejects unknown schema versions');
+
+  ExpectException(
+    procedure
+    begin
+      ParseReleasesJson(ReleasesJsonFor('1.0', 'zz', 5));
+    end,
+    'releases.json rejects invalid sha256 values');
+
+  // Full swap/confirm/rollback flow against a local zip (no network, no spawn).
+  WriteTextFile(TPath.Combine(ARoot, 'Launcher.exe'), 'old-launcher');
+  Manager := TPortappixUpdateManager.Create(ARoot);
+  try
+    Check(Manager.InstalledVersion = '0.0.0',
+      'Installed version defaults to 0.0.0');
+    Check(not Manager.NeedsRollbackOffer,
+      'No rollback offer before any update');
+
+    ZipPath := TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'update.zip');
+    BuildLauncherZip(ZipPath, 'new-launcher');
+    Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+      Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+    try
+      Check(Manager.IsUpdateAvailable(Release), 'A newer release is an update');
+
+      // A wrong hash is refused and the package is deleted.
+      var BadRelease := ParseReleasesJson(
+        ReleasesJsonFor('1.2.0', StringOfChar('c', 64), 0));
+      try
+        ExpectException(
+          procedure
+          begin
+            Manager.PrepareUpdate(ZipPath, BadRelease, False);
+          end,
+          'PrepareUpdate refuses a package with a wrong sha256');
+        Check(not TFile.Exists(ZipPath),
+          'PrepareUpdate deletes the rejected package');
+      finally
+        BadRelease.Free;
+      end;
+
+      BuildLauncherZip(ZipPath, 'new-launcher');
+      Manager.PrepareUpdate(ZipPath, Release, False);
+      Check(TFile.ReadAllText(TPath.Combine(ARoot, 'Launcher.exe')) = 'new-launcher',
+        'PrepareUpdate puts the new launcher in place');
+      Check(TFile.ReadAllText(TPath.Combine(ARoot, 'Launcher.exe.old')) = 'old-launcher',
+        'PrepareUpdate keeps the old launcher as Launcher.exe.old');
+      Check(TFile.ReadAllText(TPath.Combine(ARoot, 'readme.txt')) = 'new-launcher',
+        'PrepareUpdate copies extra release files into the root');
+      Check(TFile.Exists(TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'update_pending.json')),
+        'PrepareUpdate writes update_pending.json');
+      Check(Manager.NeedsRollbackOffer,
+        'NeedsRollbackOffer is true for an unconfirmed update');
+      Check(Manager.PendingUpdateVersion = '1.1.0',
+        'PendingUpdateVersion reads the pending update');
+
+      Manager.ConfirmUpdate;
+      Check(TFile.Exists(TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'update_ok')),
+        'ConfirmUpdate writes the update_ok marker');
+      Check(Manager.InstalledVersion = '1.1.0',
+        'ConfirmUpdate records the new installed version');
+      Check(not Manager.NeedsRollbackOffer,
+        'NeedsRollbackOffer is false once the update is confirmed');
+
+      Check(Manager.RollbackToOldLauncher(False),
+        'RollbackToOldLauncher reports success');
+      Check(TFile.ReadAllText(TPath.Combine(ARoot, 'Launcher.exe')) = 'old-launcher',
+        'Rollback restores the previous launcher');
+      Check(not TFile.Exists(TPath.Combine(ARoot, 'Launcher.exe.old')),
+        'Rollback consumes Launcher.exe.old');
+      FailedFiles := TDirectory.GetFiles(ARoot, 'Launcher.exe.failed_*');
+      Check(Length(FailedFiles) = 1,
+        'Rollback keeps the failed build next to the launcher');
+    finally
+      Release.Free;
+    end;
+
+    ExpectException(
+      procedure
+      begin
+        Manager.RollbackToOldLauncher(False);
+      end,
+      'Rollback without Launcher.exe.old is refused');
+  finally
+    Manager.Free;
+  end;
+end;
+
 var
   Root: string;
 begin
@@ -1229,6 +1373,7 @@ begin
     TestPendingUpdatesAndRollback(Root);
     TestRollback(Root);
     TestSettings(Root);
+    TestUpdateManager(Root);
   finally
     try
       TDirectory.Delete(Root, True);

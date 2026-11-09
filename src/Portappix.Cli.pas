@@ -14,6 +14,15 @@ unit Portappix.Cli;
     --check-manifest <path>           Validate app.json against Portappix.Policy
                                       without running anything.
     --recover                         Run the crash journal's pending cleanups.
+    --apply-updates                   Apply updates queued while apps ran.
+    --check-updates <url>             Download and verify releases.json; report
+                                      whether an update is available.
+    --self-update <url>               Download, verify and apply the launcher
+                                      update from releases.json, then restart.
+    --post-update                     First start after a self-update: confirms
+                                      the update and records the new version.
+    --allow-insecure-release-urls     Test-only: allow http:// release URLs
+                                      (signatures stay mandatory).
     --root <path>                     Launcher root (defaults to the exe folder).
     --exit-code-file <path>           Write a JSON result record to this path.
     --log-file <path>                 Append a timestamped run log.
@@ -57,6 +66,9 @@ const
     '                    [--exit-code-file <path>] [--log-file <path>]' + sLineBreak +
     '       Launcher.exe --check-manifest <app.json> [--exit-code-file <path>]' + sLineBreak +
     '       Launcher.exe --recover [--root <path>] [--log-file <path>]' + sLineBreak +
+    '       Launcher.exe --apply-updates [--root <path>]' + sLineBreak +
+    '       Launcher.exe --check-updates <releases.json-url> [--root <path>]' + sLineBreak +
+    '       Launcher.exe --self-update <releases.json-url> [--root <path>]' + sLineBreak +
     sLineBreak +
     'Headless mode never shows UI. --accept-policy records first-run consent' + sLineBreak +
     'without a prompt and must only be used in test environments (VM/Sandbox).' + sLineBreak +
@@ -80,10 +92,16 @@ type
       AMessage: string; const AAlreadyRunning: Boolean = False);
     function ResolveManifestPath(const AReference: string; out AAppId: string): string;
     function ResolveTraceReference(const AReference: string; out AAppId: string): string;
+    function ResolveUpdateUrl: string;
+    procedure WarnIfUpdateUnconfirmed;
     function ExecuteRun: Integer;
     function ExecuteTrace: Integer;
     function ExecuteCheckManifest: Integer;
     function ExecuteRecover: Integer;
+    function ExecuteApplyUpdates: Integer;
+    function ExecuteCheckUpdates: Integer;
+    function ExecuteSelfUpdate: Integer;
+    function ExecutePostUpdate: Integer;
   public
     constructor Create;
     function Parse(const AArgs: TArray<string>): Boolean;
@@ -100,9 +118,12 @@ implementation
 uses
   Portappix.Manifest,
   Portappix.Policy,
+  Portappix.PackageManager,
   Portappix.Runner,
   Portappix.Trace,
   Portappix.State,
+  Portappix.Settings,
+  Portappix.Update,
   Portappix.Consent;
 
 var
@@ -222,10 +243,30 @@ begin
 
     if SameText(Arg, '--accept-policy') then
       FAcceptPolicy := True
+    else if SameText(Arg, '--allow-insecure-release-urls') then
+      AllowInsecureReleaseUrls := True
     else if SameText(Arg, '--wait') then
       FWait := True
     else if SameText(Arg, '--recover') then
       FCommand := 'recover'
+    else if SameText(Arg, '--apply-updates') then
+      FCommand := 'apply-updates'
+    else if SameText(Arg, '--post-update') then
+      FCommand := 'post-update'
+    else if SameText(Arg, '--check-updates') then
+    begin
+      if not TakeValue(Arg, FArgument) then
+        Exit;
+      FCommand := 'check-updates';
+      Inc(Index);
+    end
+    else if SameText(Arg, '--self-update') then
+    begin
+      if not TakeValue(Arg, FArgument) then
+        Exit;
+      FCommand := 'self-update';
+      Inc(Index);
+    end
     else if SameText(Arg, '--run') then
     begin
       if not TakeValue(Arg, FArgument) then
@@ -276,9 +317,12 @@ begin
   end;
 
   Result := (FCommand = 'run') or (FCommand = 'trace') or
-    (FCommand = 'check-manifest') or (FCommand = 'recover');
+    (FCommand = 'check-manifest') or (FCommand = 'recover') or
+    (FCommand = 'apply-updates') or (FCommand = 'check-updates') or
+    (FCommand = 'self-update') or (FCommand = 'post-update');
   if not Result then
-    Log('No command switch found (--run, --trace, --check-manifest or --recover).');
+    Log('No command switch found (--run, --trace, --check-manifest, --recover, ' +
+      '--apply-updates, --check-updates, --self-update or --post-update).');
 end;
 
 function TPortappixCli.ResolveManifestPath(const AReference: string;
@@ -328,6 +372,7 @@ begin
 
   try
     try
+      WarnIfUpdateUnconfirmed;
       ManifestPath := ResolveManifestPath(AppReference, AppId);
       Manifest := TPortappixManifest.LoadFromFile(ManifestPath);
       AppId := Manifest.Id;
@@ -468,6 +513,7 @@ begin
 
   try
     try
+      WarnIfUpdateUnconfirmed;
       ManifestPath := ResolveTraceReference(AppReference, AppId);
       Manifest := TPortappixManifest.LoadFromFile(ManifestPath);
       AppId := Manifest.Id;
@@ -570,6 +616,199 @@ begin
 
   WriteExitCodeFile(FinalCode, AppId, FinalMessage);
   Result := FinalCode;
+end;
+
+function TPortappixCli.ResolveUpdateUrl: string;
+begin
+  Result := FArgument.Trim;
+  if Result <> '' then
+    Exit;
+  var Settings := TPortappixSettings.Create(FRootPath);
+  try
+    Settings.Load;
+    Result := Settings.UpdateUrl;
+  finally
+    Settings.Free;
+  end;
+end;
+
+procedure TPortappixCli.WarnIfUpdateUnconfirmed;
+var
+  Manager: TPortappixUpdateManager;
+begin
+  Manager := TPortappixUpdateManager.Create(FRootPath);
+  try
+    if Manager.NeedsRollbackOffer then
+      Log('WARNING: a launcher update was applied but never confirmed ' +
+        '(Launcher.exe.old exists without the update_ok marker). Start the ' +
+        'launcher UI to get the option to restore the previous version, or ' +
+        'delete Launcher.exe.old to dismiss the rollback offer.');
+  finally
+    Manager.Free;
+  end;
+end;
+
+function TPortappixCli.ExecuteApplyUpdates: Integer;
+var
+  Manager: TPortappixPackageManager;
+begin
+  Manager := TPortappixPackageManager.Create(FRootPath);
+  try
+    Manager.OnLog :=
+      procedure(AMsg: string)
+      begin
+        Log(AMsg);
+      end;
+    try
+      Manager.ApplyPendingUpdates;
+      Log('Finished applying queued updates.');
+      WriteExitCodeFile(CliExitOk, '', '');
+      Result := CliExitOk;
+    except
+      on E: Exception do
+      begin
+        Log('Applying queued updates failed: ' + E.Message);
+        WriteExitCodeFile(CliExitGenericFailure, '', E.Message);
+        Result := CliExitGenericFailure;
+      end;
+    end;
+  finally
+    Manager.Free;
+  end;
+end;
+
+function TPortappixCli.ExecuteCheckUpdates: Integer;
+var
+  Url: string;
+  Manager: TPortappixUpdateManager;
+  Release: TPortappixRelease;
+  Available: Boolean;
+begin
+  Url := ResolveUpdateUrl;
+  if Url = '' then
+  begin
+    Log('No release URL given; pass it to --check-updates or set updateUrl in ' +
+      'Cache\settings.json.');
+    WriteExitCodeFile(CliExitUsage, '', 'No release URL given.');
+    Exit(CliExitUsage);
+  end;
+
+  Manager := TPortappixUpdateManager.Create(FRootPath);
+  try
+    Manager.OnLog :=
+      procedure(AMsg: string)
+      begin
+        Log(AMsg);
+      end;
+    try
+      Release := DownloadReleases(Url);
+      try
+        Available := Manager.IsUpdateAvailable(Release);
+        if Available then
+          Log(Format('Update available: %s -> %s (%s).',
+            [Manager.InstalledVersion, Release.Version, Release.Url]))
+        else
+          Log(Format('Up to date: installed %s, latest release %s.',
+            [Manager.InstalledVersion, Release.Version]));
+        WriteExitCodeFile(CliExitOk, '', Format(
+          'updateAvailable=%s; installed=%s; available=%s; url=%s',
+          [BoolToStr(Available, True), Manager.InstalledVersion, Release.Version,
+           Release.Url]));
+        Result := CliExitOk;
+      finally
+        Release.Free;
+      end;
+    except
+      on E: EPortappixUpdateError do
+      begin
+        Log('Update check failed: ' + E.Message);
+        WriteExitCodeFile(CliExitGenericFailure, '', E.Message);
+        Result := CliExitGenericFailure;
+      end;
+      on E: Exception do
+      begin
+        Log('Update check failed: ' + E.Message);
+        WriteExitCodeFile(CliExitGenericFailure, '', E.Message);
+        Result := CliExitGenericFailure;
+      end;
+    end;
+  finally
+    Manager.Free;
+  end;
+end;
+
+function TPortappixCli.ExecuteSelfUpdate: Integer;
+var
+  Url: string;
+  Manager: TPortappixUpdateManager;
+begin
+  Url := ResolveUpdateUrl;
+  if Url = '' then
+  begin
+    Log('No release URL given; pass it to --self-update or set updateUrl in ' +
+      'Cache\settings.json.');
+    WriteExitCodeFile(CliExitUsage, '', 'No release URL given.');
+    Exit(CliExitUsage);
+  end;
+
+  Manager := TPortappixUpdateManager.Create(FRootPath);
+  try
+    Manager.OnLog :=
+      procedure(AMsg: string)
+      begin
+        Log(AMsg);
+      end;
+    try
+      Manager.ApplyUpdateFromUrl(Url);
+      // The new launcher was started with --post-update; this process exits.
+      WriteExitCodeFile(CliExitOk, '', 'Update applied; the launcher is restarting.');
+      Result := CliExitOk;
+    except
+      on E: EPortappixUpdateError do
+      begin
+        Log('Self-update failed: ' + E.Message);
+        WriteExitCodeFile(CliExitGenericFailure, '', E.Message);
+        Result := CliExitGenericFailure;
+      end;
+      on E: Exception do
+      begin
+        Log('Self-update failed: ' + E.Message);
+        WriteExitCodeFile(CliExitGenericFailure, '', E.Message);
+        Result := CliExitGenericFailure;
+      end;
+    end;
+  finally
+    Manager.Free;
+  end;
+end;
+
+function TPortappixCli.ExecutePostUpdate: Integer;
+var
+  Manager: TPortappixUpdateManager;
+begin
+  Manager := TPortappixUpdateManager.Create(FRootPath);
+  try
+    Manager.OnLog :=
+      procedure(AMsg: string)
+      begin
+        Log(AMsg);
+      end;
+    try
+      Manager.ConfirmUpdate;
+      WriteExitCodeFile(CliExitOk, '', Format(
+        'Update confirmed; installed version is %s.', [Manager.InstalledVersion]));
+      Result := CliExitOk;
+    except
+      on E: Exception do
+      begin
+        Log('Post-update confirmation failed: ' + E.Message);
+        WriteExitCodeFile(CliExitGenericFailure, '', E.Message);
+        Result := CliExitGenericFailure;
+      end;
+    end;
+  finally
+    Manager.Free;
+  end;
 end;
 
 function TPortappixCli.ExecuteCheckManifest: Integer;
@@ -677,6 +916,14 @@ begin
     Result := ExecuteCheckManifest
   else if FCommand = 'recover' then
     Result := ExecuteRecover
+  else if FCommand = 'apply-updates' then
+    Result := ExecuteApplyUpdates
+  else if FCommand = 'check-updates' then
+    Result := ExecuteCheckUpdates
+  else if FCommand = 'self-update' then
+    Result := ExecuteSelfUpdate
+  else if FCommand = 'post-update' then
+    Result := ExecutePostUpdate
   else
   begin
     CliWrite(CliUsageText);

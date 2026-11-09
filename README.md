@@ -24,7 +24,10 @@ signatures). No third-party components.
 | `src/Portappix.Runner.pas` | `TPortableAppRunner` — the execution engine. |
 | `src/Portappix.State.pas` | `TPortappixJournal` — crash journal, locking, boot recovery. |
 | `src/Portappix.Catalog.pas` | `TPortappixCatalog` — signed `catalog.json` download/parse. |
-| `src/Portappix.PackageManager.pas` | Download, SHA-256/size verification, safe unzip, atomic install/update. |
+| `src/Portappix.PackageManager.pas` | Download, SHA-256/size verification, safe unzip, atomic install/update, `.prev` rollback, pending-update queue. |
+| `Portappix.Version.pas` | Semantic version parsing and comparison for update decisions. |
+| `Portappix.Settings.pas` | `Cache\settings.json` (update URL, auto-check, pending-apply flags). |
+| `Portappix.Update.pas` | Signed `releases.json` self-update: swap, `--post-update` confirmation, rollback watchdog. |
 | `src/Portappix.Importer.pas` | Version-info extraction and non-destructive import into `Apps\<id>`. |
 | `src/Portappix.Trace.pas` | "What did this app touch" trace reports: before/after snapshots, diff, noise filter, sandboxing suggestions. |
 | `src/Portappix.TrayUI.pas` | Tray icon/popup menu; category grouping; background launches; app locks; consent. |
@@ -69,6 +72,7 @@ Engine units (`Portappix.*`) have no VCL/Forms dependency. UI logic lives in `Ma
 | `name` | No | Display name. Defaults to `id`. |
 | `publisher` | No | Informational. |
 | `version` | No | Used for update detection against the catalog. |
+| `dataVersion` | No | Bump when an update changes the on-disk data schema. The runner records it in `Data\<id>\data_version.json`; updates that would move to an older data version are refused. |
 | `category` | No | Tray menu group. Defaults to `Apps`. |
 | `exe` | Yes | Executable path. Supports tokens. |
 | `args` | No | Raw command-line arguments appended to the executable. |
@@ -164,6 +168,11 @@ running, and vice versa):
 | `--accept-policy` | Test-only: records first-run consent without a prompt. Never use on a real desktop. |
 | `--check-manifest <app.json>` | Validate a manifest against `Portappix.Policy` without running anything. |
 | `--recover` | Run the crash journal's pending cleanups and exit. |
+| `--apply-updates` | Apply updates queued while apps were running. |
+| `--check-updates <url>` | Download + verify `releases.json`; report `updateAvailable` in the exit-code file. |
+| `--self-update <url>` | Download, verify and apply a launcher update, then restart. |
+| `--post-update` | First start after a self-update: confirm and record the new version. |
+| `--allow-insecure-release-urls` | Test-only: allow `http://` release URLs (signatures stay mandatory). |
 | `--root <path>` | Launcher root (defaults to the folder containing `Launcher.exe`). |
 | `--exit-code-file <path>` | Write a JSON record: `{"command", "app", "exitCode", "alreadyRunning", "message"}`. |
 | `--log-file <path>` | Append a timestamped run log. |
@@ -281,10 +290,65 @@ PORTAPPIX_TRACE_REGISTRY=HKCU\Software                      # replaces the defau
 
 ## Store and updates
 
-The Store tab shows catalog entries with a **Status** column (`Installed` / `Update available`).
-`Install` installs fresh apps; `Update` reuses the same atomic install path for an app whose
-installed `version` differs from the catalog. Uninstall removes `Apps\<id>` only; `Data\<id>` is
-preserved. Scanning skips `.new`/`.old` folders and manifests whose id does not match the folder.
+The Store tab shows catalog entries with a **Status** column (`Installed` /
+`Update available` / `Update pending`). `Install` installs fresh apps; `Update`
+reuses the same atomic install path for an app whose installed `version`
+differs from the catalog. Uninstall removes `Apps\<id>` (plus its rollback
+copy) only; `Data\<id>` is preserved. Scanning skips `.new`/`.old`/`.prev`
+folders and manifests whose id does not match the folder.
+
+## Updates
+
+### App updates (safe)
+
+- **Downgrade protection** — a package whose semantic `version` is older than
+  the installed app is refused, and so is a package whose `dataVersion` is
+  older than the recorded one (`Data\<id>\data_version.json`, written by the
+  runner on every launch when the manifest declares a non-zero `dataVersion`).
+- **Pending updates** — updating an app that is currently running (per-app
+  mutex or the app folder seen in the process list) queues the update in
+  `Cache\pending_updates.json` instead of failing. Queued updates install
+  automatically at the next launcher start (or `--apply-updates`) once the
+  app has closed; `Data\<id>` is never touched. A failed queued update stays
+  queued.
+- **Rollback** — every app update keeps one previous generation in
+  `Apps\<id>.prev`. Rolling back restores it while the app is closed.
+
+### Launcher self-update
+
+`releases.json` (signed as `releases.json.sig` with the same embedded ECDSA
+P-256 key as `catalog.json`) advertises the newest launcher release
+(`schema`, `channel`, `version`, `url` (https), `sha256`, `size`, `notes`).
+Build it with:
+
+```bash
+python scripts/make_release.py --source staging --out dist --version 1.1.0 \
+    --channel stable --key keys/catalog_signing_key.pem \
+    --url-base https://example.com/downloads
+```
+
+Flow (see `Portappix.Update`):
+
+1. `--check-updates <url>` verifies the signature, compares semantic versions
+   and reports `updateAvailable` in the exit-code file.
+2. `--self-update <url>` downloads the zip (sha256 + size verified), extracts
+   it with the same zip-slip/entry caps as app packages, writes
+   `Cache\update_pending.json`, renames the running `Launcher.exe` to
+   `Launcher.exe.old`, moves the new one into place (extra release files are
+   replaced too), starts `Launcher.exe --post-update` and exits.
+3. `--post-update` writes `Cache\update_ok`, records the version in
+   `Cache\launcher_version.json` and removes the pending file.
+   `Launcher.exe.old` stays as the rollback copy until the next update.
+4. **Watchdog** — if `Launcher.exe.old` exists without `update_ok`, the new
+   version never confirmed a successful start: the UI offers to restore the
+   previous launcher; headless runs log a warning. The failed build is kept
+   next to the launcher as `Launcher.exe.failed_<timestamp>`.
+
+Update settings live in `Cache\settings.json` (`updateUrl`,
+`autoCheckUpdates`, `autoApplyPendingUpdates`); pass the URL explicitly to
+skip the setting. `--allow-insecure-release-urls` is a test-only escape hatch
+that permits `http://` URLs for local test servers — signature verification is
+never skipped.
 
 ## Build
 
@@ -335,7 +399,10 @@ with atomic swap, zip-slip rejection, subfolder-preserving extraction, SHA-256 r
 journal save/recover/corrupt handling, export-before-delete ordering with an injected
 registry-ops fake, and the trace engine (noise filter, snapshot caps, snapshot diff,
 suggestion generation and report writing) with injected file/registry probes — the trace tests
-never launch a process and never touch the host.
+never launch a process and never touch the host. Update logic is covered too: semantic version
+ordering, `dataVersion` handling, the pending-update queue (including corrupt files and disk
+persistence), `.prev` rollback, downgrade/data-version protection, settings persistence, and
+the launcher self-update swap/confirm/rollback state machine against a local zip (no network).
 
 ## Storefront CI
 

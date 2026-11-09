@@ -34,7 +34,7 @@ machine.
 
 ## 4. Release artifact
 
-- [ ] `python scripts/make_release.py --source <staging-folder> --out dist\ --version x.y.z --channel stable --key keys/catalog_signing_key.pem`
+- [ ] `python scripts/make_release.py --source <staging-folder> --out dist\ --version x.y.z --channel stable --key keys/catalog_signing_key.pem --url-base https://<host>/downloads`
       builds the release zip, writes `releases.json` and signs it.
 - [ ] `dist\releases.json` + `dist\releases.json.sig` verified with the
       verifier used by the launcher (`--check-updates` / the update check).
@@ -60,16 +60,24 @@ machine.
 
 ## 7. Update flows (clean VM ONLY)
 
-- [ ] Self-update: install release N-1, point it at `releases.json` for N,
-      check updates, apply, verify the new version starts and `Launcher.exe.old`
-      is cleaned up on the first start of the new version.
-- [ ] Rollback watchdog: delete the `update_ok` marker, relaunch, and confirm
-      the offer to restore `Launcher.exe.old`.
+- [ ] App update: install an app, request a catalog update while it runs, and
+      confirm the entry lands in `Cache\pending_updates.json` (Store tab shows
+      "Update pending"); close the app, restart the launcher, confirm the
+      update applied and `Data\<id>` was untouched; verify the "Roll back"
+      offer (`Apps\<id>.prev`) restores the previous version.
+- [ ] Self-update: install release N-1, point it at `releases.json` for N
+      (`--check-updates` / `--self-update`), apply, and confirm the new
+      version starts: `--post-update` writes `Cache\update_ok`, records the
+      version in `Cache\launcher_version.json`, and keeps `Launcher.exe.old`
+      as the rollback copy.
+- [ ] Rollback watchdog: delete the `update_ok` marker (simulating a new
+      version that never booted), relaunch, and confirm the offer to restore
+      `Launcher.exe.old` (UI dialog; headless runs log a warning instead).
 - [ ] Downgrade blocked: point at `releases.json` with a lower version and
-      confirm refusal.
-- [ ] Pending updates: start an app, request an update for it, confirm the
-      pending entry is written, close the app, confirm the update applied and
-      `Data\<id>` was untouched; verify "Roll back" restores `Apps\<id>.prev`.
+      confirm refusal (exit code 7).
+- [ ] Manifest downgrade protection: a package whose `version` or
+      `dataVersion` is older than the installed app / recorded data version
+      is refused.
 
 ## 8. Tag and publish
 
