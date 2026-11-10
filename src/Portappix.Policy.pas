@@ -52,9 +52,6 @@ const
 
   PathLikeEnvironmentVariables: array[0..1] of string = ('PATH', 'PATHEXT');
 
-  DeniedRegistryVendors: array[0..5] of string = (
-    'Microsoft', 'Classes', 'Policies', 'Windows', 'Windows NT', 'CurrentVersion');
-
   DeniedPathComponents: array[0..7] of string = (
     'Documents', 'Desktop', 'Downloads', 'OneDrive', 'Windows', 'System32',
     'Program Files', 'Program Files (x86)');
@@ -88,73 +85,14 @@ begin
   Result := FMessages.Text.Trim;
 end;
 
-function IsDeniedVendor(const AName: string): Boolean;
-begin
-  for var Vendor in DeniedRegistryVendors do
-    if SameText(AName, Vendor) then
-      Exit(True);
-  Result := False;
-end;
-
 class function TPortappixPolicy.ValidateRegistryPath(const AKey: string;
   const AResult: TPolicyResult): Boolean;
 var
-  RootKey: HKEY;
-  SubKey: string;
-  Parts: TArray<string>;
-  Index: Integer;
+  ErrorMsg: string;
 begin
-  Result := False;
-  try
-    RootKey := 0;
-    SubKey := '';
-    if not ParseRegistryPath(AKey, RootKey, SubKey) then
-    begin
-      AResult.AddError(Format('Registry path is invalid: "%s".', [AKey]));
-      Exit;
-    end;
-
-    if RootKey <> HKEY_CURRENT_USER then
-    begin
-      AResult.AddError(Format(
-        'Registry path "%s" must be under HKCU\Software; other hives are not allowed.', [AKey]));
-      Exit;
-    end;
-
-    Parts := SubKey.Split(['\']);
-    if (Length(Parts) < 3) or not SameText(Parts[0], 'Software') then
-    begin
-      AResult.AddError(Format(
-        'Registry path "%s" must be HKCU\Software\<vendor>\<app> (at least two levels below HKCU\Software).',
-        [AKey]));
-      Exit;
-    end;
-
-    if not IsSafeFileComponent(Parts[1]) or not IsSafeFileComponent(Parts[2]) then
-    begin
-      AResult.AddError(Format('Registry path "%s" contains an invalid vendor or app name.', [AKey]));
-      Exit;
-    end;
-
-    if IsDeniedVendor(Parts[1]) then
-    begin
-      AResult.AddError(Format(
-        'Registry path "%s" is reserved (%s is on the deny-list).', [AKey, Parts[1]]));
-      Exit;
-    end;
-
-    for Index := 1 to High(Parts) do
-      if Parts[Index] = '' then
-      begin
-        AResult.AddError(Format('Registry path "%s" contains an empty component.', [AKey]));
-        Exit;
-      end;
-
-    Result := True;
-  except
-    on E: Exception do
-      AResult.AddError(Format('Registry path "%s" is invalid: %s', [AKey, E.Message]));
-  end;
+  Result := ValidateRegistryKeyDepthAndVendor(AKey, ErrorMsg);
+  if not Result then
+    AResult.AddError(ErrorMsg);
 end;
 
 function FirstRelativeComponent(const APath, ARootPath: string): string;

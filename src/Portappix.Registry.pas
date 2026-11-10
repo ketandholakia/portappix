@@ -42,6 +42,8 @@ function RegistryRootText(const ARootKey: HKEY): string;
 function NormalizeRegistryPath(const APath: string): string;
 function MergeRegistryFiles(const AFiles: TArray<string>;
   const ADestination: string): Boolean;
+function IsSafeRegistryVendor(const AVendor: string): Boolean;
+function ValidateRegistryKeyDepthAndVendor(const AKey: string; out AError: string): Boolean;
 
 implementation
 
@@ -243,6 +245,77 @@ begin
     Lines.Free;
     Builder.Free;
   end;
+end;
+
+const
+  DeniedRegistryVendors: array[0..5] of string = (
+    'Microsoft', 'Classes', 'Policies', 'Windows', 'Windows NT', 'CurrentVersion');
+
+function IsSafeRegistryVendor(const AVendor: string): Boolean;
+begin
+  for var Vendor in DeniedRegistryVendors do
+    if SameText(AVendor, Vendor) then
+      Exit(False);
+  Result := True;
+end;
+
+function ValidateRegistryKeyDepthAndVendor(const AKey: string; out AError: string): Boolean;
+var
+  RootKey: HKEY;
+  SubKey: string;
+  Parts: TArray<string>;
+  Index: Integer;
+begin
+  Result := False;
+  AError := '';
+  if AKey.Trim = '' then
+  begin
+    AError := 'Registry path must not be empty.';
+    Exit;
+  end;
+  if (AKey.IndexOf('..') >= 0) or (AKey.IndexOf(#0) >= 0) then
+  begin
+    AError := Format('Registry path "%s" contains traversal or null characters.', [AKey]);
+    Exit;
+  end;
+  if not ParseRegistryPath(AKey, RootKey, SubKey) then
+  begin
+    AError := Format('Registry path is invalid: "%s".', [AKey]);
+    Exit;
+  end;
+  if RootKey <> HKEY_CURRENT_USER then
+  begin
+    AError := Format('Registry path "%s" must be under HKCU\Software; other hives are not allowed.', [AKey]);
+    Exit;
+  end;
+
+  Parts := SubKey.Split(['\']);
+  if (Length(Parts) < 3) or not SameText(Parts[0], 'Software') then
+  begin
+    AError := Format('Registry path "%s" must be HKCU\Software\<vendor>\<app> (at least two levels below HKCU\Software).', [AKey]);
+    Exit;
+  end;
+
+  if not IsSafeFileComponent(Parts[1]) or not IsSafeFileComponent(Parts[2]) then
+  begin
+    AError := Format('Registry path "%s" contains an invalid vendor or app name.', [AKey]);
+    Exit;
+  end;
+
+  if not IsSafeRegistryVendor(Parts[1]) then
+  begin
+    AError := Format('Registry path "%s" is reserved (%s is on the deny-list).', [AKey, Parts[1]]);
+    Exit;
+  end;
+
+  for Index := 1 to High(Parts) do
+    if (Parts[Index] = '') or not IsSafeFileComponent(Parts[Index]) then
+    begin
+      AError := Format('Registry path "%s" contains an invalid or empty component.', [AKey]);
+      Exit;
+    end;
+
+  Result := True;
 end;
 
 end.

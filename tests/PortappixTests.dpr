@@ -1450,6 +1450,27 @@ begin
     ExpectManual(TamperedTransaction('nameatk',
       'JTarget', '..\\outside'),
       'Path safety: junction target outside the data dir');
+    ExpectManual(TamperedTransaction('hkcusoftware',
+      'HKCU\\Software\\Vendor\\PathSafety', 'HKCU\\Software'),
+      'Registry safety: HKCU\\Software without vendor\\app');
+    ExpectManual(TamperedTransaction('hkcumicrosoft',
+      'HKCU\\Software\\Vendor\\PathSafety', 'HKCU\\Software\\Microsoft'),
+      'Registry safety: HKCU\\Software\\Microsoft on deny-list');
+    ExpectManual(TamperedTransaction('hkcuclasses',
+      'HKCU\\Software\\Vendor\\PathSafety', 'HKCU\\Software\\Classes\\..'),
+      'Registry safety: HKCU\\Software\\Classes\\.. traversal');
+
+    // Unit test assertions on ValidateRegistryKey
+    Check(not TPortappixTransactionReconciler.ValidateRegistryKey('HKCU\Software'),
+      'Reconciler ValidateRegistryKey rejects HKCU\Software root');
+    Check(not TPortappixTransactionReconciler.ValidateRegistryKey('HKCU\Software\Microsoft'),
+      'Reconciler ValidateRegistryKey rejects HKCU\Software\Microsoft (too shallow)');
+    Check(not TPortappixTransactionReconciler.ValidateRegistryKey('HKCU\Software\Microsoft\App'),
+      'Reconciler ValidateRegistryKey rejects HKCU\Software\Microsoft\App (denied vendor)');
+    Check(not TPortappixTransactionReconciler.ValidateRegistryKey('HKCU\Software\Classes\..'),
+      'Reconciler ValidateRegistryKey rejects HKCU\Software\Classes\.. (traversal)');
+    Check(TPortappixTransactionReconciler.ValidateRegistryKey('HKCU\Software\Vendor\App'),
+      'Reconciler ValidateRegistryKey allows HKCU\Software\<vendor>\<app>');
   finally
     Journal.Free;
     Store.Free;

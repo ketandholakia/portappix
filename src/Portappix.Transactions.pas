@@ -1512,27 +1512,12 @@ end;
 class function TPortappixTransactionReconciler.ValidateRegistryKey(
   const AKey: string): Boolean;
 var
-  RootKey: HKEY;
-  SubKey: string;
-  Component: string;
+  IgnoredError: string;
 begin
   // Journal-supplied registry keys are validated before any reg.exe call:
-  // HKCU only, well-formed components, no traversal or separator tricks.
-  Result := False;
-  if AKey = '' then
-    Exit;
-  if AKey.IndexOf('..') >= 0 then
-    Exit;
-  if AKey.IndexOf(#0) >= 0 then
-    Exit;
-  if not ParseRegistryPath(AKey, RootKey, SubKey) then
-    Exit;
-  if RootKey <> HKEY_CURRENT_USER then
-    Exit;
-  for Component in SubKey.Split(['\']) do
-    if (Component = '') or not IsSafeFileComponent(Component) then
-      Exit;
-  Result := True;
+  // HKCU\Software\<vendor>\<app> depth (shared with policy), safe components,
+  // no reserved vendors, and no traversal or separator tricks.
+  Result := ValidateRegistryKeyDepthAndVendor(AKey, IgnoredError);
 end;
 
 function TPortappixTransactionReconciler.ValidateOwnedBackup(
