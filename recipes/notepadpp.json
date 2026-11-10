@@ -7,6 +7,8 @@
   "version": "8.9.9",
   "category": "Development",
   "homepage": "https://notepad-plus-plus.org/",
+  "license": "GPL-3.0-or-later",
+  "redistribution": "allowed",
   "notes": "Text and source code editor. The official portable zip includes doLocalConf.xml, so configuration files are stored locally next to the executable. Registry keys and environment redirections are captured under Data\\notepadpp.",
   "source": {
     "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.9/npp.8.9.9.portable.x64.zip",

@@ -4,7 +4,7 @@
   "title": "Portappix Recipe",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schema", "kind", "id", "name", "version", "category", "homepage", "source", "manifest"],
+  "required": ["schema", "kind", "id", "name", "version", "category", "homepage", "license", "redistribution", "source", "manifest"],
   "properties": {
     "schema": { "const": 1 },
     "kind": { "const": "recipe" },
@@ -21,6 +21,20 @@
       "type": "string",
       "format": "uri",
       "pattern": "^https://"
+    },
+    "license": {
+      "type": "string",
+      "minLength": 1
+    },
+    "redistribution": {
+      "type": "string",
+      "enum": ["allowed", "vendor-link-only"]
+    },
+    "stripPrefix": {
+      "type": "string"
+    },
+    "exePath": {
+      "type": "string"
     },
     "notes": { "type": "string" },
     "source": {

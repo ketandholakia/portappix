@@ -87,6 +87,11 @@ def check_recipe_semantics(recipe: dict[str, Any]) -> list[str]:
     if source["size"] <= 0:
         problems.append("source.size should be the vendor archive's exact byte size")
 
+    if "license" not in recipe or not recipe["license"].strip():
+        problems.append("recipe must define 'license' (SPDX identifier)")
+    if recipe.get("redistribution") not in ("allowed", "vendor-link-only"):
+        problems.append("recipe must define 'redistribution' as 'allowed' or 'vendor-link-only'")
+
     manifest_problems = validate_manifest_policy(recipe["manifest"])
     problems.extend(f"manifest: {problem}" for problem in manifest_problems)
     return problems
@@ -164,12 +169,49 @@ def write_app_json(recipe: dict[str, Any], destination: Path) -> None:
     )
 
 
+def ensure_gpl_compliance(recipe: dict[str, Any], destination: Path) -> None:
+    license_name = recipe.get("license", "")
+    if "GPL" in license_name.upper():
+        source_offer = (
+            f"SOURCE OFFER AND LICENSE NOTE\n"
+            f"=============================\n\n"
+            f"Application: {recipe['name']} (version {recipe['version']})\n"
+            f"License: {license_name}\n"
+            f"Upstream Project: {recipe.get('homepage', 'N/A')}\n\n"
+            f"This application is distributed under the {license_name}.\n"
+            f"In accordance with the GNU General Public License source-offer requirements,\n"
+            f"the source code corresponding to this binary distribution is available at:\n"
+            f"  {recipe.get('homepage')}\n"
+            f"and from the upstream vendor download location:\n"
+            f"  {recipe['source']['url']}\n\n"
+            f"Full license terms: https://spdx.org/licenses/{license_name}.html\n"
+        )
+        offer_file = destination / "SOURCE_OFFER.txt"
+        if not offer_file.exists():
+            offer_file.write_text(source_offer, encoding="utf-8")
+
+        has_license = any(
+            (destination / name).exists()
+            for name in ["LICENSE.txt", "LICENSE", "COPYING.txt", "COPYING", "license.txt"]
+        )
+        if not has_license:
+            license_text = (
+                f"GNU GENERAL PUBLIC LICENSE ({license_name})\n"
+                f"====================================\n\n"
+                f"This software is licensed under the terms of {license_name}.\n"
+                f"For full license text, see: https://www.gnu.org/licenses/\n"
+                f"SPDX: https://spdx.org/licenses/{license_name}.html\n"
+            )
+            (destination / "LICENSE.txt").write_text(license_text, encoding="utf-8")
+
+
 def build_package(recipe: dict[str, Any], archive: Path, out: Path) -> Path:
     with tempfile.TemporaryDirectory(prefix="portappix-recipe-") as temp:
         extract_dir = Path(temp) / "extract"
         extract_dir.mkdir()
         safe_extract(archive, extract_dir)
         write_app_json(recipe, extract_dir)
+        ensure_gpl_compliance(recipe, extract_dir)
 
         package_path = out / f"{recipe['id']}.package.zip"
         with zipfile.ZipFile(package_path, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -243,6 +285,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.lint_only:
         print(f"Lint OK: {recipe_path.name}")
         return 0
+
+    if recipe.get("redistribution") == "vendor-link-only":
+        print(f"Recipe '{recipe['id']}' redistribution: vendor-link-only.")
+        if not args.verify:
+            print("Notice: Vendor-link-only packages are not re-hosted in dist/; client downloads directly. Use --verify to test vendor download.")
+            return 0
 
     out = args.out
     out.mkdir(parents=True, exist_ok=True)

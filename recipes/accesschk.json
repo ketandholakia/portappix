@@ -7,7 +7,9 @@
   "version": "2026.11.09",
   "category": "Sysinternals",
   "homepage": "https://learn.microsoft.com/sysinternals/downloads/accesschk",
-  "notes": "Command-line access-rights auditor for files, registry keys and services. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "license": "LicenseRef-Microsoft-Sysinternals",
+  "redistribution": "vendor-link-only",
+  "notes": "Command-line access-rights auditor for files, registry keys and services. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once. Microsoft Software License Terms (Sysinternals), Section 2(c) prohibits redistribution; configured as vendor-link-only for direct download from Microsoft.",
   "source": {
     "url": "https://download.sysinternals.com/files/AccessChk.zip",
     "sha256": "8ef5e3cf235bcf4ecdcf8b4da1c0016a75f104b8591a65cc083ae3a82d496e07",

@@ -7,7 +7,9 @@
   "version": "2026.11.09",
   "category": "Sysinternals",
   "homepage": "https://learn.microsoft.com/sysinternals/downloads/sigcheck",
-  "notes": "Command-line signature/virus-total checker. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "license": "LicenseRef-Microsoft-Sysinternals",
+  "redistribution": "vendor-link-only",
+  "notes": "Command-line signature/virus-total checker. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once. Microsoft Software License Terms (Sysinternals), Section 2(c) prohibits redistribution; configured as vendor-link-only for direct download from Microsoft.",
   "source": {
     "url": "https://download.sysinternals.com/files/Sigcheck.zip",
     "sha256": "8756099c1ce3d3f450245c0d4b39aeb5b29309f56bf77f8c18f1469c418abf12",
@@ -16,6 +18,8 @@
   },
   "manifest": {
     "exe": "sigcheck64.exe",
-    "registry": ["HKCU\\Software\\Sysinternals\\Sigcheck"]
+    "registry": [
+      "HKCU\\Software\\Sysinternals\\Sigcheck"
+    ]
   }
 }

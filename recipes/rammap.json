@@ -7,7 +7,9 @@
   "version": "2026.11.09",
   "category": "Sysinternals",
   "homepage": "https://learn.microsoft.com/sysinternals/downloads/rammap",
-  "notes": "Physical memory usage analyzer. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "license": "LicenseRef-Microsoft-Sysinternals",
+  "redistribution": "vendor-link-only",
+  "notes": "Physical memory usage analyzer. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once. Microsoft Software License Terms (Sysinternals), Section 2(c) prohibits redistribution; configured as vendor-link-only for direct download from Microsoft.",
   "source": {
     "url": "https://download.sysinternals.com/files/RAMMap.zip",
     "sha256": "6536a8107a3fb391e4443f2742366067341a7da50de89f99ca0b2390120dd0cc",
@@ -16,6 +18,8 @@
   },
   "manifest": {
     "exe": "RAMMap64.exe",
-    "registry": ["HKCU\\Software\\Sysinternals\\RAMMap"]
+    "registry": [
+      "HKCU\\Software\\Sysinternals\\RAMMap"
+    ]
   }
 }

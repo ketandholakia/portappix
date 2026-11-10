@@ -7,6 +7,8 @@
   "version": "7.4.1",
   "category": "Communication",
   "homepage": "https://desktop.telegram.org/",
+  "license": "GPL-3.0-or-later",
+  "redistribution": "allowed",
   "notes": "The official portable build (td-portable-win-x64) stores all session data (tdata) inside its Telegram folder, so the whole profile stays inside Apps\\telegram. Media cache also lands in that folder; keep an eye on its size.",
   "source": {
     "url": "https://github.com/telegramdesktop/tdesktop/releases/download/v7.4.1/td-portable-win-x64-7.4.1.zip",

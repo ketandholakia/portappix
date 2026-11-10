@@ -7,7 +7,9 @@
   "version": "2026.11.09",
   "category": "Sysinternals",
   "homepage": "https://learn.microsoft.com/sysinternals/downloads/handle",
-  "notes": "Command-line open-handle viewer. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once.",
+  "license": "LicenseRef-Microsoft-Sysinternals",
+  "redistribution": "vendor-link-only",
+  "notes": "Command-line open-handle viewer. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run shows the Sysinternals EULA once. Microsoft Software License Terms (Sysinternals), Section 2(c) prohibits redistribution; configured as vendor-link-only for direct download from Microsoft.",
   "source": {
     "url": "https://download.sysinternals.com/files/Handle.zip",
     "sha256": "279aaf8eccb6f79147f4dcc6ba091fb895c4cb8b199a0dd186a4c76bc519d2cd",

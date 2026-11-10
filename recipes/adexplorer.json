@@ -7,7 +7,9 @@
   "version": "2026.11.09",
   "category": "Sysinternals",
   "homepage": "https://learn.microsoft.com/sysinternals/downloads/adexplorer",
-  "notes": "Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers, so each re-pin bumps this. First run shows the Sysinternals EULA once.",
+  "license": "LicenseRef-Microsoft-Sysinternals",
+  "redistribution": "vendor-link-only",
+  "notes": "Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers, so each re-pin bumps this. First run shows the Sysinternals EULA once. Microsoft Software License Terms (Sysinternals), Section 2(c) prohibits redistribution; configured as vendor-link-only for direct download from Microsoft.",
   "source": {
     "url": "https://download.sysinternals.com/files/AdExplorer.zip",
     "sha256": "56536bff1e9da136a53f68c6f4f1cd51f79be919a27249a193a2bc8fc472e89a",
@@ -16,6 +18,8 @@
   },
   "manifest": {
     "exe": "ADExplorer64.exe",
-    "registry": ["HKCU\\Software\\Sysinternals\\AD Explorer"]
+    "registry": [
+      "HKCU\\Software\\Sysinternals\\AD Explorer"
+    ]
   }
 }

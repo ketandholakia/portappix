@@ -7,7 +7,9 @@
   "version": "2026.11.09",
   "category": "Sysinternals",
   "homepage": "https://learn.microsoft.com/sysinternals/downloads/pstools",
-  "notes": "Command-line toolbox (PsExec, PsList, PsKill, PsService, ...). The manifest launches PsExec64; the other tools live in the same folder and can be run from a shell. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run of each tool shows the Sysinternals EULA once.",
+  "license": "LicenseRef-Microsoft-Sysinternals",
+  "redistribution": "vendor-link-only",
+  "notes": "Command-line toolbox (PsExec, PsList, PsKill, PsService, ...). The manifest launches PsExec64; the other tools live in the same folder and can be run from a shell. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. First run of each tool shows the Sysinternals EULA once. Microsoft Software License Terms (Sysinternals), Section 2(c) prohibits redistribution; configured as vendor-link-only for direct download from Microsoft.",
   "source": {
     "url": "https://download.sysinternals.com/files/PSTools.zip",
     "sha256": "740ac6fb1131e51e3698615388143e2a43ff45d65b8169be20ea8a40aaa6efb3",

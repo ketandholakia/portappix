@@ -7,6 +7,8 @@
   "version": "2.71.0",
   "category": "System",
   "homepage": "https://github.com/fastfetch-cli/fastfetch",
+  "license": "MIT",
+  "redistribution": "allowed",
   "notes": "System information tool (successor to neofetch). Command-line tool; run it from a shell inside Apps\\fastfetch. Custom presets can be stored next to the executable.",
   "source": {
     "url": "https://github.com/fastfetch-cli/fastfetch/releases/download/2.71.0/fastfetch-windows-amd64.zip",

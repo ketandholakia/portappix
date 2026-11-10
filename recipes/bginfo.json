@@ -7,7 +7,9 @@
   "version": "2026.11.09",
   "category": "Sysinternals",
   "homepage": "https://learn.microsoft.com/sysinternals/downloads/bginfo",
-  "notes": "Desktop wallpaper information tool. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. Keep BGInfo configuration files (.bgi) next to the executable. First run shows the Sysinternals EULA once.",
+  "license": "LicenseRef-Microsoft-Sysinternals",
+  "redistribution": "vendor-link-only",
+  "notes": "Desktop wallpaper information tool. Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers. Keep BGInfo configuration files (.bgi) next to the executable. First run shows the Sysinternals EULA once. Microsoft Software License Terms (Sysinternals), Section 2(c) prohibits redistribution; configured as vendor-link-only for direct download from Microsoft.",
   "source": {
     "url": "https://download.sysinternals.com/files/BGInfo.zip",
     "sha256": "675cc582e1057b357e4f4cd37be9cecad2e811da7d841e5d0631a0b1816b9e51",
@@ -16,6 +18,8 @@
   },
   "manifest": {
     "exe": "Bginfo64.exe",
-    "registry": ["HKCU\\Software\\Sysinternals\\BGInfo"]
+    "registry": [
+      "HKCU\\Software\\Sysinternals\\BGInfo"
+    ]
   }
 }

@@ -7,6 +7,8 @@
   "version": "2.8.5",
   "category": "Media",
   "homepage": "https://github.com/clsid2/mpc-hc",
+  "license": "GPL-3.0-or-later",
+  "redistribution": "allowed",
   "notes": "The official archive is portable: settings are saved as mpc-hc.ini next to the executable inside Apps\\mpchc. The build bundles its own LAV Filters, so no codec installation happens.",
   "source": {
     "url": "https://github.com/clsid2/mpc-hc/releases/download/2.8.5/MPC-HC.2.8.5.x64.zip",

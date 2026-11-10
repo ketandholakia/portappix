@@ -7,7 +7,9 @@
   "version": "2026.11.09",
   "category": "Sysinternals",
   "homepage": "https://learn.microsoft.com/sysinternals/downloads/tcpview",
-  "notes": "Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers, so each re-pin bumps this. First run shows the Sysinternals EULA once.",
+  "license": "LicenseRef-Microsoft-Sysinternals",
+  "redistribution": "vendor-link-only",
+  "notes": "Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers, so each re-pin bumps this. First run shows the Sysinternals EULA once. Microsoft Software License Terms (Sysinternals), Section 2(c) explicitly prohibits distribution, hosting, or third-party redistribution; configured as vendor-link-only.",
   "source": {
     "url": "https://download.sysinternals.com/files/TCPView.zip",
     "sha256": "4fc5ceba3e1b27ad95a24df35d094b454ec5f9478e12a8ca2b1b222705b9683b",
@@ -16,6 +18,8 @@
   },
   "manifest": {
     "exe": "tcpview64.exe",
-    "registry": ["HKCU\\Software\\Sysinternals\\TCPView"]
+    "registry": [
+      "HKCU\\Software\\Sysinternals\\TCPView"
+    ]
   }
 }

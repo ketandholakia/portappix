@@ -40,36 +40,36 @@ id/version match the catalog entry).
 
 ## Current roster (28 recipes)
 
-| Recipe | App | Category | Hash source |
-| --- | --- | --- | --- |
-| accesschk | AccessChk | Sysinternals | computed from vendor download |
-| adexplorer | AD Explorer | Sysinternals | computed from vendor download |
-| autoruns | Autoruns | Sysinternals | computed from vendor download |
-| autologon | Autologon | Sysinternals | computed from vendor download |
-| bginfo | BGInfo | Sysinternals | computed from vendor download |
-| desktops | Desktops | Sysinternals | computed from vendor download |
-| everything | Everything | Search | vendor checksums page + download |
-| fastfetch | Fastfetch | System | computed from vendor download |
-| handle | Handle | Sysinternals | computed from vendor download |
-| keepassxc | KeePassXC | Security | computed from vendor download |
-| mpchc | Media Player Classic HC | Media | computed from vendor download |
-| notepadpp | Notepad++ | Development | vendor checksums page + download |
-| powershell | PowerShell 7 | Development | computed from vendor download |
-| processexplorer | Process Explorer | Sysinternals | computed from vendor download |
-| procmon | Process Monitor | Sysinternals | computed from vendor download |
-| pstools | PsTools | Sysinternals | computed from vendor download |
-| rammap | RAMMap | Sysinternals | computed from vendor download |
-| sdelete | SDelete | Sysinternals | computed from vendor download |
-| sigcheck | Sigcheck | Sysinternals | computed from vendor download |
-| strings | Strings | Sysinternals | computed from vendor download |
-| sumatrapdf | SumatraPDF | Office | computed from vendor download |
-| tcpview | TCPView | Sysinternals | computed from vendor download |
-| telegram | Telegram Desktop | Communication | computed from vendor download |
-| vmmap | VMMap | Sysinternals | computed from vendor download |
-| winobj | WinObj | Sysinternals | computed from vendor download |
-| winscp | WinSCP | Network | vendor checksums page + download |
-| x64dbg | x64dbg | Development | computed from vendor download |
-| zoomit | ZoomIt | Sysinternals | computed from vendor download |
+| Recipe | App | Category | License | Redistribution | Hash source |
+| --- | --- | --- | --- | --- | --- |
+| accesschk | AccessChk | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| adexplorer | AD Explorer | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| autoruns | Autoruns | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| autologon | Autologon | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| bginfo | BGInfo | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| desktops | Desktops | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| everything | Everything | Search | LicenseRef-Voidtools-Freeware | vendor-link-only | vendor checksums page + download |
+| fastfetch | Fastfetch | System | MIT | allowed | computed from vendor download |
+| handle | Handle | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| keepassxc | KeePassXC | Security | GPL-3.0-only | allowed | computed from vendor download |
+| mpchc | Media Player Classic HC | Media | GPL-3.0-or-later | allowed | computed from vendor download |
+| notepadpp | Notepad++ | Development | GPL-3.0-or-later | allowed | vendor checksums page + download |
+| powershell | PowerShell 7 | Development | MIT | allowed | computed from vendor download |
+| processexplorer | Process Explorer | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| procmon | Process Monitor | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| pstools | PsTools | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| rammap | RAMMap | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| sdelete | SDelete | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| sigcheck | Sigcheck | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| strings | Strings | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| sumatrapdf | SumatraPDF | Office | GPL-3.0-only | allowed | computed from vendor download |
+| tcpview | TCPView | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| telegram | Telegram Desktop | Communication | GPL-3.0-or-later | allowed | computed from vendor download |
+| vmmap | VMMap | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| winobj | WinObj | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
+| winscp | WinSCP | Network | GPL-3.0-or-later | allowed | vendor checksums page + download |
+| x64dbg | x64dbg | Development | GPL-3.0-only | allowed | computed from vendor download |
+| zoomit | ZoomIt | Sysinternals | LicenseRef-Microsoft-Sysinternals | vendor-link-only | computed from vendor download |
 
 See each recipe's `source.hashSource` for exactly where the pinned hash came
 from and when it was verified. Vendor checksum files were preferred where the

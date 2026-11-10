@@ -7,7 +7,9 @@
   "version": "2026.11.09",
   "category": "Sysinternals",
   "homepage": "https://learn.microsoft.com/sysinternals/downloads/process-explorer",
-  "notes": "Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers, so each re-pin bumps this. First run shows the Sysinternals EULA once.",
+  "license": "LicenseRef-Microsoft-Sysinternals",
+  "redistribution": "vendor-link-only",
+  "notes": "Version is the pin date: Sysinternals tools are live-updated by the vendor without version numbers, so each re-pin bumps this. First run shows the Sysinternals EULA once. Microsoft Software License Terms (Sysinternals), Section 2(c) prohibits redistribution; configured as vendor-link-only for direct download from Microsoft.",
   "source": {
     "url": "https://download.sysinternals.com/files/ProcessExplorer.zip",
     "sha256": "22551d0181dde6cb6af1bc134a190d867d883673f9c35c33039e4e8f9ac75df1",
@@ -16,6 +18,8 @@
   },
   "manifest": {
     "exe": "procexp64.exe",
-    "registry": ["HKCU\\Software\\Sysinternals\\Process Explorer"]
+    "registry": [
+      "HKCU\\Software\\Sysinternals\\Process Explorer"
+    ]
   }
 }

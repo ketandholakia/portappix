@@ -7,6 +7,8 @@
   "version": "3.6.1",
   "category": "Office",
   "homepage": "https://www.sumatrapdfreader.org/",
+  "license": "GPL-3.0-only",
+  "redistribution": "allowed",
   "notes": "Lightweight PDF, eBook, and comic reader. The official 64-bit portable build extracts as a single executable. Application state and caches are redirected to Data\\sumatrapdf.",
   "source": {
     "url": "https://files.sumatrapdfreader.org/software/sumatrapdf/rel/3.6.1/SumatraPDF-3.6.1-64.zip",

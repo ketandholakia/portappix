@@ -3,10 +3,12 @@
   "kind": "recipe",
   "id": "winscp",
   "name": "WinSCP",
-  "publisher": "Martin Přikryl",
+  "publisher": "Martin P\u0159ikryl",
   "version": "6.7",
   "category": "Network",
   "homepage": "https://winscp.net/",
+  "license": "GPL-3.0-or-later",
+  "redistribution": "allowed",
   "notes": "SFTP, FTP, WebDAV, and S3 client. Session and configuration state is saved to HKCU\\Software\\Martin Prikryl\\WinSCP 2 and isolated inside Data\\winscp.",
   "source": {
     "url": "https://downloads.sourceforge.net/project/winscp/WinSCP/6.7/WinSCP-6.7-Portable.zip",
