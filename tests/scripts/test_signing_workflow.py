@@ -172,6 +172,28 @@ def main() -> int:
               "signing: the fresh signature verifies against the signer's public key")
         check(not list(work.glob("*.tmp")) and not list(sig_path.parent.glob("*.tmp")),
               "signing: temporary signing files are cleaned up")
+        check("SHA-256 of signed bytes:" in proc.stdout,
+              "signing: prints SHA-256 of the signed bytes")
+        check("SHA-256 of verified bytes:" in verify.stdout,
+              "signing: prints SHA-256 of the verified bytes")
+
+        # CRLF rejection by default, allowed with --allow-crlf
+        crlf_catalog = work / "crlf.json"
+        crlf_catalog.write_bytes(b'{"apps": []}\r\n')
+        crlf_sig = work / "crlf.json.sig"
+        proc = run_sign("--catalog", str(crlf_catalog), "--key", str(signer_priv),
+                        "--public-key", str(signer_pub))
+        check(proc.returncode != 0 and "contains CR bytes" in proc.stdout,
+              "signing: refuses to sign file containing CR bytes by default")
+        check(not crlf_sig.exists(),
+              "signing: CR file produces no signature")
+
+        proc = run_sign("--catalog", str(crlf_catalog), "--key", str(signer_priv),
+                        "--public-key", str(signer_pub), "--allow-crlf")
+        check(proc.returncode == 0,
+              "signing: signs file containing CR bytes when --allow-crlf is passed")
+        check(crlf_sig.exists(),
+              "signing: --allow-crlf produces signature")
 
         # A subsequent signing failure must not touch the valid signature.
         valid_sig_bytes = sig_path.read_bytes()

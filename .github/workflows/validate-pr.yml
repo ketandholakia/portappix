@@ -5,7 +5,10 @@ on:
     paths:
       - catalog.json
       - catalog.json.sig
+      - releases.json
+      - releases.json.sig
       - catalog.schema.json
+      - keys/catalog_public.pem
       - scripts/validate_catalog.py
       - scripts/sign_catalog.py
       - .github/workflows/validate-pr.yml
@@ -31,7 +34,14 @@ jobs:
       - name: Install validation dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install jsonschema requests
+          pip install jsonschema requests cryptography
+
+      - name: Verify checked-out blob signatures
+        run: |
+          python scripts/sign_catalog.py --catalog catalog.json --signature catalog.json.sig --public-key keys/catalog_public.pem --verify
+          if [ -f releases.json ] && [ -f releases.json.sig ]; then
+            python scripts/sign_catalog.py --catalog releases.json --signature releases.json.sig --public-key keys/catalog_public.pem --verify
+          fi
 
       - name: Validate catalog
-        run: python scripts/validate_catalog.py --catalog catalog.json --schema catalog.schema.json
+        run: python scripts/validate_catalog.py --catalog catalog.json --schema catalog.schema.json --require-signature

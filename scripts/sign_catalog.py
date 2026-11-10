@@ -93,13 +93,19 @@ def verify_bytes(data: bytes, signature: bytes, key: ec.EllipticCurvePublicKey) 
 
 
 def sign_and_swap(catalog_path: Path, key_path: Path, signature_path: Path,
-                  verify_key: ec.EllipticCurvePublicKey) -> int:
+                  verify_key: ec.EllipticCurvePublicKey, allow_crlf: bool = False) -> int:
     """Sign to a temporary file, verify it, then atomically move it into place.
 
     On any failure the existing signature file (if any) is left untouched and
     a non-zero exit code is returned.
     """
     data = catalog_path.read_bytes()
+    if b"\r" in data and not allow_crlf:
+        print(f"ERROR: {catalog_path} contains CR bytes (\\r). Signed files must use LF line endings for byte-stability. Pass --allow-crlf to override.")
+        return 1
+
+    digest_hex = hashlib.sha256(data).hexdigest()
+    print(f"SHA-256 of signed bytes: {digest_hex}")
     key = load_private_key(key_path)
 
     signature = sign_bytes(data, key)
@@ -141,6 +147,8 @@ def main(argv: list[str] | None = None) -> int:
                                       "must be outside the repository. Never generated here.")
     parser.add_argument("--public-key", help="P-256 public key (PEM) used to verify the "
                                              "signature (default: keys/catalog_public.pem)")
+    parser.add_argument("--allow-crlf", action="store_true",
+                        help="Allow signing files containing CR bytes (\\r)")
     parser.add_argument("--signature", help="Signature file (default: <catalog>.sig)")
     parser.add_argument("--verify", action="store_true", help="Verify instead of signing")
     args = parser.parse_args(argv)
@@ -155,14 +163,18 @@ def main(argv: list[str] | None = None) -> int:
     )
     data = catalog_path.read_bytes()
 
+    public_key_path = Path(args.public_key) if args.public_key else DEFAULT_PUBLIC_KEY
+
     if args.verify:
-        if not args.public_key:
-            print("ERROR: --public-key is required with --verify")
+        if not public_key_path.exists():
+            print(f"ERROR: public key not found: {public_key_path}")
             return 1
         if not signature_path.exists():
             print(f"ERROR: signature not found: {signature_path}")
             return 1
-        ok = verify_bytes(data, signature_path.read_bytes(), load_public_key(Path(args.public_key)))
+        digest_hex = hashlib.sha256(data).hexdigest()
+        print(f"SHA-256 of verified bytes: {digest_hex}")
+        ok = verify_bytes(data, signature_path.read_bytes(), load_public_key(public_key_path))
         print(f"Signature: {'OK' if ok else 'FAILED'} ({catalog_path})")
         return 0 if ok else 1
 
@@ -170,7 +182,7 @@ def main(argv: list[str] | None = None) -> int:
         print("ERROR: --key is required when signing")
         return 1
 
-    verify_key_path = Path(args.public_key) if args.public_key else DEFAULT_PUBLIC_KEY
+    verify_key_path = public_key_path
     if not verify_key_path.exists():
         print(f"ERROR: trusted public key for post-sign verification not found: {verify_key_path} "
               "(pass --public-key explicitly)")
@@ -178,7 +190,8 @@ def main(argv: list[str] | None = None) -> int:
     verify_key = load_public_key(verify_key_path)
 
     signature_path.parent.mkdir(parents=True, exist_ok=True)
-    return sign_and_swap(catalog_path, Path(args.key), signature_path, verify_key)
+    return sign_and_swap(catalog_path, Path(args.key), signature_path, verify_key,
+                         allow_crlf=args.allow_crlf)
 
 
 if __name__ == "__main__":

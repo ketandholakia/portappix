@@ -25,6 +25,10 @@ import zipfile
 from pathlib import Path
 from typing import Any
 
+SCRIPTS_DIR = Path(__file__).resolve().parent
+if str(SCRIPTS_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPTS_DIR))
+
 import requests
 from jsonschema import Draft202012Validator, FormatChecker
 
@@ -428,17 +432,61 @@ def validate_recipe_provenance(apps: list[Any], recipe_schema_path: Path) -> int
     return failures
 
 
+def verify_catalog_signature(catalog_path: Path, signature_path: Path, public_key_path: Path) -> bool:
+    try:
+        from sign_catalog import load_public_key, verify_bytes
+    except ImportError:
+        print("ERROR: cryptography package required to verify catalog signature. Run: pip install cryptography")
+        return False
+
+    if not signature_path.exists():
+        print(f"ERROR: signature not found: {signature_path}")
+        return False
+    if not public_key_path.exists():
+        print(f"ERROR: public key not found: {public_key_path}")
+        return False
+
+    data = catalog_path.read_bytes()
+    digest_hex = hashlib.sha256(data).hexdigest()
+    print(f"Verifying catalog signature ({signature_path.name}, SHA-256: {digest_hex})...")
+    try:
+        key = load_public_key(public_key_path)
+        sig = signature_path.read_bytes()
+        if not verify_bytes(data, sig, key):
+            print(f"ERROR: Signature verification FAILED for {catalog_path}")
+            return False
+        print(f"Signature verification: OK ({signature_path})")
+        return True
+    except Exception as exc:
+        print(f"ERROR: Signature verification error: {exc}")
+        return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Validate Portappix catalog.json")
     parser.add_argument("--catalog", default="catalog.json")
     parser.add_argument("--schema", default="catalog.schema.json")
     parser.add_argument("--recipe-schema", default="recipe.schema.json")
+    parser.add_argument("--public-key", default="keys/catalog_public.pem",
+                        help="Path to public key PEM (default: keys/catalog_public.pem)")
+    parser.add_argument("--signature", default=None,
+                        help="Path to catalog signature file (default: <catalog>.sig)")
+    parser.add_argument("--skip-signature", action="store_true",
+                        help="Skip verifying signature of catalog.json")
+    parser.add_argument("--require-signature", action="store_true",
+                        help="Fail if signature file is missing (always checked if signature exists)")
     parser.add_argument("--skip-provenance", action="store_true",
                         help="Skip recipe cross-checks (recipe files not present)")
     args = parser.parse_args(argv)
 
     catalog_path = Path(args.catalog)
     schema_path = Path(args.schema)
+
+    if not args.skip_signature:
+        sig_path = Path(args.signature) if args.signature else Path(str(catalog_path) + ".sig")
+        if sig_path.exists() or args.require_signature:
+            if not verify_catalog_signature(catalog_path, sig_path, Path(args.public_key)):
+                return 1
 
     print(f"Loading catalog: {catalog_path}")
     catalog = load_json(catalog_path, "catalog.json")

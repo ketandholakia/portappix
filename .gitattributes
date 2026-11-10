@@ -1,0 +1,14 @@
+# Source, build, script, and documentation files with consistent line endings
+*.pas text eol=crlf
+*.dpr text eol=crlf
+*.dproj text eol=crlf
+*.md text eol=crlf
+*.ps1 text eol=crlf
+*.py text eol=crlf
+*.json text eol=crlf
+
+# Signed files and cryptographic material must be byte-exact (no line ending normalization)
+catalog.json -text -eol
+releases.json -text -eol
+*.sig binary
+*.pem -text -eol
