@@ -2,6 +2,8 @@
 *.pas text eol=crlf
 *.dpr text eol=crlf
 *.dproj text eol=crlf
+*.inc text eol=crlf
+*.rc text eol=crlf
 *.md text eol=crlf
 *.ps1 text eol=crlf
 *.py text eol=crlf

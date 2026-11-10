@@ -264,6 +264,24 @@ begin
   end;
 end;
 
+function IsPermittedReleaseUrl(const AUrl: string): Boolean;
+var
+  CleanUrl: string;
+begin
+  CleanUrl := AUrl.Trim;
+  if IsHttpsUrl(CleanUrl) or AllowInsecureReleaseUrls then
+    Exit(True);
+{$IFDEF PORTAPPIX_TESTUPDATE}
+  if TextStartsWith(CleanUrl, 'http://127.0.0.1:') or
+     TextStartsWith(CleanUrl, 'http://127.0.0.1/') or
+     (CleanUrl = 'http://127.0.0.1') or
+     TextStartsWith(CleanUrl, 'http://localhost:') or
+     TextStartsWith(CleanUrl, 'http://localhost/') then
+    Exit(True);
+{$ENDIF}
+  Result := False;
+end;
+
 function DownloadReleases(const AUrl: string): TPortappixRelease;
 var
   Content: TBytes;
@@ -271,7 +289,7 @@ var
 begin
   if AUrl.Trim = '' then
     raise EPortappixUpdateError.Create('Release URL must not be empty.');
-  if (not IsHttpsUrl(AUrl)) and (not AllowInsecureReleaseUrls) then
+  if not IsPermittedReleaseUrl(AUrl) then
     raise EPortappixUpdateError.CreateFmt(
       'Release URL must use https://: "%s".', [AUrl]);
 
@@ -646,7 +664,7 @@ begin
         'Version %s is not newer than the installed %s; refusing to downgrade.',
         [Release.Version, InstalledVersion]);
 
-    if (not IsHttpsUrl(Release.Url)) and (not AllowInsecureReleaseUrls) then
+    if not IsPermittedReleaseUrl(Release.Url) then
       raise EPortappixUpdateError.CreateFmt(
         'Release package URL must use https://: "%s".', [Release.Url]);
 

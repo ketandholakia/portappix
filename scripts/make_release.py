@@ -43,6 +43,7 @@ SEMVER_RE = re.compile(
 # deliberately case-sensitive on both encodings' exact byte patterns so an
 # accidental reformulation can't slip through a lax check either.
 TESTCRASH_MARKER = "PORTAPPIX-TESTCRASH-BUILD-2026-11-10"
+TESTUPDATE_MARKER = "PORTAPPIX-TESTUPDATE-BUILD-2026-11-10"
 CRASH_ENV_VAR = "PORTAPPIX_CRASH_AT"
 
 
@@ -60,14 +61,14 @@ def launcher_forbidden_material(launcher_path: Path) -> list[str]:
     if not data:
         return ["the staged launcher is empty"]
     findings = []
-    for needle in (TESTCRASH_MARKER, CRASH_ENV_VAR):
+    for needle in (TESTCRASH_MARKER, TESTUPDATE_MARKER, CRASH_ENV_VAR):
         for encoding in ("utf-16-le", "utf-8"):
             encoded = needle.encode(encoding)
             if encoded in data:
                 findings.append(
                     f"staged launcher contains {needle} "
                     f"({encoding} byte pattern); it looks like a "
-                    f"test-mode (-DPORTAPPIX_TESTCRASH) binary"
+                    f"test-mode binary"
                 )
                 break
     return findings
@@ -142,11 +143,11 @@ def main(argv: list[str] | None = None) -> int:
         for problem in guard_errors:
             print(f"  - {problem}")
         print("Rebuild the release launcher without "
-              "-DPORTAPPIX_TESTCRASH or remove the test "
+              "-DPORTAPPIX_TESTCRASH / -DPORTAPPIX_TESTUPDATE or remove the test "
               "artifact from the staging folder.")
         return 1
-    print("Test-crash isolation guard: OK (staged Launcher.exe contains no "
-          f"{TESTCRASH_MARKER} / {CRASH_ENV_VAR} bytes)")
+    print("Test isolation guard: OK (staged Launcher.exe contains no "
+          f"{TESTCRASH_MARKER} / {TESTUPDATE_MARKER} / {CRASH_ENV_VAR} bytes)")
 
     if args.url_base and not args.url_base.startswith("https://"):
         if not args.allow_insecure_url_base:

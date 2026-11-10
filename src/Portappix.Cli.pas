@@ -102,6 +102,9 @@ type
     function ExecuteCheckUpdates: Integer;
     function ExecuteSelfUpdate: Integer;
     function ExecutePostUpdate: Integer;
+{$IFDEF PORTAPPIX_TESTUPDATE}
+    function ExecuteRollback: Integer;
+{$ENDIF}
   public
     constructor Create;
     function Parse(const AArgs: TArray<string>): Boolean;
@@ -253,7 +256,11 @@ begin
       FCommand := 'apply-updates'
     else if SameText(Arg, '--post-update') then
       FCommand := 'post-update'
-    else if SameText(Arg, '--check-updates') then
+{$IFDEF PORTAPPIX_TESTUPDATE}
+    else if SameText(Arg, '--rollback') then
+      FCommand := 'rollback'
+{$ENDIF}
+    else if SameText(Arg, '--check-updates') or SameText(Arg, '--check-update') then
     begin
       if not TakeValue(Arg, FArgument) then
         Exit;
@@ -319,7 +326,11 @@ begin
   Result := (FCommand = 'run') or (FCommand = 'trace') or
     (FCommand = 'check-manifest') or (FCommand = 'recover') or
     (FCommand = 'apply-updates') or (FCommand = 'check-updates') or
-    (FCommand = 'self-update') or (FCommand = 'post-update');
+    (FCommand = 'self-update') or (FCommand = 'post-update')
+{$IFDEF PORTAPPIX_TESTUPDATE}
+    or (FCommand = 'rollback')
+{$ENDIF}
+    ;
   if not Result then
     Log('No command switch found (--run, --trace, --check-manifest, --recover, ' +
       '--apply-updates, --check-updates, --self-update or --post-update).');
@@ -906,6 +917,43 @@ begin
   end;
 end;
 
+{$IFDEF PORTAPPIX_TESTUPDATE}
+function TPortappixCli.ExecuteRollback: Integer;
+var
+  Manager: TPortappixUpdateManager;
+begin
+  Manager := TPortappixUpdateManager.Create(FRootPath);
+  try
+    Manager.OnLog :=
+      procedure(AMsg: string)
+      begin
+        Log(AMsg);
+      end;
+    if not Manager.NeedsRollbackOffer then
+    begin
+      Log('No rollback needed or offered.');
+      WriteExitCodeFile(CliExitGenericFailure, '', 'No rollback needed.');
+      Exit(CliExitGenericFailure);
+    end;
+    try
+      Manager.RollbackToOldLauncher(False);
+      Log('Rollback to old launcher succeeded.');
+      WriteExitCodeFile(CliExitOk, '', 'Rollback succeeded.');
+      Result := CliExitOk;
+    except
+      on E: Exception do
+      begin
+        Log('Rollback failed: ' + E.Message);
+        WriteExitCodeFile(CliExitGenericFailure, '', E.Message);
+        Result := CliExitGenericFailure;
+      end;
+    end;
+  finally
+    Manager.Free;
+  end;
+end;
+{$ENDIF}
+
 function TPortappixCli.Execute: Integer;
 begin
   if FCommand = 'run' then
@@ -924,6 +972,10 @@ begin
     Result := ExecuteSelfUpdate
   else if FCommand = 'post-update' then
     Result := ExecutePostUpdate
+{$IFDEF PORTAPPIX_TESTUPDATE}
+  else if FCommand = 'rollback' then
+    Result := ExecuteRollback
+{$ENDIF}
   else
   begin
     CliWrite(CliUsageText);

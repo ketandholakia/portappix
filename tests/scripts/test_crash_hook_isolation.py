@@ -51,6 +51,7 @@ sys.path.insert(0, str(SCRIPTS))
 from make_release import (  # noqa: E402
     CRASH_ENV_VAR,
     TESTCRASH_MARKER,
+    TESTUPDATE_MARKER,
     launcher_forbidden_material,
 )
 
@@ -289,6 +290,12 @@ def main(argv: list[str] | None = None) -> int:
             TESTCRASH_MARKER.encode("utf-16-le") + b"MZ" + bytes(128))
         check(launcher_forbidden_material(marked) != [],
               "guard rejects a launcher carrying the test-crash marker")
+
+        update_marked = staging / "LauncherUpdateMarker"
+        update_marked.write_bytes(
+            TESTUPDATE_MARKER.encode("utf-16-le") + b"MZ" + bytes(128))
+        check(launcher_forbidden_material(update_marked) != [],
+              "guard rejects a launcher carrying the test-update marker")
 
         envstr = staging / "LauncherEnv"
         envstr.write_bytes(

@@ -4,6 +4,9 @@ program Launcher;
 // portappix_icons\). The compiled resource is produced by brcc32 from
 // src\PortappixIcons.rc; see scripts\build_launcher.cmd.
 {$R PortappixIcons.res}
+{$IFDEF PORTAPPIX_VERSION_RES}
+{$R LauncherVersion.res}
+{$ENDIF}
 
 uses
   Vcl.Forms,
@@ -11,8 +14,10 @@ uses
   Portappix.Common,
   Portappix.Cli,
   Portappix.Icons,
-{$IFDEF PORTAPPIX_TESTCRASH}
+{$IF defined(PORTAPPIX_TESTCRASH) or defined(PORTAPPIX_TESTUPDATE)}
   System.SysUtils,
+{$IFEND}
+{$IFDEF PORTAPPIX_TESTCRASH}
   Portappix.Transactions,
 {$ENDIF}
   Portappix.Manifest,
@@ -70,7 +75,27 @@ begin
 end;
 {$ENDIF}
 
+{$IFDEF PORTAPPIX_TESTUPDATE}
+function HasRollbackArg: Boolean;
+var
+  I: Integer;
 begin
+  for I := 1 to ParamCount do
+    if SameText(ParamStr(I), '--rollback') then
+      Exit(True);
+  Result := False;
+end;
+{$ENDIF}
+
+begin
+{$IFDEF PORTAPPIX_TESTUPDATE}
+  {$IFDEF PORTAPPIX_CRASH_STARTUP}
+  if not HasRollbackArg then
+    Halt(42);
+  {$ENDIF}
+  if (GetEnvironmentVariable('PORTAPPIX_TEST_CRASH_ON_START') = '1') and not HasRollbackArg then
+    Halt(42);
+{$ENDIF}
 {$IFDEF PORTAPPIX_TESTCRASH}
   ArmTestCrashPoint;
 {$ENDIF}

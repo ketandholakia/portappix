@@ -58,6 +58,9 @@ credentials.json
 # Local release artifacts
 portappix.zip
 dist/
+bin/selfupdate/
+tests/suite/fixtures/selfupdate/
+src/LauncherVersion.rc
 
 # Python
 __pycache__/
