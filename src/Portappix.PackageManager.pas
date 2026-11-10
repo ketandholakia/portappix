@@ -35,7 +35,6 @@ type
     FOnLog: TProc<string>;
     procedure Log(const AMessage: string);
     procedure EnsureDirectories;
-    function CacheFile(const AppDef: TCatalogApp): string;
     procedure DownloadPackage(const AppDef: TCatalogApp; const ADestination: string;
       const AProgress: TDownloadProgressEvent);
     procedure VerifyPackage(const AppDef: TCatalogApp; const AFileName: string);
@@ -48,6 +47,7 @@ type
     function LoadPendingUpdates: TObjectList<TCatalogApp>;
     procedure SavePendingUpdates(const AUpdates: TObjectList<TCatalogApp>);
   public
+    function CacheFile(const AppDef: TCatalogApp): string;
     constructor Create(const ARootPath: string = '');
     procedure InstallApp(const AppDef: TCatalogApp; const AProgress: TDownloadProgressEvent = nil);
     procedure RollbackApp(const AAppId: string);
@@ -465,6 +465,95 @@ begin
       [AIncoming.Id, InstalledDataVersion, AIncoming.DataVersion]);
 end;
 
+procedure StripArchivePrefix(const ADestDir, APrefix: string);
+var
+  CleanPrefix, PrefixDir, CurDir, ParentDir: string;
+begin
+  CleanPrefix := APrefix.Trim.Replace('/', '\').Trim(['\']);
+  if CleanPrefix = '' then
+    Exit;
+  PrefixDir := TPath.Combine(ADestDir, CleanPrefix);
+  if TDirectory.Exists(PrefixDir) then
+  begin
+    for var FilePath in TDirectory.GetFiles(PrefixDir) do
+    begin
+      var Target := TPath.Combine(ADestDir, TPath.GetFileName(FilePath));
+      if TFile.Exists(Target) then
+        TFile.Delete(Target);
+      TFile.Move(FilePath, Target);
+    end;
+    for var SubDir in TDirectory.GetDirectories(PrefixDir) do
+    begin
+      var TargetDir := TPath.Combine(ADestDir, TPath.GetFileName(SubDir));
+      if TDirectory.Exists(TargetDir) then
+        TDirectory.Delete(TargetDir, True);
+      TDirectory.Move(SubDir, TargetDir);
+    end;
+    CurDir := PrefixDir;
+    while (CurDir <> '') and not SameText(CurDir, ADestDir) do
+    begin
+      ParentDir := TPath.GetDirectoryName(CurDir);
+      try
+        if TDirectory.Exists(CurDir) then
+          TDirectory.Delete(CurDir, True);
+      except
+      end;
+      CurDir := ParentDir;
+    end;
+  end;
+end;
+
+procedure GenerateManifest(const AppDef: TCatalogApp; const ADestDir: string);
+var
+  Json: TJSONObject;
+  OverlayVal: TJSONValue;
+  OverlayObj: TJSONObject;
+  ManifestPath: string;
+begin
+  ManifestPath := TPath.Combine(ADestDir, 'app.json');
+  if TFile.Exists(ManifestPath) and not AppDef.IsVendorLink then
+    Exit;
+
+  Json := TJSONObject.Create;
+  try
+    Json.AddPair('schema', TJSONNumber.Create(1));
+    Json.AddPair('id', AppDef.Id);
+    Json.AddPair('name', AppDef.Name);
+    if AppDef.Publisher <> '' then
+      Json.AddPair('publisher', AppDef.Publisher);
+    Json.AddPair('version', AppDef.Version);
+    if AppDef.Category <> '' then
+      Json.AddPair('category', AppDef.Category);
+
+    if AppDef.ManifestOverlay <> '' then
+    begin
+      OverlayVal := TJSONObject.ParseJSONValue(AppDef.ManifestOverlay);
+      try
+        if (OverlayVal <> nil) and (OverlayVal is TJSONObject) then
+        begin
+          OverlayObj := TJSONObject(OverlayVal);
+          for var Pair in OverlayObj do
+          begin
+            if not SameText(Pair.JsonString.Value, 'id') and
+               not SameText(Pair.JsonString.Value, 'name') and
+               not SameText(Pair.JsonString.Value, 'version') then
+              Json.AddPair(Pair.JsonString.Value, Pair.JsonValue.Clone as TJSONValue);
+          end;
+        end;
+      finally
+        OverlayVal.Free;
+      end;
+    end;
+
+    if (Json.FindValue('exe') = nil) and (AppDef.ExePath <> '') then
+      Json.AddPair('exe', AppDef.ExePath);
+
+    TFile.WriteAllText(ManifestPath, Json.Format(2), TEncoding.UTF8);
+  finally
+    Json.Free;
+  end;
+end;
+
 procedure TPortappixPackageManager.InstallApp(const AppDef: TCatalogApp;
   const AProgress: TDownloadProgressEvent);
 var
@@ -491,8 +580,14 @@ begin
   FinalDir := TPath.Combine(FAppsDir, SanitizeFileComponent(AppDef.Id));
   PrevDir := FinalDir + '.prev';
 
-  Log(Format('Downloading %s %s.', [AppDef.Id, AppDef.Version]));
-  DownloadPackage(AppDef, PackageFile, AProgress);
+  var CacheValid := TFile.Exists(PackageFile) and
+    SameText(ComputeSha256(PackageFile), AppDef.Sha256.Trim) and
+    ((AppDef.Size <= 0) or (TFile.GetSize(PackageFile) = AppDef.Size));
+  if not CacheValid then
+  begin
+    Log(Format('Downloading %s %s.', [AppDef.Id, AppDef.Version]));
+    DownloadPackage(AppDef, PackageFile, AProgress);
+  end;
 
   Log(Format('Verifying %s.', [PackageFile]));
   VerifyPackage(AppDef, PackageFile);
@@ -502,6 +597,10 @@ begin
   try
     try
       ExtractArchive(PackageFile, TempDir);
+      if AppDef.StripPrefix <> '' then
+        StripArchivePrefix(TempDir, AppDef.StripPrefix);
+      if AppDef.IsVendorLink or not TFile.Exists(TPath.Combine(TempDir, 'app.json')) then
+        GenerateManifest(AppDef, TempDir);
       ValidateExtractedManifest(AppDef, TempDir);
       Incoming := TPortappixManifest.LoadFromFile(TPath.Combine(TempDir, 'app.json'));
       ValidateUpdateAllowed(Incoming);

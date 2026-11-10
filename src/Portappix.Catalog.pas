@@ -28,6 +28,11 @@ type
     FSize: Int64;
     FKind: string;
     FRecipe: string;
+    FStripPrefix: string;
+    FExePath: string;
+    FLicense: string;
+    FRedistribution: string;
+    FManifestOverlay: string;
   public
     constructor Create;
     property Id: string read FId write FId;
@@ -38,12 +43,16 @@ type
     property Url: string read FUrl write FUrl;
     property Sha256: string read FSha256 write FSha256;
     property Size: Int64 read FSize write FSize;
-    // "package" (default) or "recipe" (the entry was built from a pinned
-    // recipe file under recipes\). Purely descriptive for the UI; install
-    // handling is identical.
+    // "package", "recipe", or "vendor-link"
     property Kind: string read FKind write FKind;
     // Repo-relative path of the recipe file (e.g. recipes/7zip.json).
     property Recipe: string read FRecipe write FRecipe;
+    property StripPrefix: string read FStripPrefix write FStripPrefix;
+    property ExePath: string read FExePath write FExePath;
+    property License: string read FLicense write FLicense;
+    property Redistribution: string read FRedistribution write FRedistribution;
+    property ManifestOverlay: string read FManifestOverlay write FManifestOverlay;
+    function IsVendorLink: Boolean;
   end;
 
   TPortappixCatalog = class
@@ -159,6 +168,11 @@ constructor TCatalogApp.Create;
 begin
   inherited Create;
   FKind := 'package';
+end;
+
+function TCatalogApp.IsVendorLink: Boolean;
+begin
+  Result := SameText(FKind, 'vendor-link');
 end;
 
 constructor TPortappixCatalog.Create;
@@ -304,13 +318,22 @@ begin
           App.Kind := ReadOptionalString(AppObject, 'kind').Trim;
           if App.Kind = '' then
             App.Kind := 'package';
-          if (App.Kind <> 'package') and (App.Kind <> 'recipe') then
+          if (App.Kind <> 'package') and (App.Kind <> 'recipe') and (App.Kind <> 'vendor-link') then
             raise EPortappixCatalogError.CreateFmt(
               'Catalog app "%s" has an unknown kind "%s".', [App.Id, App.Kind]);
           App.Recipe := ReadOptionalString(AppObject, 'recipe').Trim;
           if (App.Kind = 'recipe') and (App.Recipe = '') then
             raise EPortappixCatalogError.CreateFmt(
               'Catalog app "%s" has kind "recipe" but no recipe path.', [App.Id]);
+
+          App.StripPrefix := ReadOptionalString(AppObject, 'stripPrefix').Trim;
+          App.ExePath := ReadOptionalString(AppObject, 'exePath').Trim;
+          App.License := ReadOptionalString(AppObject, 'license').Trim;
+          App.Redistribution := ReadOptionalString(AppObject, 'redistribution').Trim;
+
+          var ManifestVal := AppObject.FindValue('manifest');
+          if (ManifestVal <> nil) and (ManifestVal is TJSONObject) then
+            App.ManifestOverlay := ManifestVal.ToString;
 
           if NewListContainsId(App.Id) then
             raise EPortappixCatalogError.CreateFmt('Duplicate catalog app id "%s".', [App.Id]);

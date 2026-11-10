@@ -480,9 +480,11 @@ the launcher self-update swap/confirm/rollback state machine against a local zip
 ## Storefront CI
 
 - `catalog.json` — public app catalog (`apps[]` with `id`, `name`, optional `publisher`,
-  `manifestSchema`, `version`, `category`, `url` (https only), `sha256`, `size`, and optional
-  provenance fields `kind` (`package`|`recipe`) and `recipe` (`recipes/<id>.json`)).
-- `recipes/` — pinned recipes for known portable apps (25 apps; see `recipes/README.md`),
+  `manifestSchema`, `version`, `category`, `url` (https only), `sha256`, `size`, optional
+  provenance fields `kind` (`package`|`recipe`|`vendor-link`) and `recipe` (`recipes/<id>.json`),
+  and optional vendor-link fields `stripPrefix`, `exePath`, `license`, `redistribution`, and `manifest` overlay).
+- **Vendor-link-only recipes**: For applications whose licenses prohibit redistribution (e.g. Sysinternals, Everything), Portappix does not re-host vendor binaries. Instead, the signed `catalog.json` pins the direct vendor HTTPS download URL, byte size, and SHA-256 hash alongside optional archive prefix stripping and manifest overlays. The Portappix client downloads directly from the vendor, cryptographically verifies against the signed catalog, unpacks via the hardened zip extractor, synthesizes `app.json` locally, executes all policy safety checks, and installs via atomic directory swap.
+- `recipes/` — pinned recipes for known portable apps (see `recipes/README.md`),
   validated against `recipe.schema.json`. Vendor binaries are never committed — recipes
   reference vendor URLs + pinned hashes only.
 - `catalog.schema.json` — strict JSON Schema (no extra properties).

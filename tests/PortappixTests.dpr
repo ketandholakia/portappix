@@ -436,6 +436,19 @@ begin
     Check(Catalog.FindById('demo').Recipe = 'recipes/demo.json',
       'Catalog parses the recipe field');
 
+    Catalog.LoadFromJson('{"apps":[{"id":"vapp","name":"VApp","version":"1.0",' +
+      '"category":"Utilities","url":"https://example.com/vapp.zip","sha256":"' + Sha +
+      '","size":100,"kind":"vendor-link","stripPrefix":"prefix-1.0","exePath":"bin\\app.exe",' +
+      '"license":"MIT","redistribution":"vendor-link-only","manifest":{"args":"-p"}}]}');
+    var VApp := Catalog.FindById('vapp');
+    Check(VApp <> nil, 'Vendor-link app parsed');
+    Check(VApp.IsVendorLink, 'IsVendorLink returns true');
+    Check(VApp.StripPrefix = 'prefix-1.0', 'StripPrefix parsed');
+    Check(VApp.ExePath = 'bin\app.exe', 'ExePath parsed');
+    Check(VApp.License = 'MIT', 'License parsed');
+    Check(VApp.Redistribution = 'vendor-link-only', 'Redistribution parsed');
+    Check(ContainsStr(VApp.ManifestOverlay, '-p'), 'ManifestOverlay parsed');
+
     Catalog.LoadFromJson(GoodJson);
     Check((Catalog.FindById('demo').Kind = 'package') and
       (Catalog.FindById('demo').Recipe = ''),
@@ -3868,6 +3881,115 @@ begin
   end;
 end;
 
+procedure TestVendorLinkAppInstallation(const ARoot: string);
+var
+  Manager: TPortappixPackageManager;
+  PayloadFile: string;
+  ZipPath: string;
+  Zip: TZipFile;
+  AppDef: TCatalogApp;
+  InstalledManifest: TPortappixManifest;
+  BadAppDef: TCatalogApp;
+begin
+  PayloadFile := WriteTextFile(TPath.Combine(ARoot, 'vpayload.txt'), 'vendor binary content');
+  ZipPath := TPath.Combine(ARoot, 'vendor_test.zip');
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(ZipPath, TZipMode.zmWrite);
+    Zip.Add(PayloadFile, 'vendor-pkg-1.2.3/bin/mytool.exe');
+    Zip.Add(PayloadFile, 'vendor-pkg-1.2.3/docs/manual.txt');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    AppDef := TCatalogApp.Create;
+    try
+      AppDef.Id := 'mytool';
+      AppDef.Name := 'My Tool';
+      AppDef.Publisher := 'Vendor Team';
+      AppDef.Version := '1.2.3';
+      AppDef.Category := 'Utilities';
+      AppDef.Url := 'https://example.com/vendor/mytool.zip';
+      AppDef.Sha256 := TPortappixPackageManager.ComputeSha256(ZipPath);
+      AppDef.Size := TFile.GetSize(ZipPath);
+      AppDef.Kind := 'vendor-link';
+      AppDef.StripPrefix := 'vendor-pkg-1.2.3';
+      AppDef.ExePath := 'bin\mytool.exe';
+      AppDef.License := 'MIT';
+      AppDef.Redistribution := 'vendor-link-only';
+      AppDef.ManifestOverlay := '{"args":"--portable","env":{"XDG_CONFIG_HOME":"{data}\\.config"}}';
+
+      ForceDirectories(Manager.CacheDirectory);
+      TFile.Copy(ZipPath, Manager.CacheFile(AppDef), True);
+
+      Manager.InstallApp(AppDef, nil);
+
+      Check(TDirectory.Exists(TPath.Combine(ARoot, 'Apps\mytool')),
+        'Vendor-link app directory created in Apps');
+      Check(TFile.Exists(TPath.Combine(ARoot, 'Apps\mytool\bin\mytool.exe')),
+        'Vendor-link binary extracted in target location');
+      Check(TFile.Exists(TPath.Combine(ARoot, 'Apps\mytool\docs\manual.txt')),
+        'Vendor-link assets preserved');
+      Check(not TDirectory.Exists(TPath.Combine(ARoot, 'Apps\mytool\vendor-pkg-1.2.3')),
+        'StripPrefix directory removed and flattened');
+      Check(TFile.Exists(TPath.Combine(ARoot, 'Apps\mytool\app.json')),
+        'app.json manifest synthesized locally');
+
+      InstalledManifest := TPortappixManifest.LoadFromFile(TPath.Combine(ARoot, 'Apps\mytool\app.json'));
+      try
+        Check(InstalledManifest.Id = 'mytool', 'Synthesized manifest id');
+        Check(InstalledManifest.Name = 'My Tool', 'Synthesized manifest name');
+        Check(InstalledManifest.Version = '1.2.3', 'Synthesized manifest version');
+        Check(InstalledManifest.Category = 'Utilities', 'Synthesized manifest category');
+        Check(InstalledManifest.Exe = 'bin\mytool.exe', 'Synthesized manifest exe path');
+        Check(InstalledManifest.Args = '--portable', 'Synthesized manifest args overlay');
+        Check(InstalledManifest.Environment.Count = 1, 'Synthesized manifest env overlay count');
+      finally
+        InstalledManifest.Free;
+      end;
+    finally
+      AppDef.Free;
+    end;
+
+    // Reject policy violation in manifest overlay
+    BadAppDef := TCatalogApp.Create;
+    try
+      BadAppDef.Id := 'badtool';
+      BadAppDef.Name := 'Bad Tool';
+      BadAppDef.Version := '1.0.0';
+      BadAppDef.Category := 'Utilities';
+      BadAppDef.Url := 'https://example.com/vendor/badtool.zip';
+      BadAppDef.Sha256 := TPortappixPackageManager.ComputeSha256(ZipPath);
+      BadAppDef.Size := TFile.GetSize(ZipPath);
+      BadAppDef.Kind := 'vendor-link';
+      BadAppDef.StripPrefix := 'vendor-pkg-1.2.3';
+      BadAppDef.ExePath := 'bin\mytool.exe';
+      BadAppDef.ManifestOverlay := '{"junctions":{"Data":"..\\escape"}}';
+
+      ForceDirectories(Manager.CacheDirectory);
+      TFile.Copy(ZipPath, Manager.CacheFile(BadAppDef), True);
+
+      ExpectException(
+        procedure
+        begin
+          Manager.InstallApp(BadAppDef, nil);
+        end,
+        'Vendor-link installation rejects policy-violating manifest overlay');
+      Check(not TDirectory.Exists(TPath.Combine(ARoot, 'Apps\badtool')),
+        'Failed vendor-link app is not installed');
+      Check(not TDirectory.Exists(TPath.Combine(ARoot, 'Apps\badtool.new')),
+        'Temporary installation folder cleaned up on failure');
+    finally
+      BadAppDef.Free;
+    end;
+  finally
+    Manager.Free;
+  end;
+end;
+
 procedure TestSettings(const ARoot: string);
 var
   Settings: TPortappixSettings;
@@ -4451,6 +4573,7 @@ begin
     TestDataVersion(Root);
     TestPendingUpdatesAndRollback(Root);
     TestRollback(Root);
+    TestVendorLinkAppInstallation(Root);
     TestSettings(Root);
     TestUpdateManager(Root);
     TestConsent(Root);

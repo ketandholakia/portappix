@@ -125,6 +125,34 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"ERROR: duplicate recipe id {recipe_id}")
         seen_ids.add(recipe_id)
 
+        redistribution = recipe.get("redistribution", "allowed")
+        if redistribution == "vendor-link-only":
+            entry = {
+                "id": recipe_id,
+                "name": recipe["name"],
+                "publisher": recipe.get("publisher", ""),
+                "version": recipe["version"],
+                "category": recipe["category"],
+                "url": recipe["source"]["url"],
+                "sha256": recipe["source"]["sha256"].lower(),
+                "size": recipe["source"]["size"],
+                "kind": "vendor-link",
+                "recipe": f"recipes/{recipe_path.name}",
+            }
+            if "license" in recipe:
+                entry["license"] = recipe["license"]
+            entry["redistribution"] = "vendor-link-only"
+            if "stripPrefix" in recipe:
+                entry["stripPrefix"] = recipe["stripPrefix"]
+            exe_path = recipe.get("exePath") or recipe.get("manifest", {}).get("exe")
+            if exe_path:
+                entry["exePath"] = exe_path
+            if "manifest" in recipe:
+                entry["manifest"] = recipe["manifest"]
+            apps.append(entry)
+            print(f"Vendor-link recipe OK: {recipe_id} {recipe['version']} (vendor URL)")
+            continue
+
         build_file = args.packages / f"{recipe_id}.build.json"
         if not build_file.exists():
             raise SystemExit(
@@ -138,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit(f"ERROR: built package missing: {package_path}")
         verify_built_package(recipe, build, package_path)
 
-        apps.append({
+        entry = {
             "id": recipe_id,
             "name": recipe["name"],
             "publisher": recipe.get("publisher", ""),
@@ -149,7 +177,12 @@ def main(argv: list[str] | None = None) -> int:
             "size": build["size"],
             "kind": "recipe",
             "recipe": f"recipes/{recipe_path.name}",
-        })
+        }
+        if "license" in recipe:
+            entry["license"] = recipe["license"]
+        if "redistribution" in recipe:
+            entry["redistribution"] = recipe["redistribution"]
+        apps.append(entry)
         print(f"Recipe OK: {recipe_id} {recipe['version']} "
               f"({build['size']} bytes, sha256 {build['sha256'][:16]}...)")
 

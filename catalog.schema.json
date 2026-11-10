@@ -58,12 +58,46 @@
         },
         "kind": {
           "type": "string",
-          "enum": ["package", "recipe"],
+          "enum": ["package", "recipe", "vendor-link"],
           "default": "package"
         },
         "recipe": {
           "type": "string",
           "pattern": "^recipes/[A-Za-z0-9][A-Za-z0-9._-]*\\.json$"
+        },
+        "license": {
+          "type": "string"
+        },
+        "redistribution": {
+          "type": "string",
+          "enum": ["allowed", "vendor-link-only"]
+        },
+        "stripPrefix": {
+          "type": "string"
+        },
+        "exePath": {
+          "type": "string"
+        },
+        "manifest": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "exe": { "type": "string" },
+            "args": { "type": "string" },
+            "dataVersion": { "type": "integer", "minimum": 0 },
+            "env": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "junctions": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            },
+            "registry": {
+              "type": "array",
+              "items": { "type": "string" }
+            }
+          }
         }
       }
     }

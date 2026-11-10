@@ -302,6 +302,17 @@ def inspect_package(path: Path, app: dict[str, Any]) -> list[str]:
             if "__MACOSX/" in archive.namelist():
                 errors.append("package contains macOS metadata (__MACOSX)")
 
+            if app.get("kind") == "vendor-link":
+                manifest = app.get("manifest")
+                if not isinstance(manifest, dict):
+                    errors.append("vendor-link entry is missing a valid 'manifest' overlay")
+                    return errors
+                exe_val = manifest.get("exe") or app.get("exePath")
+                if not exe_val:
+                    errors.append("vendor-link manifest must specify 'exe'")
+                errors.extend(validate_manifest_policy(manifest))
+                return errors
+
             if "app.json" not in archive.namelist():
                 errors.append("package does not contain app.json at the archive root")
                 return errors
@@ -402,19 +413,19 @@ def validate_recipe_provenance(apps: list[Any], recipe_schema_path: Path) -> int
         recipe_ref = app.get("recipe", "")
         label = app_label(app, index)
 
-        if kind not in ("package", "recipe"):
+        if kind not in ("package", "recipe", "vendor-link"):
             print(f"ERROR: {label} has unknown kind '{kind}'.")
             failures += 1
             continue
-        if kind == "recipe" and not recipe_ref:
-            print(f"ERROR: {label} has kind 'recipe' but no recipe path.")
+        if kind in ("recipe", "vendor-link") and not recipe_ref:
+            print(f"ERROR: {label} has kind '{kind}' but no recipe path.")
             failures += 1
             continue
         if kind == "package" and recipe_ref:
             print(f"ERROR: {label} references a recipe but kind is 'package'.")
             failures += 1
             continue
-        if kind != "recipe":
+        if kind not in ("recipe", "vendor-link"):
             continue
 
         recipe_path = Path(recipe_ref)
@@ -444,6 +455,18 @@ def validate_recipe_provenance(apps: list[Any], recipe_schema_path: Path) -> int
                 f"{app.get('version')} for {label}; rebuild the package."
             )
             failures += 1
+
+        if kind == "vendor-link":
+            src = recipe.get("source", {})
+            if src.get("url") != app.get("url"):
+                print(f"ERROR: vendor-link url {app.get('url')} != recipe source url {src.get('url')} for {label}.")
+                failures += 1
+            if str(src.get("sha256", "")).lower() != str(app.get("sha256", "")).lower():
+                print(f"ERROR: vendor-link sha256 != recipe source sha256 for {label}.")
+                failures += 1
+            if src.get("size") != app.get("size"):
+                print(f"ERROR: vendor-link size {app.get('size')} != recipe source size {src.get('size')} for {label}.")
+                failures += 1
 
     return failures
 
