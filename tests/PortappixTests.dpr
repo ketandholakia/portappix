@@ -26,6 +26,7 @@ uses
   Portappix.Trace,
   Portappix.Update,
   Portappix.Version,
+  Portappix.Process,
   Portappix.Consent;
 
 type
@@ -2894,6 +2895,111 @@ begin
     'PerformCleanup never deletes keys when the export fails');
 end;
 
+procedure TestRegTimeoutAndRecovery(const ARoot: string);
+var
+  Calls: TStringList;
+  FakeRunner: TProcessRunnerFunc;
+  Ops: IPortappixRegistryOps;
+  Keys: TArray<string>;
+  DataDir: string;
+  RunExitCode: Cardinal;
+  Ran: Boolean;
+  Store: TPortappixJournalStore;
+  Journal: TPortappixJournal;
+  ITx: IPortappixTransaction;
+  TxId: string;
+  TxDir: string;
+  BackupPath: string;
+  FakePathOps: IPortappixHostPathOps;
+begin
+  // (c) Prove that RunHiddenProcess terminates a hung process upon timeout
+  Ran := RunHiddenProcess('cmd.exe /c "ping -n 5 127.0.0.1 > nul"', RunExitCode, '', 150);
+  Check(not Ran, 'RunHiddenProcess returns False on timeout');
+  Check(RunExitCode = Cardinal(-1), 'RunHiddenProcess sets exit code to -1 on timeout');
+
+  // (a) Prove that an export timeout is treated as failed and no host key is deleted
+  Calls := TStringList.Create;
+  try
+    FakeRunner :=
+      function(const ACommandLine: string; out AExitCode: Cardinal;
+        const ACurrentDirectory: string; const ATimeoutMs: DWORD): Boolean
+      begin
+        if Pos('export', ACommandLine) > 0 then
+        begin
+          Calls.Add('export:timeout');
+          AExitCode := Cardinal(-1);
+          Exit(False); // simulates timeout
+        end;
+        if Pos('delete', ACommandLine) > 0 then
+        begin
+          Calls.Add('delete:called');
+          AExitCode := 0;
+          Exit(True);
+        end;
+        if Pos('import', ACommandLine) > 0 then
+        begin
+          Calls.Add('import:timeout');
+          AExitCode := Cardinal(-1);
+          Exit(False); // simulates timeout
+        end;
+        AExitCode := 0;
+        Result := True;
+      end;
+
+    Ops := TPortappixRegistryOps.Create(FakeRunner);
+
+    // Direct export timeout check
+    Check(not Ops.ExportKey('HKCU\Software\Vendor\Demo', TPath.Combine(ARoot, 'out.reg')),
+      'ExportKey returns False when process runner times out');
+
+    // PerformCleanup with timed out export: no key deletion occurs
+    SetLength(Keys, 1);
+    Keys[0] := 'HKCU\Software\Vendor\Demo';
+    DataDir := TPath.Combine(ARoot, 'Data\timeout_demo');
+    ForceDirectories(DataDir);
+    TPortableAppRunner.PerformCleanup('timeout_demo', Keys, nil, DataDir, nil, Ops);
+    Check(Calls.IndexOf('delete:called') < 0,
+      'PerformCleanup never deletes host keys when reg.exe export times out');
+
+    // (b) Prove that an import timeout triggers retry/recovery state
+    Store := TPortappixJournalStore.Create;
+    FakePathOps := TFakeHostPathOps.Create;
+    Journal := TPortappixJournal.Create(ARoot, Ops, FakePathOps, Store);
+    try
+      TxId := TPortappixTransaction.NewTxId('timeout_demo');
+      TxDir := TPath.Combine(Journal.TransactionsDirectory, TxId);
+      ForceDirectories(TxDir);
+      ITx := TPortappixTransaction.Create(Store, TxDir, TxId, 'timeout_demo', Now,
+        txCleaning, DataDir, False);
+      BackupPath := TPath.Combine(TxDir, 'registry_backup_0.reg');
+      ForceDirectories(TPath.GetDirectoryName(BackupPath));
+      TFile.WriteAllText(BackupPath, 'Windows Registry Editor Version 5.00', TEncoding.Unicode);
+      ITx.RecordOperation(TPortappixTransaction.MakeOperation(
+        okRegistryBackup, 'HKCU\Software\Vendor\Demo', '', BackupPath, 'HKCU\Software\Vendor\Demo'));
+      ITx.MarkOperation(0, opDone);
+      ITx.RecordOperation(TPortappixTransaction.MakeOperation(
+        okRegistryRestore, '', '', BackupPath, 'HKCU\Software\Vendor\Demo'));
+      TPortappixTransaction(ITx).Persist;
+      ITx := nil;
+
+      // Run recovery with timing-out Ops
+      Journal.RecoverPendingCleanups;
+
+      // Transaction must NOT be removed from disk because ImportFile timed out
+      Check(TDirectory.Exists(TxDir),
+        'Recovery: transaction is retained on disk when reg.exe import times out');
+      Check(TFile.Exists(BackupPath),
+        'Recovery: registry backup file is preserved on disk when import times out');
+      Check(Calls.IndexOf('import:timeout') >= 0,
+        'Recovery: ImportFile was attempted and timed out');
+    finally
+      Journal.Free;
+    end;
+  finally
+    Calls.Free;
+  end;
+end;
+
 constructor TFakeRegistryOps.Create(const AExportSucceeds: Boolean);
 begin
   inherited Create;
@@ -4564,6 +4670,7 @@ begin
     TestJunctionOwnershipUnpersistedIdentity(Root);
     TestNativeJunctionIdentityMandatory;
     TestRegistryOrdering(Root);
+    TestRegTimeoutAndRecovery(Root);
     TestTraceNoiseFilter;
     TestTraceSnapshotAndDiff(Root);
     TestTraceSnapshotCaps(Root);

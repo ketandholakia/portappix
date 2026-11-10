@@ -25,10 +25,16 @@ type
     function DeleteKey(const AKey: string): Boolean;
   end;
 
+  TProcessRunnerFunc = reference to function(const ACommandLine: string; out AExitCode: Cardinal;
+    const ACurrentDirectory: string; const ATimeoutMs: DWORD): Boolean;
+
   TPortappixRegistryOps = class(TInterfacedObject, IPortappixRegistryOps)
   private
+    FProcessRunner: TProcessRunnerFunc;
     function Quote(const AValue: string): string;
+    function ExecuteProcess(const ACommandLine: string; out AExitCode: Cardinal): Boolean;
   public
+    constructor Create(const AProcessRunner: TProcessRunnerFunc = nil);
     function KeyExists(const AKey: string): Boolean;
     function ExportKey(const AKey, AFileName: string): Boolean;
     function ImportFile(const AFileName: string): Boolean;
@@ -165,11 +171,26 @@ begin
   end;
 end;
 
+constructor TPortappixRegistryOps.Create(const AProcessRunner: TProcessRunnerFunc);
+begin
+  inherited Create;
+  FProcessRunner := AProcessRunner;
+end;
+
+function TPortappixRegistryOps.ExecuteProcess(const ACommandLine: string;
+  out AExitCode: Cardinal): Boolean;
+begin
+  if Assigned(FProcessRunner) then
+    Result := FProcessRunner(ACommandLine, AExitCode, '', 30000)
+  else
+    Result := RunHiddenProcess(ACommandLine, AExitCode, '', 30000);
+end;
+
 function TPortappixRegistryOps.ExportKey(const AKey, AFileName: string): Boolean;
 var
   ExitCode: Cardinal;
 begin
-  if not RunHiddenProcess(Format('%s export %s %s /y',
+  if not ExecuteProcess(Format('%s export %s %s /y',
     [Quote(RegExePath), Quote(AKey), Quote(AFileName)]), ExitCode) then
     Exit(False);
   Result := ExitCode = 0;
@@ -179,7 +200,7 @@ function TPortappixRegistryOps.ImportFile(const AFileName: string): Boolean;
 var
   ExitCode: Cardinal;
 begin
-  if not RunHiddenProcess(Format('%s import %s',
+  if not ExecuteProcess(Format('%s import %s',
     [Quote(RegExePath), Quote(AFileName)]), ExitCode) then
     Exit(False);
   Result := ExitCode = 0;
@@ -189,7 +210,7 @@ function TPortappixRegistryOps.DeleteKey(const AKey: string): Boolean;
 var
   ExitCode: Cardinal;
 begin
-  if not RunHiddenProcess(Format('%s delete %s /f',
+  if not ExecuteProcess(Format('%s delete %s /f',
     [Quote(RegExePath), Quote(AKey)]), ExitCode) then
     Exit(False);
   Result := ExitCode = 0;
