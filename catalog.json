@@ -1,3 +1,76 @@
 {
-  "apps": []
+  "apps": [
+    {
+      "id": "everything",
+      "name": "Everything",
+      "publisher": "voidtools",
+      "version": "1.4.1.1032",
+      "category": "Search",
+      "url": "https://github.com/ketandholakia/portappix/releases/download/store-seed-v1/everything.package.zip",
+      "sha256": "07cd37c30c51855376af5634cdd0202363a23b366473aec068b8b519ba03bb63",
+      "size": 1909717,
+      "kind": "recipe",
+      "recipe": "recipes/everything.json"
+    },
+    {
+      "id": "fastfetch",
+      "name": "Fastfetch",
+      "publisher": "fastfetch-cli contributors",
+      "version": "2.71.0",
+      "category": "System",
+      "url": "https://github.com/ketandholakia/portappix/releases/download/store-seed-v1/fastfetch.package.zip",
+      "sha256": "7633fff87cc0a22a21378d1d9f97ed08423f2eb7b1f0fb50720cf0df89145bab",
+      "size": 1569541,
+      "kind": "recipe",
+      "recipe": "recipes/fastfetch.json"
+    },
+    {
+      "id": "notepadpp",
+      "name": "Notepad++",
+      "publisher": "Don Ho",
+      "version": "8.9.9",
+      "category": "Development",
+      "url": "https://github.com/ketandholakia/portappix/releases/download/store-seed-v1/notepadpp.package.zip",
+      "sha256": "8535543e92c58844af21da5f7c495c136cb6136afbd6d9cd0af87b2f3bc21f31",
+      "size": 8524850,
+      "kind": "recipe",
+      "recipe": "recipes/notepadpp.json"
+    },
+    {
+      "id": "sumatrapdf",
+      "name": "SumatraPDF",
+      "publisher": "Krzysztof Kowalczyk",
+      "version": "3.6.1",
+      "category": "Office",
+      "url": "https://github.com/ketandholakia/portappix/releases/download/store-seed-v1/sumatrapdf.package.zip",
+      "sha256": "7389ce459476994967b623895a0d07248ffc92c6a67455df3fdf5e56d8538ce8",
+      "size": 10485691,
+      "kind": "recipe",
+      "recipe": "recipes/sumatrapdf.json"
+    },
+    {
+      "id": "tcpview",
+      "name": "TCPView",
+      "publisher": "Microsoft (Sysinternals)",
+      "version": "2026.11.09",
+      "category": "Sysinternals",
+      "url": "https://github.com/ketandholakia/portappix/releases/download/store-seed-v1/tcpview.package.zip",
+      "sha256": "5a196618fd5e9f548a097ae62067cf1f249b1457481bf918bded34099dd4c6e3",
+      "size": 1608989,
+      "kind": "recipe",
+      "recipe": "recipes/tcpview.json"
+    },
+    {
+      "id": "winscp",
+      "name": "WinSCP",
+      "publisher": "Martin P\u0159ikryl",
+      "version": "6.7",
+      "category": "Network",
+      "url": "https://github.com/ketandholakia/portappix/releases/download/store-seed-v1/winscp.package.zip",
+      "sha256": "725f874c8bcebd438b045753f94550e481edc9d78678ea60f14c7a0dd67b4ad2",
+      "size": 9099866,
+      "kind": "recipe",
+      "recipe": "recipes/winscp.json"
+    }
+  ]
 }
