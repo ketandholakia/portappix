@@ -96,6 +96,8 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--recipe-schema", type=Path, default=Path("recipe.schema.json"))
     parser.add_argument("--key", type=Path, default=None,
                         help="Optional P-256 private key to sign catalog.json")
+    parser.add_argument("--include", default=None,
+                        help="Optional comma-separated list of recipe IDs to include (e.g. everything,fastfetch,...)")
     args = parser.parse_args(argv)
 
     if not args.url_base.startswith("https://"):
@@ -110,17 +112,22 @@ def main(argv: list[str] | None = None) -> int:
     if not recipe_paths:
         raise SystemExit(f"ERROR: no recipe files found in {args.recipes}")
 
+    include_ids = set(x.strip() for x in args.include.split(",")) if args.include else None
+
     apps: list[dict[str, Any]] = []
     seen_ids: set[str] = set()
     for recipe_path in recipe_paths:
         recipe = load_json(recipe_path, "recipe")
+        recipe_id = recipe["id"]
+        if include_ids and recipe_id not in include_ids:
+            continue
+
         for error in recipe_validator.iter_errors(recipe):
             raise SystemExit(
                 f"ERROR: {recipe_path.name} does not match {args.recipe_schema.name}: "
                 f"{error.message}"
             )
 
-        recipe_id = recipe["id"]
         if recipe_id in seen_ids:
             raise SystemExit(f"ERROR: duplicate recipe id {recipe_id}")
         seen_ids.add(recipe_id)
@@ -155,10 +162,12 @@ def main(argv: list[str] | None = None) -> int:
 
         build_file = args.packages / f"{recipe_id}.build.json"
         if not build_file.exists():
-            raise SystemExit(
-                f"ERROR: no build manifest for '{recipe_id}' ({build_file}); "
-                "run tools/build_recipe.py first."
-            )
+            if include_ids and recipe_id in include_ids:
+                raise SystemExit(
+                    f"ERROR: no build manifest for '{recipe_id}' ({build_file}); "
+                    "run tools/build_recipe.py first."
+                )
+            continue
         build = load_json(build_file, f"build manifest for {recipe_id}")
 
         package_path = args.packages / build["package"]
@@ -189,7 +198,7 @@ def main(argv: list[str] | None = None) -> int:
     apps.sort(key=lambda app: app["id"])
     catalog = {"apps": apps}
 
-    args.out.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8")
+    args.out.write_text(json.dumps(catalog, indent=2) + "\n", encoding="utf-8", newline="\n")
     print(f"Catalog written: {args.out} ({len(apps)} app(s))")
 
     if args.key:

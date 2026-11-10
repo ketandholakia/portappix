@@ -456,6 +456,19 @@ def validate_recipe_provenance(apps: list[Any], recipe_schema_path: Path) -> int
             )
             failures += 1
 
+        redistribution = recipe.get("redistribution", "allowed")
+        if redistribution == "vendor-link-only":
+            if kind != "vendor-link":
+                print(f"ERROR: {label} is marked 'vendor-link-only' in its recipe but catalog kind is '{kind}'.")
+                failures += 1
+            src_url = recipe.get("source", {}).get("url")
+            if app.get("url") != src_url:
+                print(
+                    f"ERROR: {label} is marked 'vendor-link-only' in its recipe but catalog has re-hosted URL "
+                    f"'{app.get('url')}'; must match vendor source URL '{src_url}'."
+                )
+                failures += 1
+
         if kind == "vendor-link":
             src = recipe.get("source", {})
             if src.get("url") != app.get("url"):
