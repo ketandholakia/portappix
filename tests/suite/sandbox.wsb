@@ -1,24 +1,21 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
-  Portappix compatibility suite: Windows Sandbox configuration.
+  Portappix validation gates: Windows Sandbox configuration.
 
-  1. Edit <HostFolder> below to your local checkout of this repository.
-  2. Build on the HOST first (the repo is mapped read-only):
-       - build the launcher:        see README ("Build"), output bin\Launcher.exe
-       - build the fake apps:       tests\fakeapps\build.cmd
-  3. Open this file with Windows Sandbox (double-click), or:
-       wsb tests\suite\sandbox.wsb
-  4. The sandbox opens a console and runs run_suite.ps1 automatically.
+  A clean Windows Sandbox contains only native Windows tools (powershell.exe, cmd.exe, reg.exe).
+  It does NOT contain Python, Git, or Delphi. All build steps must run on the HOST first:
+    1. Build Launcher:              scripts\build_launcher.cmd all
+    2. Build Fake Apps:             tests\fakeapps\build.cmd
+    3. Build Self-Update Fixtures:  powershell -ExecutionPolicy Bypass -File scripts\build_selfupdate_fixture.ps1
 
-  The repository is mapped READ-ONLY. Results are written to the second
-  (read-write) mapped folder; adjust its host path to taste.
-
-  >>> NEVER run the suite on a daily-driver machine. <<<
+  Adjust <HostFolder> paths below to match your host paths before launching.
+  The repository is mapped READ-ONLY into Desktop\portappix.
+  Results are written to the mapped READ-WRITE folder Desktop\PortappixSuiteResults.
 -->
 <Configuration>
   <MappedFolders>
     <MappedFolder>
-      <HostFolder>C:\Users\Public\portappix</HostFolder>
+      <HostFolder>C:\Users\Admin\Documents\github\portappix</HostFolder>
       <ReadOnly>true</ReadOnly>
     </MappedFolder>
     <MappedFolder>
@@ -27,6 +24,6 @@
     </MappedFolder>
   </MappedFolders>
   <LogonCommand>
-    <Command>powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "C:\users\WDAGUtilityAccount\Desktop\portappix\tests\suite\run_suite.ps1 -Results C:\users\WDAGUtilityAccount\Desktop\results -Launcher C:\users\WDAGUtilityAccount\Desktop\portappix\bin\Launcher.exe"</Command>
+    <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command "Set-Location C:\users\WDAGUtilityAccount\Desktop\portappix; Write-Host 'Portappix Windows Sandbox Validation Ready.' -ForegroundColor Green; Write-Host 'Available gates:'; Write-Host '  Gate 1 (Crash Harness)     : .\tests\suite\run_crash_validation.ps1 -Results C:\users\WDAGUtilityAccount\Desktop\PortappixSuiteResults'; Write-Host '  Gate 2 (Compatibility)    : .\tests\suite\run_suite.ps1 -Results C:\users\WDAGUtilityAccount\Desktop\PortappixSuiteResults -Launcher .\bin\Launcher.exe'; Write-Host '  Gate 3 (Self-Update)       : .\tests\suite\run_selfupdate_validation.ps1 -FixtureDir .\tests\suite\fixtures\selfupdate'; Write-Host ''; Write-Host 'Executing Gate 2 (Compatibility Suite)...' -ForegroundColor Cyan; .\tests\suite\run_suite.ps1 -Results C:\users\WDAGUtilityAccount\Desktop\PortappixSuiteResults -Launcher .\bin\Launcher.exe"</Command>
   </LogonCommand>
 </Configuration>

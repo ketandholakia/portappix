@@ -32,31 +32,56 @@ into `Documents`, environment `PATH` hijack).
 
 ## 1. Build (on the host, before starting the sandbox)
 
-```bat
-:: the launcher (both bitnesses, see README "Build")
-cd src && dcc32 -B Launcher.dpr && dcc64 -B Launcher.dpr
+A clean Windows Sandbox only contains native Windows utilities (`powershell.exe`, `cmd.exe`, `reg.exe`) and lacks Python, Git, and Delphi. All build steps and fixture preparations must be executed on the **HOST** beforehand:
 
-:: the fake apps (Win32 output is what the suite uses)
+```bat
+:: 1. The launcher (both bitnesses, see README "Build")
+scripts\build_launcher.cmd all
+
+:: 2. The fake apps (Win32 output is what the suite uses)
 tests\fakeapps\build.cmd
+
+:: 3. Gate 3 self-update test fixtures (generates throwaway key and signed feeds)
+powershell -ExecutionPolicy Bypass -File scripts\build_selfupdate_fixture.ps1
 ```
 
-`tests\fakeapps\build.cmd` compiles every fake app with `dcc32` (or `dcc64`
-with the `64` argument) into `tests\fakeapps\out\<name>\`. The exes are plain
-console programs with no dependencies beyond the RTL; nothing is committed.
+`tests\fakeapps\build.cmd` compiles every fake app with `dcc32` into `tests\fakeapps\out\<name>\`.
+`scripts\build_selfupdate_fixture.ps1` builds versioned launchers (1.0.0, 1.1.0, 1.2.0, 1.3.0-fail) and signed release packages into `tests\suite\fixtures\selfupdate\`.
 
-## 2. Run
+## 2. Run in Windows Sandbox
 
-### Windows Sandbox
+1. Edit `tests\suite\sandbox.wsb`: set `<HostFolder>` paths to your local repo checkout and an empty results folder on the host.
+2. Double-click `tests\suite\sandbox.wsb`.
+3. In the sandbox console, the repository is mapped read-only at `C:\users\WDAGUtilityAccount\Desktop\portappix`.
 
-1. Edit `tests\suite\sandbox.wsb`: set both `<HostFolder>` paths
-   (repository read-only, results folder read-write).
-2. Double-click the `.wsb` file. The logon command runs the suite and drops
-   results into the mapped results folder.
+Every test script inside the sandbox uses **only native Windows PowerShell** and prebuilt binaries:
 
-### Hyper-V VM / any clean Windows machine
+### Gate 1: Transactional Crash Recovery Harness
+```powershell
+Set-Location C:\users\WDAGUtilityAccount\Desktop\portappix
+powershell -ExecutionPolicy Bypass -File .\tests\suite\run_crash_validation.ps1 `
+    -Results C:\users\WDAGUtilityAccount\Desktop\PortappixSuiteResults
+```
+
+### Gate 2: Compatibility Suite (Fake Apps)
+```powershell
+Set-Location C:\users\WDAGUtilityAccount\Desktop\portappix
+powershell -ExecutionPolicy Bypass -File .\tests\suite\run_suite.ps1 `
+    -Results C:\users\WDAGUtilityAccount\Desktop\PortappixSuiteResults `
+    -Launcher .\bin\Launcher.exe
+```
+
+### Gate 3: Two Consecutive Self-Updates & Rollback Watchdog
+```powershell
+Set-Location C:\users\WDAGUtilityAccount\Desktop\portappix
+powershell -ExecutionPolicy Bypass -File .\tests\suite\run_selfupdate_validation.ps1 `
+    -FixtureDir .\tests\suite\fixtures\selfupdate
+```
+
+## 3. Run in Hyper-V VM / any clean Windows machine
 
 ```powershell
-# in the VM, after copying the repo and building the two steps above
+# In the VM, after copying the repo and building the host steps above:
 powershell -ExecutionPolicy Bypass -File tests\suite\run_suite.ps1 `
     -Results C:\PortappixSuiteResults
 ```
