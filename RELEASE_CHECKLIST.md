@@ -20,10 +20,12 @@ machine.
 - [ ] Every recipe in `recipes\` passes the policy lint
       (`python tools/build_recipe.py --lint-only` or the CI recipe job).
 - [ ] `catalog.json` was re-signed after any change:
-      `python scripts/sign_catalog.py --catalog catalog.json --key keys/catalog_signing_key.pem`
-      and verified: `... --public-key catalog_public.pem --verify`.
+      `python scripts/sign_catalog.py --catalog catalog.json --key "<operator signing key outside the repo>"`
+      and verified: `... --public-key keys/catalog_public.pem --verify`.
 - [ ] The embedded `Portappix.Signature.CatalogPublicKeyHex` still matches the
-      public key of the signing key actually used.
+      public key of the signing key actually used
+      (`keys/catalog_public.pem`; fingerprint comparison in
+      `docs/security/SIGNING_KEY_MANAGEMENT.md`).
 
 ## 3. Documentation
 
@@ -34,8 +36,13 @@ machine.
 
 ## 4. Release artifact
 
-- [ ] `python scripts/make_release.py --source <staging-folder> --out dist\ --version x.y.z --channel stable --key keys/catalog_signing_key.pem --url-base https://<host>/downloads`
-      builds the release zip, writes `releases.json` and signs it.
+- [ ] `python scripts/make_release.py --source <staging-folder> --out dist\ --version x.y.z --channel stable --key <operator signing key outside the repo> --url-base https://<host>/downloads`
+      builds the release zip, writes `releases.json` and signs it. The script
+      excludes Git metadata, private keys, developer/IDE files and the
+      `tests/`/`docs/` trees, and runs `scripts/package_guard.py` on the
+      finished zip — if the guard fails, the artifact must not be uploaded.
+- [ ] Package guard re-check (optional, standalone):
+      `python scripts/package_guard.py dist\portappix-x.y.z-stable.zip`.
 - [ ] `dist\releases.json` + `dist\releases.json.sig` verified with the
       verifier used by the launcher (`--check-updates` / the update check).
 - [ ] Upload the release zip to the release URL from `releases.json`; the

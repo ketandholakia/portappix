@@ -1,0 +1,18 @@
+{
+  "schema": 1,
+  "id": "crashatcheckpoint",
+  "name": "Fake Crash At Checkpoint",
+  "publisher": "Portappix Tests",
+  "version": "1.0.0",
+  "category": "Tests",
+  "exe": "CrashAtCheckpoint.exe",
+  "env": {
+    "APPDATA": "{data}\\AppData"
+  },
+  "junctions": {
+    "%LOCALAPPDATA%\\FakeApps\\CrashAtCheckpoint": "{data}\\LocalAppData"
+  },
+  "registry": [
+    "HKCU\\Software\\PortappixTest\\CrashAtCheckpoint"
+  ]
+}

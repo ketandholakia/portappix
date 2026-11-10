@@ -39,6 +39,8 @@ function IsAppRunning(const ARootPath, AAppId: string): Boolean;
 function TryAcquireMutex(const AName: string; out AHandle: THandle): Boolean;
 procedure ReleaseMutexHandle(var AHandle: THandle);
 function WriteTextFileAtomic(const AFileName, AContent: string): Boolean;
+function WriteTextFileDurable(const AFileName, AContent: string): Boolean;
+function FlushDirectoryWindows(const ADirectory: string): Boolean;
 
 type
   TPortappixSingleInstance = class
@@ -340,6 +342,88 @@ begin
       TFile.Delete(TemporaryFile);
     except
     end;
+end;
+
+function FlushDirectoryWindows(const ADirectory: string): Boolean;
+var
+  Handle: THandle;
+begin
+  // Best-effort directory metadata flush so a rename inside ADirectory is
+  // itself durable. Not supported on every file system; failures are ignored
+  // by callers that treat this as an extra guarantee, not a requirement.
+  Result := False;
+  if ADirectory = '' then
+    Exit;
+  Handle := CreateFile(PChar(ADirectory), GENERIC_READ,
+    FILE_SHARE_READ or FILE_SHARE_WRITE, nil, OPEN_EXISTING,
+    FILE_FLAG_BACKUP_SEMANTICS, 0);
+  if Handle = INVALID_HANDLE_VALUE then
+    Exit;
+  try
+    Result := FlushFileBuffers(Handle);
+  finally
+    CloseHandle(Handle);
+  end;
+end;
+
+var
+  GDurableTempCounter: Integer = 0;
+
+function WriteTextFileDurable(const AFileName, AContent: string): Boolean;
+var
+  DirectoryName: string;
+  TemporaryFile: string;
+  Stream: TFileStream;
+  ContentBytes: TBytes;
+begin
+  // Crash-durable variant of WriteTextFileAtomic: the data is flushed to the
+  // platter (FlushFileBuffers) BEFORE the atomic replace, and the parent
+  // directory is flushed afterwards so the replacement itself survives a
+  // power loss. Any failed step leaves the previous file untouched.
+  ContentBytes := TEncoding.UTF8.GetBytes(AContent);
+  DirectoryName := TPath.GetDirectoryName(TPath.GetFullPath(AFileName));
+  if (DirectoryName <> '') and not TDirectory.Exists(DirectoryName) then
+    try
+      TDirectory.CreateDirectory(DirectoryName);
+    except
+      Exit(False);
+    end;
+
+  TemporaryFile := Format('%s.%d.%d.tmp', [AFileName, GetCurrentProcessId,
+    InterlockedIncrement(GDurableTempCounter)]);
+  Stream := nil;
+  try
+    try
+      Stream := TFileStream.Create(TemporaryFile, fmCreate or fmShareExclusive);
+      if Length(ContentBytes) > 0 then
+      begin
+        Stream.WriteBuffer(ContentBytes[0], Length(ContentBytes));
+        // WriteBuffer already raised on a partial write; flush for durability.
+        if not FlushFileBuffers(Stream.Handle) then
+          Exit(False);
+      end;
+      // Verify the write completed before replacing anything.
+      if Stream.Size <> Length(ContentBytes) then
+        Exit(False);
+    except
+      Exit(False);
+    end;
+  finally
+    Stream.Free;
+  end;
+
+  if not MoveFileEx(PChar(TemporaryFile), PChar(AFileName),
+    MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
+  begin
+    try
+      TFile.Delete(TemporaryFile);
+    except
+    end;
+    Exit(False);
+  end;
+
+  FlushDirectoryWindows(DirectoryName);
+  Result := True;
 end;
 
 constructor TPortappixSingleInstance.Create(const ARootPath: string);

@@ -1,5 +1,29 @@
 unit Portappix.Runner;
 
+{
+  The portable-app execution engine (Phase 2: transactional journal).
+
+  Run is now a write-ahead transaction: every host mutation is recorded in
+  the transaction journal (durably persisted) BEFORE it is performed, and
+  the journal is updated again after the mutation completes. The cleanup
+  path — used both after a normal run and after any failure — replays the
+  recorded operations in reverse through TPortappixTransactionReconciler,
+  which is the same idempotent code the crash-recovery engine uses.
+
+  Ordering (see docs/security/JOURNAL_TRANSACTION_AND_RECOVERY.md):
+    BeginTransaction (durable 'preparing' -> 'prepared')
+    junction host preparation: remove pre-existing reparse point (original
+      target recorded) / rename host directory to <path>_host_backup
+    registry backups (reg.exe export into the transaction directory)
+    -> hostBackupComplete
+    junction creation, host registry deletes, portable registry import
+    -> hostStateChanging -> hostStateChanged -> running
+    (app runs) -> cleaning: portable export, then reverse reconciliation
+    -> completed (transaction directory removed)
+  If the journal cannot be persisted at any point, the host mutation does
+  not proceed.
+}
+
 interface
 
 uses
@@ -11,6 +35,7 @@ uses
   System.Generics.Collections,
   System.Generics.Defaults,
   Portappix.Common,
+  Portappix.Transactions,
   Portappix.Junction,
   Portappix.Manifest,
   Portappix.Policy,
@@ -23,10 +48,8 @@ type
   EPortappixElevationRequired = class(EPortappixRunnerError);
 
   IPortappixJournal = interface
-    ['{B8A13E7E-3A9D-4B0B-9C13-6F4E9E2C4D51}']
-    procedure AddActiveApp(const AAppId: string; const AHijackedKeys: TArray<string>;
-      const AJunctions: TArray<string>);
-    procedure RemoveActiveApp(const AAppId: string);
+    ['{B8A13E7E-3A9D-4B0B-9C13-6F4E9E2C4D52}']
+    function BeginTransaction(const AAppId: string): IPortappixTransaction;
     procedure RecoverPendingCleanups;
     function GetOnLog: TProc<string>;
     procedure SetOnLog(const AValue: TProc<string>);
@@ -44,11 +67,15 @@ type
     FEnvironment: TDictionary<string, string>;
     FRegistryKeys: TArray<string>;
     FJunctions: TDictionary<string, string>;
-    FCreatedJunctions: TArray<string>;
     FExitCode: Cardinal;
     FOnLog: TProc<string>;
     FJournal: IPortappixJournal;
     FRegistryOps: IPortappixRegistryOps;
+    FHostPathOps: IPortappixHostPathOps;
+    // What each junction host path looked like before the run ('absent',
+    // 'directory', 'junction') — persisted on the create operation so
+    // restoration can verify the final state.
+    FJunctionOriginalKind: TDictionary<string, string>;
     procedure Log(const AMessage: string);
     procedure ResolvePaths;
     procedure ResolveRegistryKeys;
@@ -58,17 +85,18 @@ type
     function ExpandTokens(const AValue: string): string;
     function BuildEnvironmentBlock: string;
     function LaunchProcess(const AEnvironmentBlock: string): Cardinal;
-    procedure CreateJunctions;
-    procedure RemoveJunctions;
     procedure ImportPortableRegistry;
     function ExportPortableRegistry: Boolean;
-    procedure CleanupHostRegistry;
-    procedure DeleteHostRegistryKeys;
-    function HostBackupFile(const AIndex: Integer): string;
-    procedure BackupHostRegistryKeys;
-    procedure RestoreHostRegistryBackups;
     function RegistryKeyExists(const AKey: string): Boolean;
     function GetPortableRegistryFile: string;
+    // Transactional phases.
+    procedure PrepareJunctionHost(const ATx: IPortappixTransaction;
+      const AHostPath, ATargetPath: string);
+    procedure BackupRegistryKey(const ATx: IPortappixTransaction; const AKey: string);
+    procedure CreateJunctionJournaled(const ATx: IPortappixTransaction;
+      const AHostPath, ATargetPath: string);
+    procedure DeleteHostKeysJournaled(const ATx: IPortappixTransaction);
+    procedure CleanupTransaction(const ATx: IPortappixTransaction);
   public
     constructor Create(const AManifestPath: string; const ARootPath: string = '');
       overload;
@@ -83,7 +111,8 @@ type
     class procedure PerformCleanup(const AAppId: string; const AHijackedKeys: TArray<string>;
       const AJunctions: TArray<string>; const ADataDir: string;
       const ALog: TProc<string> = nil;
-      const ARegistryOps: IPortappixRegistryOps = nil); overload; static;
+      const ARegistryOps: IPortappixRegistryOps = nil;
+      const AHostPathOps: IPortappixHostPathOps = nil); overload; static;
     property Manifest: TPortappixManifest read FManifest;
     property ManifestPath: string read FManifestPath;
     property RootPath: string read FRootPath;
@@ -93,6 +122,7 @@ type
     property ExitCode: Cardinal read FExitCode;
     property OnLog: TProc<string> read FOnLog write FOnLog;
     property RegistryOps: IPortappixRegistryOps read FRegistryOps write FRegistryOps;
+    property HostPathOps: IPortappixHostPathOps read FHostPathOps write FHostPathOps;
   end;
 
 implementation
@@ -215,7 +245,7 @@ begin
       begin
         Result := False;
         CleanupLog(ALog, 'Unable to merge exported registry keys into registry.reg.');
-      end;
+      end
     end
     else if Result then
       CleanupLog(ALog, 'No registry keys were available to export.');
@@ -273,7 +303,8 @@ begin
           TFile.Delete(FileName);
       end
       else
-        CleanupLog(ALog, 'Host registry backup was not removed so it can be retried: ' + FileName);
+        CleanupLog(ALog, 'Host registry backup was not removed so it can be retried: ' +
+          FileName);
     except
       on E: Exception do
         CleanupLog(ALog, Format('Unable to restore host registry backup "%s": %s',
@@ -282,8 +313,50 @@ begin
   end;
 end;
 
+function RemoveJunctionsWithLogOps(const AJunctions: TArray<string>;
+  const ALog: TProc<string>; const AOps: IPortappixHostPathOps): Boolean; forward;
+
 function RemoveJunctionsWithLog(const AJunctions: TArray<string>;
   const ALog: TProc<string>): Boolean;
+begin
+  Result := RemoveJunctionsWithLogOps(AJunctions, ALog, nil);
+end;
+
+function RemoveJunctionsWithLogOps(const AJunctions: TArray<string>;
+  const ALog: TProc<string>; const AOps: IPortappixHostPathOps): Boolean;
+
+  function OpPathExists(const APath: string): Boolean;
+  begin
+    if AOps <> nil then
+      Result := AOps.PathExists(APath)
+    else
+      Result := PathExists(APath);
+  end;
+
+  function OpIsReparsePoint(const APath: string): Boolean;
+  begin
+    if AOps <> nil then
+      Result := AOps.IsReparsePoint(APath)
+    else
+      Result := IsReparsePoint(APath);
+  end;
+
+  function OpDeleteJunction(const APath: string): Boolean;
+  begin
+    if AOps <> nil then
+      Result := AOps.DeleteJunction(APath)
+    else
+      Result := DeleteJunction(APath);
+  end;
+
+  function OpRename(const AFrom, ATo: string): Boolean;
+  begin
+    if AOps <> nil then
+      Result := AOps.RenamePath(AFrom, ATo)
+    else
+      Result := RenameFile(AFrom, ATo);
+  end;
+
 begin
   Result := True;
   for var Index := High(AJunctions) downto 0 do
@@ -291,12 +364,12 @@ begin
     var HostPath := AJunctions[Index];
     var BackupPath := HostJunctionBackupPath(HostPath);
     try
-      if PathExists(HostPath) then
+      if OpPathExists(HostPath) then
       begin
-        if IsReparsePoint(HostPath) then
+        if OpIsReparsePoint(HostPath) then
         begin
           CleanupLog(ALog, 'Removing junction: ' + HostPath);
-          if not DeleteJunction(HostPath) then
+          if not OpDeleteJunction(HostPath) then
           begin
             Result := False;
             CleanupLog(ALog, 'Unable to remove junction: ' + HostPath);
@@ -306,11 +379,11 @@ begin
           CleanupLog(ALog, 'Host path is not a junction; leaving it in place: ' + HostPath);
       end;
 
-      if not PathExists(HostPath) and TDirectory.Exists(BackupPath) and
-         not IsReparsePoint(BackupPath) then
+      if not OpPathExists(HostPath) and TDirectory.Exists(BackupPath) and
+         not OpIsReparsePoint(BackupPath) then
       begin
         CleanupLog(ALog, 'Restoring host directory backup: ' + BackupPath);
-        if not RenameFile(BackupPath, HostPath) then
+        if not OpRename(BackupPath, HostPath) then
           CleanupLog(ALog, Format('Unable to restore host directory "%s": %s',
             [HostPath, SysErrorMessage(Integer(GetLastError))]));
       end;
@@ -342,6 +415,7 @@ begin
   FRegistryOps := ARegistryOps;
   if not Assigned(FRegistryOps) then
     FRegistryOps := TPortappixRegistryOps.Create;
+  FHostPathOps := TPortappixHostPathOps.Create;
 
   try
     FRootPath := ResolveRootPath(ARootPath);
@@ -350,9 +424,11 @@ begin
     FAppDir := TPath.GetDirectoryName(FManifestPath);
     FEnvironment := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
     FJunctions := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
+    FJunctionOriginalKind := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
     ResolvePaths;
   except
     FJournal := nil;
+    FreeAndNil(FJunctionOriginalKind);
     FreeAndNil(FJunctions);
     FreeAndNil(FEnvironment);
     FreeAndNil(FManifest);
@@ -362,24 +438,32 @@ end;
 
 destructor TPortableAppRunner.Destroy;
 begin
+  FreeAndNil(FJunctionOriginalKind);
   FreeAndNil(FJunctions);
   FreeAndNil(FEnvironment);
   FreeAndNil(FManifest);
   FJournal := nil;
   FRegistryOps := nil;
+  FHostPathOps := nil;
   inherited;
+end;
+
+procedure TPortableAppRunner.Log(const AMessage: string);
+begin
+  if Assigned(FOnLog) then
+    FOnLog(AMessage);
 end;
 
 function TPortableAppRunner.Run: Cardinal;
 var
   EnvironmentBlock: string;
-  Journaled: Boolean;
-  Policy: TPolicyResult;
+  Transaction: IPortappixTransaction;
+  Pair: TPair<string, string>;
+  Key: string;
 begin
   FExitCode := Cardinal(-1);
-  Journaled := False;
 
-  Policy := TPortappixPolicy.ValidateManifest(FManifest);
+  var Policy := TPortappixPolicy.ValidateManifest(FManifest);
   try
     if not Policy.Allowed then
       raise EPortappixPolicyError.CreateFmt(
@@ -392,70 +476,70 @@ begin
   if not TFile.Exists(FExePath) then
     raise EPortappixRunnerError.CreateFmt('Executable not found: "%s".', [FExePath]);
 
-  PrepareDataDirectories;
-  // Record which data schema version last wrote here (used by update
-  // downgrade protection). A declared dataVersion of 0 writes nothing.
+  // Journal intent is durably persisted BEFORE any host mutation. If the
+  // journal cannot be created or written, the run aborts here.
+  if FJournal = nil then
+    raise EPortappixRunnerError.Create(
+      'No crash journal was provided; refusing to modify host state.');
+  Transaction := FJournal.BeginTransaction(FManifest.Id);
+  Log(Format('Transaction %s started for "%s".', [Transaction.GetTxId, FManifest.Id]));
+
   try
-    TPortappixManifest.WriteDataVersion(FDataDir, FManifest.Id, FManifest.DataVersion);
+    PrepareDataDirectories;
+      // Record which data schema version last wrote here (used by update
+      // downgrade protection). A declared dataVersion of 0 writes nothing.
+      try
+        TPortappixManifest.WriteDataVersion(FDataDir, FManifest.Id, FManifest.DataVersion);
+      except
+        on E: Exception do
+          Log('Unable to record the data version: ' + E.Message);
+      end;
+      BuildEnvironment;
+      EnvironmentBlock := BuildEnvironmentBlock;
+
+      // Phase 1 (prepared): make host paths safe and back them up. Each
+      // operation is durably recorded before it is performed.
+      for Pair in FJunctions do
+        PrepareJunctionHost(Transaction, Pair.Key, Pair.Value);
+      for Key in FRegistryKeys do
+        BackupRegistryKey(Transaction, Key);
+      Transaction.SetState(txHostBackupComplete);
+
+      // Phase 2 (hostStateChanging): the destructive mutations.
+      Transaction.SetState(txHostStateChanging);
+      for Pair in FJunctions do
+        CreateJunctionJournaled(Transaction, Pair.Key, Pair.Value);
+      DeleteHostKeysJournaled(Transaction);
+      ImportPortableRegistry;
+
+      Transaction.SetState(txHostStateChanged);
+      Transaction.SetState(txRunning);
+
+      Log(Format('Launching "%s".', [FExePath]));
+      try
+        FExitCode := LaunchProcess(EnvironmentBlock);
+      finally
+        CleanupTransaction(Transaction);
+      end;
   except
     on E: Exception do
-      Log('Unable to record the data version: ' + E.Message);
-  end;
-  BuildEnvironment;
-  EnvironmentBlock := BuildEnvironmentBlock;
-  try
-    CreateJunctions;
-    BackupHostRegistryKeys;
-    DeleteHostRegistryKeys;
-    ImportPortableRegistry;
-  except
-    try
-      RemoveJunctions;
-      RestoreHostRegistryBackups;
-    except
-      on E: Exception do
-        Log('Failed to roll back pre-launch state: ' + E.Message);
-    end;
-    raise;
-  end;
-
-  if Assigned(FJournal) then
-  begin
-    try
-      FJournal.AddActiveApp(FManifest.Id, FRegistryKeys, FCreatedJunctions);
-      Journaled := True;
-    except
-      on E: Exception do
-        Log('Unable to record the active app in the journal: ' + E.Message);
-    end;
-  end;
-
-  Log(Format('Launching "%s".', [FExePath]));
-  try
-    FExitCode := LaunchProcess(EnvironmentBlock);
-  finally
-    try
-      CleanupHostRegistry;
-      RemoveJunctions;
-    finally
-      if Journaled and Assigned(FJournal) then
-        try
-          FJournal.RemoveActiveApp(FManifest.Id);
-        except
-          on E: Exception do
-            Log('Unable to remove the active app from the journal: ' + E.Message);
-        end;
+    begin
+      // A durable error note unless cleanup already completed the
+      // transaction; recovery reconciles whatever is left on next start.
+      try
+        if Transaction.GetState <> txCompleted then
+          Transaction.SetError(E.Message);
+      except
+        on EInner: Exception do
+          Log('Unable to persist the transaction error: ' + EInner.Message);
+      end;
+      Log(Format('Run failed: %s', [E.Message]));
+      raise;
     end;
   end;
 
   Log(Format('Application exited with code %u.', [FExitCode]));
   Result := FExitCode;
-end;
-
-procedure TPortableAppRunner.Log(const AMessage: string);
-begin
-  if Assigned(FOnLog) then
-    FOnLog(AMessage);
 end;
 
 procedure TPortableAppRunner.ResolvePaths;
@@ -479,6 +563,10 @@ begin
   for var Pair in FManifest.Junctions do
   begin
     HostPath := StringReplace(ExpandTokens(Pair.Key), '/', '\', [rfReplaceAll]);
+    // Host paths may carry %VAR% references (the policy engine validates
+    // the expanded form); expand them so the junction lands where the
+    // policy checked it.
+    HostPath := ExpandPercentVariables(HostPath);
     if IsRelativePath(HostPath) then
       HostPath := TPath.GetFullPath(TPath.Combine(FRootPath, HostPath))
     else
@@ -498,8 +586,6 @@ begin
 
     FJunctions.AddOrSetValue(HostPath, TargetPath);
   end;
-
-  SetLength(FCreatedJunctions, 0);
 end;
 
 procedure TPortableAppRunner.ResolveRegistryKeys;
@@ -523,91 +609,314 @@ begin
     ForceDirectories(Pair.Value);
 end;
 
-procedure TPortableAppRunner.CreateJunctions;
+procedure TPortableAppRunner.PrepareJunctionHost(
+  const ATx: IPortappixTransaction; const AHostPath, ATargetPath: string);
 var
-  Created: TList<string>;
   BackupPath: string;
+  OldTarget: string;
+  Index: Integer;
+  Inspection: TPortappixPathInspection;
 begin
-  SetLength(FCreatedJunctions, 0);
-  if FJunctions.Count = 0 then
-    Exit;
+  BackupPath := HostJunctionBackupPath(AHostPath);
 
-  Created := TList<string>.Create;
-  try
-    try
-      for var Pair in FJunctions do
+  if FHostPathOps.PathExists(BackupPath) then
+    raise EPortappixRunnerError.CreateFmt(
+      'Cannot create junction for "%s" because a host backup path already exists: "%s".',
+      [AHostPath, BackupPath]);
+
+  // Classify the existing object WITHOUT following any reparse point; every
+  // case below either records safe restoration metadata or refuses.
+  Inspection := FHostPathOps.InspectPath(AHostPath);
+  case Inspection.Kind of
+    rkMissing:
+      // Case A: the path was absent — persisted on the create operation
+      // (expectedOriginal='absent') so restoration can verify the absent
+      // state is regained.
+      FJunctionOriginalKind.AddOrSetValue(AHostPath, 'absent');
+
+    rkDirectory:
       begin
-        var HostPath := TrimTrailingPathDelimiter(Pair.Key);
-        var TargetPath := TrimTrailingPathDelimiter(Pair.Value);
-        BackupPath := HostJunctionBackupPath(HostPath);
-
-        if PathExists(BackupPath) then
-          raise EPortappixRunnerError.CreateFmt(
-            'Cannot create junction for "%s" because a host backup path already exists: "%s".',
-            [HostPath, BackupPath]);
-
-        if PathExists(HostPath) then
+        // Case B: an ordinary directory is never deleted; renaming it to
+        // <path>_host_backup preserves it (contents included) and the
+        // rename is reversed after the run.
+        FJunctionOriginalKind.AddOrSetValue(AHostPath, 'directory');
+        Index := ATx.RecordOperation(TPortappixTransaction.MakeOperation(
+          okHostDirBackup, AHostPath, '', BackupPath, ''));
+        Log('Backing up existing host directory: ' + AHostPath);
+        if not FHostPathOps.RenamePath(AHostPath, BackupPath) then
         begin
-          if IsReparsePoint(HostPath) then
-          begin
-            Log('Removing existing junction/reparse point before launch: ' + HostPath);
-            if not DeleteJunction(HostPath) then
-              raise EPortappixRunnerError.CreateFmt(
-                'Unable to remove existing junction "%s".', [HostPath]);
-            if PathExists(HostPath) then
-              raise EPortappixRunnerError.CreateFmt(
-                'Existing junction was not removed: "%s".', [HostPath]);
-          end
-          else if TDirectory.Exists(HostPath) then
-          begin
-            Log('Backing up existing host directory: ' + HostPath);
-            if not RenameFile(HostPath, BackupPath) then
-              raise EPortappixRunnerError.CreateFmt(
-                'Unable to rename host directory "%s" to "%s": %s',
-                [HostPath, BackupPath, SysErrorMessage(Integer(GetLastError))]);
-          end
-          else
-            raise EPortappixRunnerError.CreateFmt(
-              'Cannot create junction because a file exists at host path "%s".', [HostPath]);
-        end;
-
-        ForceDirectories(TPath.GetDirectoryName(HostPath));
-        ForceDirectories(TargetPath);
-
-        Log(Format('Creating junction "%s" -> "%s".', [HostPath, TargetPath]));
-        if not CreateJunction(HostPath, TargetPath) then
+          ATx.MarkOperation(Index, opFailed);
           raise EPortappixRunnerError.CreateFmt(
-            'Unable to create junction "%s" -> "%s": %s',
-            [HostPath, TargetPath, SysErrorMessage(Integer(GetLastError))]);
-
-        Created.Add(HostPath);
+            'Unable to rename host directory "%s" to "%s": %s',
+            [AHostPath, BackupPath, SysErrorMessage(Integer(GetLastError))]);
+        end;
+        ATx.MarkOperation(Index, opDone);
       end;
 
-      FCreatedJunctions := Created.ToArray;
-    except
-      FCreatedJunctions := Created.ToArray;
-      try
-        RemoveJunctions;
-      except
-        on E: Exception do
-          Log('Failed to roll back junctions: ' + E.Message);
+    rkJunction:
+      begin
+        // Case C: capture the original junction's full identity (mount-point
+        // tag + target) BEFORE anything is removed; the durable record is
+        // the preserved copy and restoration recreates the junction from it.
+        if not Inspection.TargetParsed then
+          raise EPortappixRunnerError.CreateFmt(
+            'Unable to safely record the target of the existing junction "%s": %s. ' +
+            'Refusing to remove it.',
+            [AHostPath, Inspection.ErrorMessage]);
+        OldTarget := Inspection.Target;
+        FJunctionOriginalKind.AddOrSetValue(AHostPath, 'junction');
+        Index := ATx.RecordOperation(TPortappixTransaction.MakeJunctionOperation(
+          okJunctionRemoveOld, AHostPath, OldTarget, 'junction'));
+        Log('Removing existing junction/reparse point before launch: ' + AHostPath);
+        if not FHostPathOps.DeleteJunction(AHostPath) then
+        begin
+          ATx.MarkOperation(Index, opFailed);
+          raise EPortappixRunnerError.CreateFmt(
+            'Unable to remove existing junction "%s".', [AHostPath]);
+        end;
+        Inspection := FHostPathOps.InspectPath(AHostPath);
+        if Inspection.Kind <> rkMissing then
+        begin
+          ATx.MarkOperation(Index, opFailed);
+          raise EPortappixRunnerError.CreateFmt(
+            'Existing junction was not removed: "%s".', [AHostPath]);
+        end;
+        ATx.MarkOperation(Index, opDone);
       end;
-      raise;
-    end;
-  finally
-    Created.Free;
+
+    rkSymlink:
+      // Case D: symbolic links are never treated as junctions and never
+      // removed.
+      raise EPortappixRunnerError.CreateFmt(
+        'Cannot create the junction for "%s": the path holds a symbolic link ' +
+        '(%s). Portappix never replaces symbolic links.',
+        [AHostPath, Inspection.Target]);
+
+    rkOtherReparse:
+      // Case E: unsupported reparse points are rejected untouched.
+      raise EPortappixRunnerError.CreateFmt(
+        'Cannot create the junction for "%s": the path holds an unsupported ' +
+        'reparse point (%s). Portappix never replaces unsupported reparse points.',
+        [AHostPath, Inspection.ErrorMessage]);
+
+    rkFile:
+      raise EPortappixRunnerError.CreateFmt(
+        'Cannot create junction because a file exists at host path "%s".', [AHostPath]);
+
+    rkInspectionFailed:
+      // Case F: fail closed; no host mutation without a verified picture.
+      raise EPortappixRunnerError.CreateFmt(
+        'Cannot inspect the host path "%s": %s. Refusing to modify it.',
+        [AHostPath, Inspection.ErrorMessage]);
   end;
 end;
 
-procedure TPortableAppRunner.RemoveJunctions;
+procedure TPortableAppRunner.BackupRegistryKey(const ATx: IPortappixTransaction;
+  const AKey: string);
+var
+  BackupFile: string;
+  Index: Integer;
 begin
-  if Length(FCreatedJunctions) = 0 then
+  ForceDirectories(FDataDir);
+
+  // The intent record is created without a file name; the transaction owns
+  // the naming and assigns registry_backup_<index>.reg at record time.
+  Index := ATx.RecordOperation(TPortappixTransaction.MakeOperation(
+    okRegistryBackup, '', '', '', AKey));
+  BackupFile := ATx.GetOperation(Index).BackupPath;
+
+  if not FRegistryOps.KeyExists(AKey) then
+  begin
+    // The key does not exist on the host: record that so recovery knows the
+    // original state contained no values for it.
+    ATx.MarkOperation(Index, opAbsent);
     Exit;
-  try
-    RemoveJunctionsWithLog(FCreatedJunctions, FOnLog);
-  finally
-    SetLength(FCreatedJunctions, 0);
   end;
+
+  Log('Backing up host registry key: ' + AKey);
+  if not FRegistryOps.ExportKey(AKey, BackupFile) then
+  begin
+    ATx.MarkOperation(Index, opFailed);
+    raise EPortappixRunnerError.CreateFmt(
+      'Unable to export host registry key backup for "%s".', [AKey]);
+  end;
+  if not TFile.Exists(BackupFile) then
+  begin
+    ATx.MarkOperation(Index, opFailed);
+    raise EPortappixRunnerError.CreateFmt(
+      'The host registry backup for "%s" was not written.', [AKey]);
+  end;
+  ATx.MarkOperation(Index, opDone);
+end;
+
+procedure TPortableAppRunner.CreateJunctionJournaled(
+  const ATx: IPortappixTransaction; const AHostPath, ATargetPath: string);
+var
+  Index: Integer;
+  Inspection: TPortappixPathInspection;
+  ExpectedOriginal: string;
+begin
+  ForceDirectories(TPath.GetDirectoryName(AHostPath));
+  ForceDirectories(ATargetPath);
+
+  if not FJunctionOriginalKind.TryGetValue(AHostPath, ExpectedOriginal) then
+    ExpectedOriginal := 'absent';
+
+  Log(Format('Creating junction "%s" -> "%s".', [AHostPath, ATargetPath]));
+  Index := ATx.RecordOperation(TPortappixTransaction.MakeJunctionOperation(
+    okJunctionCreate, AHostPath, ATargetPath, ExpectedOriginal));
+  if not FHostPathOps.CreateJunction(AHostPath, ATargetPath) then
+  begin
+    ATx.MarkOperation(Index, opFailed);
+    raise EPortappixRunnerError.CreateFmt(
+      'Unable to create junction "%s" -> "%s": %s',
+      [AHostPath, ATargetPath, SysErrorMessage(Integer(GetLastError))]);
+  end;
+
+  // TEST-ONLY crash point between the junction object existing on disk and
+  // MarkJunctionCreated durably persisting its filesystem identity: the
+  // exact ownership-verification window the Phase 3 remediation closes.
+  // Recovery for this state refuses removal of the junction (ownership
+  // cannot be established without the recorded identity) and marks the
+  // transaction recoveryRequired. Never used outside test environments.
+  CheckCrashPoint(Format('op:%d:created', [Index]));
+
+  // Verify the created object: it must be a mount-point junction with
+  // exactly the recorded target, and its filesystem identity is captured
+  // into the transaction for later ownership verification.
+  Inspection := FHostPathOps.InspectPath(AHostPath);
+  if (Inspection.Kind <> rkJunction) or not Inspection.TargetParsed or
+     not TPortappixTransaction.SameCanonicalPath(Inspection.Target, ATargetPath) then
+  begin
+    ATx.MarkOperation(Index, opFailed);
+    raise EPortappixRunnerError.CreateFmt(
+      'The junction "%s" was not created with the recorded target.', [AHostPath]);
+  end;
+  ATx.MarkJunctionCreated(Index, IntToHex(Inspection.ReparseTag, 8),
+    Inspection.Identity);
+end;
+
+procedure TPortableAppRunner.DeleteHostKeysJournaled(
+  const ATx: IPortappixTransaction);
+var
+  Index: Integer;
+  Operation: TPortappixTxOperation;
+  DeleteIndex: Integer;
+begin
+  // Delete every host key that was backed up, so host values cannot leak
+  // into the portable registry. Each delete is recorded (with the backup it
+  // can be restored from) before it is performed.
+  for Index := 0 to ATx.OperationCount - 1 do
+  begin
+    Operation := ATx.GetOperation(Index);
+    if (Operation.Kind <> okRegistryBackup) or (Operation.Status <> opDone) then
+      Continue;
+
+    if not FRegistryOps.KeyExists(Operation.RegistryKey) then
+      Continue; // vanished between backup and delete; the backup still rules
+
+    Log('Clearing host registry key: ' + Operation.RegistryKey);
+    DeleteIndex := ATx.RecordOperation(TPortappixTransaction.MakeOperation(
+      okRegistryDelete, '', '', Operation.BackupPath, Operation.RegistryKey));
+    if not FRegistryOps.DeleteKey(Operation.RegistryKey) then
+    begin
+      ATx.MarkOperation(DeleteIndex, opFailed);
+      raise EPortappixRunnerError.CreateFmt(
+        'Unable to clear host registry key "%s".', [Operation.RegistryKey]);
+    end;
+    ATx.MarkOperation(DeleteIndex, opDone);
+  end;
+end;
+
+procedure TPortableAppRunner.CleanupTransaction(const ATx: IPortappixTransaction);
+var
+  ExportSucceeded: Boolean;
+  Reconciler: TPortappixTransactionReconciler;
+begin
+  if ATx.GetState <> txCleaning then
+  begin
+    try
+      ATx.SetState(txCleaning);
+    except
+      on E: Exception do
+      begin
+        // Without a durable cleaning record the host must not be touched;
+        // recovery reconciles from the last durable state instead.
+        Log('Unable to persist the cleanup state: ' + E.Message);
+        Exit;
+      end;
+    end;
+  end;
+
+  // Capture what the app wrote (portable data) BEFORE undoing host state.
+  ExportSucceeded := False;
+  try
+    ExportSucceeded := ExportPortableRegistry;
+  except
+    on E: Exception do
+      Log('Failed to export the portable registry: ' + E.Message);
+  end;
+  if not ExportSucceeded then
+    Log('Host registry keys were left in place because the portable registry ' +
+      'could not be saved.');
+
+  // Undo every recorded operation in reverse order (idempotent, verified).
+  // The hard cast is safe: the interface reference held by Run keeps the
+  // transaction object alive for the whole run.
+  Reconciler := TPortappixTransactionReconciler.Create(FRegistryOps, FHostPathOps, FOnLog);
+  try
+    try
+      if not Reconciler.ReconcileTransaction(TPortappixTransaction(ATx)) then
+        Log('Cleanup incomplete: ' + Reconciler.LastError);
+    except
+      on E: Exception do
+      begin
+        Log('Cleanup reconciliation failed: ' + E.Message);
+      end;
+    end;
+  finally
+    Reconciler.Free;
+  end;
+
+  if ATx.AllOperationsResolved then
+  begin
+    try
+      ATx.CompleteAndRemove;
+      Log(Format('Transaction %s completed; host state restored.', [ATx.GetTxId]));
+    except
+      on E: Exception do
+        Log('Unable to complete the transaction: ' + E.Message);
+    end;
+  end
+  else
+  begin
+    ATx.SetError('Cleanup incomplete; the transaction will be recovered on the next start.');
+    Log('Transaction left for recovery; some operations are not resolved.');
+  end;
+end;
+
+procedure TPortableAppRunner.ImportPortableRegistry;
+var
+  RegistryFile: string;
+begin
+  if Length(FRegistryKeys) = 0 then
+    Exit;
+
+  RegistryFile := GetPortableRegistryFile;
+  if not TFile.Exists(RegistryFile) then
+  begin
+    Log('No portable registry file found; skipping import: ' + RegistryFile);
+    Exit;
+  end;
+
+  Log('Importing portable registry: ' + RegistryFile);
+  if not FRegistryOps.ImportFile(RegistryFile) then
+    raise EPortappixRunnerError.CreateFmt('reg.exe import failed for "%s".', [RegistryFile]);
+end;
+
+function TPortableAppRunner.ExportPortableRegistry: Boolean;
+begin
+  Result := ExportKeysToRegistryFile(FRegistryOps, FRegistryKeys, FDataDir, FOnLog);
 end;
 
 procedure TPortableAppRunner.BuildEnvironment;
@@ -776,123 +1085,9 @@ begin
   end;
 end;
 
-procedure TPortableAppRunner.ImportPortableRegistry;
-var
-  RegistryFile: string;
-begin
-  if Length(FRegistryKeys) = 0 then
-    Exit;
-
-  RegistryFile := GetPortableRegistryFile;
-  if not TFile.Exists(RegistryFile) then
-  begin
-    Log('No portable registry file found; skipping import: ' + RegistryFile);
-    Exit;
-  end;
-
-  Log('Importing portable registry: ' + RegistryFile);
-  if not FRegistryOps.ImportFile(RegistryFile) then
-    raise EPortappixRunnerError.CreateFmt('reg.exe import failed for "%s".', [RegistryFile]);
-end;
-
-function TPortableAppRunner.ExportPortableRegistry: Boolean;
-begin
-  Result := ExportKeysToRegistryFile(FRegistryOps, FRegistryKeys, FDataDir, FOnLog);
-end;
-
-procedure TPortableAppRunner.CleanupHostRegistry;
-var
-  ExportSucceeded: Boolean;
-begin
-  ExportSucceeded := False;
-  try
-    ExportSucceeded := ExportPortableRegistry;
-  except
-    on E: Exception do
-      Log('Failed to export the portable registry: ' + E.Message);
-  end;
-
-  if ExportSucceeded then
-  begin
-    try
-      DeleteHostRegistryKeys;
-    except
-      on E: Exception do
-        Log('Failed to delete host registry keys: ' + E.Message);
-    end;
-  end
-  else
-    Log('Host registry keys were left in place because the portable registry could not be saved.');
-
-  RestoreHostRegistryBackups;
-end;
-
-procedure TPortableAppRunner.DeleteHostRegistryKeys;
-begin
-  if Length(FRegistryKeys) = 0 then
-    Exit;
-
-  for var Key in FRegistryKeys do
-  begin
-    if not RegistryKeyExists(Key) then
-      Continue;
-    Log('Clearing host registry key: ' + Key);
-    if not FRegistryOps.DeleteKey(Key) then
-      raise EPortappixRunnerError.CreateFmt(
-        'Unable to clear host registry key "%s".', [Key]);
-  end;
-end;
-
 function TPortableAppRunner.RegistryKeyExists(const AKey: string): Boolean;
 begin
   Result := FRegistryOps.KeyExists(AKey);
-end;
-
-function TPortableAppRunner.HostBackupFile(const AIndex: Integer): string;
-begin
-  Result := TPath.Combine(FDataDir, Format('host_backup_%d.reg', [AIndex]));
-end;
-
-procedure TPortableAppRunner.BackupHostRegistryKeys;
-begin
-  if Length(FRegistryKeys) = 0 then
-    Exit;
-
-  ForceDirectories(FDataDir);
-
-  for var Index := 0 to High(FRegistryKeys) do
-  begin
-    var Key := FRegistryKeys[Index];
-    var BackupFile := HostBackupFile(Index);
-
-    try
-      if TFile.Exists(BackupFile) then
-        raise EPortappixRunnerError.CreateFmt(
-          'A host registry backup from a previous run already exists: "%s". ' +
-          'Recover it before launching this app again.', [BackupFile]);
-
-      if not RegistryKeyExists(Key) then
-        Continue;
-
-      Log('Backing up host registry key: ' + Key);
-      if not FRegistryOps.ExportKey(Key, BackupFile) then
-        raise EPortappixRunnerError.CreateFmt(
-          'Unable to export host registry key backup for "%s".', [Key]);
-    except
-      on E: Exception do
-      begin
-        Log('Host registry backup failed; restoring any completed backups.');
-        RestoreHostRegistryBackups;
-        raise EPortappixRunnerError.CreateFmt(
-          'Unable to back up host registry key "%s": %s', [Key, E.Message]);
-      end;
-    end;
-  end;
-end;
-
-procedure TPortableAppRunner.RestoreHostRegistryBackups;
-begin
-  RestoreBackupsWithOps(FRegistryOps, FRegistryKeys, FDataDir, FOnLog);
 end;
 
 function TPortableAppRunner.GetPortableRegistryFile: string;
@@ -913,7 +1108,8 @@ end;
 class procedure TPortableAppRunner.PerformCleanup(const AAppId: string;
   const AHijackedKeys: TArray<string>; const AJunctions: TArray<string>;
   const ADataDir: string; const ALog: TProc<string>;
-  const ARegistryOps: IPortappixRegistryOps);
+  const ARegistryOps: IPortappixRegistryOps;
+  const AHostPathOps: IPortappixHostPathOps);
 var
   Ops: IPortappixRegistryOps;
   ExportSucceeded: Boolean;
@@ -936,7 +1132,7 @@ begin
       'could not be saved; they will be retried.');
 
   RestoreBackupsWithOps(Ops, AHijackedKeys, ADataDir, ALog);
-  RemoveJunctionsWithLog(AJunctions, ALog);
+  RemoveJunctionsWithLogOps(AJunctions, ALog, AHostPathOps);
 end;
 
 end.

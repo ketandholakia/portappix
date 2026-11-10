@@ -27,7 +27,7 @@ python tools/build_recipe.py recipes/<id>.json --schema recipe.schema.json --out
 # Combine built packages into catalog.json (optionally signed).
 python tools/build_catalog.py --recipes recipes --packages dist \
     --url-base https://packages.example.com/files --out catalog.json \
-    --key keys/catalog_signing_key.pem
+    --key "$USERPROFILE/.portappix/signing/catalog_signing_key.pem"
 
 # Full catalog validation (downloads every package; used before publishing).
 python scripts/validate_catalog.py --catalog catalog.json --schema catalog.schema.json

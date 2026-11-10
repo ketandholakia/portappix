@@ -45,6 +45,7 @@ from validate_catalog import (  # noqa: E402
     validate_manifest_policy,
     validate_zip_entry_name,
 )
+from package_guard import check_archive, format_findings  # noqa: E402
 
 CHUNK = CHUNK_SIZE
 TIMEOUT = REQUEST_TIMEOUT
@@ -182,6 +183,15 @@ def build_package(recipe: dict[str, Any], archive: Path, out: Path) -> Path:
                     info.compress_type = zipfile.ZIP_DEFLATED
                     info.external_attr = 0o644 << 16
                     zf.writestr(info, path.read_bytes())
+
+    # Distribution guard: a package that ships Git metadata, private keys or
+    # secret files must never reach the build manifest or the catalog.
+    findings = check_archive(package_path)
+    if findings:
+        print(f"ERROR: built package for {recipe['id']} contains forbidden material; "
+              "the package must not be published.")
+        print(format_findings(findings))
+        raise SystemExit(1)
 
     package_sha256 = sha256_file(package_path)
     package_size = package_path.stat().st_size

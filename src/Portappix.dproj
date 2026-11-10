@@ -61,6 +61,7 @@
       <MainSource>MainSource</MainSource>
     </DelphiCompile>
     <DCCReference Include="Portappix.Common.pas" />
+    <DCCReference Include="Portappix.Icons.pas" />
     <DCCReference Include="Portappix.Cli.pas" />
     <DCCReference Include="Portappix.Version.pas" />
     <DCCReference Include="Portappix.Settings.pas" />

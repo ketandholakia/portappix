@@ -1,0 +1,33 @@
+// Portappix application and tray icons.
+//
+// The source artwork lives in the repository folder "portappix_icons\":
+// the .ico files there are PNG-compressed (fine for Windows, but the
+// resource compiler cannot embed PNG icon entries and a PNG entry is not
+// a valid RT_ICON resource). scripts\convert_icons.py therefore produces
+// the DIB-compressed copies in "portappix_icons\dib\" that this script
+// embeds:
+//
+//   python scripts/convert_icons.py
+//   brcc32 src\PortappixIcons.rc -fo src\PortappixIcons.res
+//
+// Run brcc32 from the repository root: the paths below are resolved
+// relative to the current directory.
+//
+// Resource ids (see src\Portappix.Icons.pas, which loads them):
+//
+//   1  ICON    portappix.ico              application / launcher icon
+//   2  ICON    portappix-tray-normal.ico  tray: idle, apps installed
+//   3  ICON    portappix-tray-running.ico tray: an app is running
+//   4  ICON    portappix-tray-paused.ico  tray: an update is pending
+//   5  ICON    portappix-tray-error.ico   tray: the last operation failed
+//   6  ICON    portappix-tray-inactive.ico tray: no apps installed
+//
+//  10  RCDATA  portappix-app.png          application artwork for the UI
+
+1  ICON    "portappix_icons\\dib\\portappix.ico"
+2  ICON    "portappix_icons\\dib\\portappix-tray-normal.ico"
+3  ICON    "portappix_icons\\dib\\portappix-tray-running.ico"
+4  ICON    "portappix_icons\\dib\\portappix-tray-paused.ico"
+5  ICON    "portappix_icons\\dib\\portappix-tray-error.ico"
+6  ICON    "portappix_icons\\dib\\portappix-tray-inactive.ico"
+10 RCDATA  "portappix_icons\\portappix-app.png"

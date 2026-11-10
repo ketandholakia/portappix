@@ -10,6 +10,13 @@ __recovery/
 *.identcache
 *.stat
 *.res
+# ...except the icon resource, which the launcher build links into the
+# executable: it is produced from src\PortappixIcons.rc by brcc32 (see
+# scripts\build_launcher.cmd) and is tracked so that a plain
+# "dcc32 -B src\Launcher.dpr" build still carries the application icon.
+!src/PortappixIcons.res
+# The DIB-compressed icon copies are build output of scripts\convert_icons.py.
+portappix_icons/dib/
 Win32/
 Win64/
 Debug/
@@ -19,12 +26,34 @@ Release/
 Cache/
 Data/
 Apps/
+Transactions/
 run_state.json
 run_state.json.tmp
 run_state.json.bad
+run_state.json.legacy
 
-# Signing material (keep the private key out of git)
-keys/
+# Signing material (private keys must never be committed; keys/ used to hold
+# the rotated private key. The one deliberate exception is the trusted public
+# key keys/catalog_public.pem)
+keys/*
+!keys/catalog_public.pem
+*.pem
+*.pfx
+*.p12
+*.pvk
+*.key
+*.sig.tmp
+# Re-include after the blanket *.pem rule: the trusted public key is the one
+# key file that is deliberately committed.
+!keys/catalog_public.pem
+
+# Secret-bearing local configuration
+.env
+.env.*
+secrets.json
+secrets.yaml
+secrets.yml
+credentials.json
 
 # Local release artifacts
 portappix.zip

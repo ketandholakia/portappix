@@ -28,6 +28,8 @@ from typing import Any
 import requests
 from jsonschema import Draft202012Validator, FormatChecker
 
+from package_guard import check_archive
+
 
 CHUNK_SIZE = 1024 * 1024
 REQUEST_TIMEOUT = (30, 300)
@@ -267,6 +269,15 @@ def inspect_package(path: Path, app: dict[str, Any]) -> list[str]:
 
             for entry in entries:
                 errors.extend(validate_zip_entry_name(entry.filename))
+
+            # Distribution guard: published packages must not contain Git
+            # metadata, private keys, or secret-bearing files (contents are
+            # never printed, only paths and rule names).
+            for finding in check_archive(path):
+                errors.append(
+                    f"forbidden material [{finding.rule}] "
+                    f"{finding.entry or '(archive)'}: {finding.detail}"
+                )
 
             if "__MACOSX/" in archive.namelist():
                 errors.append("package contains macOS metadata (__MACOSX)")

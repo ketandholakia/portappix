@@ -22,7 +22,8 @@ signatures). No third-party components.
 | `src/Portappix.Consent.pas` | First-run approval per app id + `app.json` hash. |
 | `src/Portappix.Manifest.pas` | `TPortappixManifest`, parses and validates `app.json`. |
 | `src/Portappix.Runner.pas` | `TPortableAppRunner` — the execution engine. |
-| `src/Portappix.State.pas` | `TPortappixJournal` — crash journal, locking, boot recovery. |
+| `src/Portappix.State.pas` | `TPortappixJournal` — transactional crash journal, locking, boot recovery. |
+| `src/Portappix.Transactions.pas` | Transaction model, state machine, durable journal store, idempotent recovery reconciler, path validation. |
 | `src/Portappix.Catalog.pas` | `TPortappixCatalog` — signed `catalog.json` download/parse. |
 | `src/Portappix.PackageManager.pas` | Download, SHA-256/size verification, safe unzip, atomic install/update, `.prev` rollback, pending-update queue. |
 | `Portappix.Version.pas` | Semantic version parsing and comparison for update decisions. |
@@ -113,40 +114,71 @@ Policy violations abort `Run` before junctions or registry keys are touched.
 
 ## Runtime flow
 
-1. Parse and validate `app.json`; run the policy checks; resolve paths.
-2. Create `Data\<id>` and redirected environment folders.
-3. Create NTFS junctions with direct Win32 reparse-point calls. Existing reparse points are
-   removed with `FSCTL_DELETE_REPARSE_POINT`; existing real host directories are renamed to
-   `<HostPath>_host_backup`. Existing `<HostPath>_host_backup` aborts to avoid data loss.
-4. **Back up** existing host registry keys (`reg.exe export` → `Data\<id>\host_backup_<n>.reg`).
-5. **Delete** the listed host keys, so host values cannot leak into the portable registry.
-6. **Import** `Data\<id>\registry.reg` (if present).
-7. Record the app, hijacked keys and created junctions in `run_state.json`.
-8. Start the process suspended, assign it to a **job object**, resume it, and wait until the
-   job has no active processes (whole process tree), falling back to waiting on the main process
-   if job objects are unavailable.
-9. Export the listed keys, merge them into `registry.reg`, and **only then** delete the host
-   keys (`reg.exe delete /f`). If the export fails, keys are left in place.
-10. Restore host backups (`reg.exe import` + delete backup files), remove junctions with
-    `FSCTL_DELETE_REPARSE_POINT` (never recursively), restore `<HostPath>_host_backup`, and
-    remove the journal entry.
+Every run is a transaction (`Transactions\<txid>\transaction.json`): each
+step below is journaled **before** it is performed (write-ahead intent) and
+marked done afterwards, so a crash at any point is recoverable.
 
-A pre-launch failure rolls back created junctions and restores host registry backups.
-`ERROR_ELEVATION_REQUIRED` (740) raises `EPortappixElevationRequired` with a clear message.
+1. Parse and validate `app.json`; run the policy checks; resolve paths.
+2. Open the transaction journal (`preparing` → `prepared`, durably
+   persisted). If the journal cannot be persisted, the run aborts here.
+3. Create `Data\<id>` and redirected environment folders.
+4. Prepare junction hosts (journalled): existing reparse points are removed
+   with `FSCTL_DELETE_REPARSE_POINT` — their original target is captured
+   first so it can be recreated; existing real host directories are renamed
+   to `<HostPath>_host_backup`. An existing `<HostPath>_host_backup` aborts
+   to avoid data loss.
+5. **Back up** existing host registry keys (`reg.exe export` → the
+   transaction directory), then transition to `hostBackupComplete`.
+6. Destructive phase (`hostStateChanging`): create the NTFS junctions and
+   **delete** the listed host keys, so host values cannot leak into the
+   portable registry.
+7. **Import** `Data\<id>\registry.reg` (if present), transition to
+   `hostStateChanged` → `running`, start the process suspended, assign it
+   to a **job object**, resume it, and wait until the job has no active
+   processes (whole process tree), falling back to waiting on the main
+   process if job objects are unavailable.
+8. Cleanup (`cleaning`): export the listed keys and merge them into
+   `registry.reg` (portable data captured first), then replay every recorded
+   operation in reverse through the idempotent reconciler — clear + re-import
+   each hijacked key from its backup, remove created junctions (only when
+   the live target matches the record), restore `<HostPath>_host_backup`,
+   and complete the transaction (`completed`, transaction directory removed).
+
+A pre-launch failure or a crash runs the same reconciliation from the last
+durable state; anything it cannot resolve safely becomes
+`recoveryRequired` and blocks new runs until resolved.
+`ERROR_ELEVATION_REQUIRED` (740) raises `EPortappixElevationRequired` with
+a clear message.
 
 ## Crash safety, locks and shutdown
 
-- `run_state.json` records active apps, hijacked keys, junction host paths and `dataDir`.
-  All load/modify/save operations run under a critical section and are written to a temp file
-  then atomically replaced (`MoveFileEx` with `MOVEFILE_REPLACE_EXISTING`).
-- A corrupt journal is copied to `run_state.json.bad` before a fresh journal is started.
-- `RecoverPendingCleanups` exports the recorded keys to `registry.reg` **before** deleting them,
-  restores host backups, removes recorded junctions, and skips apps whose per-app mutex is held.
-- A named launcher mutex (hash of the launcher root) enforces a single running launcher and is
-  acquired before recovery runs.
-- A per-app mutex prevents double launches; the tray/UI reports "already running".
-- Closing the form while apps run asks whether to wait for cleanup; Windows logoff/shutdown is
-  never blocked (`WM_QUERYENDSESSION`).
+- Every run is a **transaction**: each host mutation (junction preparation,
+  registry backup, key deletion, junction creation) is recorded in a durable
+  per-transaction journal (`Transactions\<txid>\transaction.json`,
+  `FlushFileBuffers` + atomic replace) **before** it is performed, and
+  marked done afterwards. A crash at any point leaves enough persisted
+  information to restore the original host state; see
+  **`docs/security/JOURNAL_TRANSACTION_AND_RECOVERY.md`** for the state
+  machine, recovery algorithm and integrity model.
+- Boot recovery (`--recover` or launcher start) reconciles incomplete
+  transactions: junctions whose target matches the record are removed,
+  `<host>_host_backup` renames are reverted, hijacked keys are restored from
+  the transaction's own backups, and ambiguous journals fail closed into a
+  `recoveryRequired` state that blocks new runs until resolved. Recovery is
+  idempotent and never deletes backups before their restore is confirmed.
+- The legacy schema-1 `run_state.json` is migrated automatically on
+  recovery and preserved as `run_state.json.legacy`.
+- Journal mutations are serialized across processes by a journal-scoped
+  named mutex; an abandoned mutex (its owner crashed) triggers validation
+  and a recovery assessment, never blind continuation.
+- A corrupt journal is quarantined (`transaction.json.bad`) and skipped.
+- A named launcher mutex (hash of the launcher root) enforces a single
+  running launcher and is acquired before recovery runs (headless CLI runs
+  skip it and use the journal mutex instead).
+- A per-app mutex prevents double launches; the tray/UI reports "already
+  running".
+- Closing the form while apps run asks whether to wait for cleanup; Windows
+  logoff/shutdown is never blocked (`WM_QUERYENDSESSION`).
 
 ## First-run consent
 
@@ -206,12 +238,24 @@ Signing:
 
 ```bash
 pip install cryptography
-python scripts/sign_catalog.py --catalog catalog.json --key keys/catalog_signing_key.pem
-python scripts/sign_catalog.py --catalog catalog.json --public-key catalog_public.pem --verify
+python scripts/sign_catalog.py --catalog catalog.json \
+    --key "$USERPROFILE/.portappix/signing/catalog_signing_key.pem"
+python scripts/sign_catalog.py --catalog catalog.json --public-key keys/catalog_public.pem --verify
 ```
 
-The private key is intentionally **not** committed (`keys/` is ignored). Replace the embedded
-public key if you generate a new key pair.
+The private key is **never** stored in the repository; it lives outside it at an
+operator-chosen path (the default deployment keeps it under
+`%USERPROFILE%\.portappix\signing\` with user-only ACLs) and must be passed
+explicitly to every signing command. The trusted public key is committed as
+`keys/catalog_public.pem` and embedded in the launcher
+(`Portappix.Signature.CatalogPublicKeyHex`). Signing writes to a temporary
+file, verifies the fresh signature against the trusted public key, and only
+then swaps it into place; failures never replace an existing valid signature.
+Key generation, storage rules, rotation, and incident response are documented
+in **`docs/security/SIGNING_KEY_MANAGEMENT.md`**. The signing key was rotated
+on 2026-11-09 after the previous key was found inside a local archive
+(`portappix.zip`); signatures made with the old key are rejected by current
+builds.
 
 `TPortappixCatalog` requires `https://` catalog and package URLs, downloads the catalog and
 signature to `Cache\`, and parses into a temporary list so a bad download never empties the
@@ -372,10 +416,37 @@ dcc64 -B -Usrc src\Launcher.dpr
 ```
 
 `src\Launcher.dpr` lists its units by name only (no `in '...'` paths), so it resolves from the
-project folder or from any `-U` search path you provide. The `.dpr` does not reference
-`Launcher.res`, so a clean clone builds without pre-generated resource files (add version
-info/icon in the IDE if desired). `*.res`, DCUs and the runtime `Apps`/`Data`/`Cache` folders are
-ignored by git.
+project folder or from any `-U` search path you provide. It does not reference `Launcher.res`
+(the IDE's own resource file), so a clean clone builds without pre-generated resource files;
+the only resource it links is `src\PortappixIcons.res`, which is tracked (see *Icons* below).
+Other `*.res` files, DCUs and the runtime `Apps`/`Data`/`Cache` folders are ignored by git.
+
+### Icons
+
+The launcher carries the artwork in `portappix_icons\`: `portappix.ico` is the application
+icon (taskbar, main window, Alt-Tab, and the executable's own icon) and the five
+`portappix-tray-*.ico` files are the notification-area states (normal, running, paused,
+error, inactive). They are embedded as resources through `src\PortappixIcons.rc`
+(`src\PortappixIcons.res`, tracked) and loaded at runtime by `src\Portappix.Icons.pas`.
+
+The artwork ships as **PNG-compressed** `.ico` files, which the Borland resource compiler
+cannot embed (`brcc32` fails with "Allocate failed") and which are not valid `RT_ICON`
+resources. `scripts\convert_icons.py` re-encodes them into the classic DIB format in
+`portappix_icons\dib\` (standard library only, no dependencies), and `brcc32` turns those into
+the resource file. `scripts\build_launcher.cmd` runs the whole chain:
+
+```bash
+scripts\build_launcher.cmd        # Win32  -> bin\Launcher.exe
+scripts\build_launcher.cmd 64     # Win64  -> bin\Launcher.exe
+scripts\build_launcher.cmd all    # both
+```
+
+After changing the artwork, regenerate the resource with:
+
+```bash
+python scripts\convert_icons.py
+brcc32 src\PortappixIcons.rc -fo src\PortappixIcons.res
+```
 
 ## Tests
 
@@ -419,7 +490,9 @@ the launcher self-update swap/confirm/rollback state machine against a local zip
   cross-checks, streaming download with SHA-256 and byte-size checks, zip inspection
   (root `app.json`, id match, zip-slip, entry/size caps) and the same
   registry/junction/env policy rules as the launcher.
-- `scripts/sign_catalog.py` — creates/verifies `catalog.json.sig`.
+- `scripts/sign_catalog.py` — creates/verifies `catalog.json.sig` (sign-verify-then-swap; never generates keys).
+- `scripts/generate_signing_key.py` — explicit rotation-only key generation (private key is forced outside the repository).
+- `scripts/package_guard.py` — rejects `.git/` paths, private keys and secret files in any distribution archive; wired into `make_release.py`, `build_recipe.py` and `validate_catalog.py`.
 - `tools/build_recipe.py` — lint (schema + policy, no network), verify (download + hash
   check) and build (inject `app.json`, deterministic re-zip) for recipes.
 - `tools/build_catalog.py` — combines built recipes into a signed `catalog.json`.

@@ -12,9 +12,14 @@ type
   EPortappixSignatureError = class(Exception);
 
 const
+  // Trusted ECDSA P-256 public key (CNG ECCPUBLICBLOB: magic, 32-byte key
+  // length, X, Y). Rotated 2026-11-09 after the previous signing key was
+  // found inside a distribution archive (docs/security/SIGNING_KEY_MANAGEMENT.md).
+  // The matching public PEM ships as keys/catalog_public.pem; the private key
+  // never lives in the repository.
   CatalogPublicKeyHex =
-    '4543533120000000A9ED638DB255D1CEC43A7BCA227247BD2A6A2667C8488C985732CD8A9828E522' +
-    'AAF3945B6E71F5CB811E1EF272A4A3775E127A60C87F59916F6E6A10A0609E0F';
+    '4543533120000000DE8A5F92FA779AA955D7B70394B98F03F3E8B8903D40384C9A3A003D' +
+    '3AFEC2772B418796C385464E44921354D45520754CA688C1D0C89B6DC25400D40A4D6C56';
 
   BCRYPT_ECDSA_PUBLIC_P256_MAGIC = $31534345;
   BCRYPT_ECDSA_P256_ALGORITHM = 'ECDSA_P256';
@@ -23,6 +28,7 @@ const
 
 function HexToBytes(const AHex: string): TBytes;
 function CatalogPublicKeyBlob: TBytes;
+function VerifySignatureWithKey(const AContent, ASignature, APublicKey: TBytes): Boolean;
 function VerifySignature(const AContent, ASignature: TBytes): Boolean;
 function VerifySignatureForCatalog(const AContent, ASignature: TBytes): Boolean;
 
@@ -65,12 +71,11 @@ begin
   Result := HexToBytes(CatalogPublicKeyHex);
 end;
 
-function VerifySignature(const AContent, ASignature: TBytes): Boolean;
+function VerifySignatureWithKey(const AContent, ASignature, APublicKey: TBytes): Boolean;
 var
   Algorithm: THandle;
   Key: THandle;
   Status: TPortappixNtStatus;
-  PublicKey: TBytes;
   Hash: TBytes;
 begin
   Result := False;
@@ -78,8 +83,11 @@ begin
     Exit;
   if Length(ASignature) <> 64 then
     Exit;
+  // Fail closed on any public key that is not a complete 72-byte P-256
+  // ECCPUBLICBLOB (magic + key length + X + Y).
+  if Length(APublicKey) <> 72 then
+    Exit;
 
-  PublicKey := CatalogPublicKeyBlob;
   Hash := Sha256Raw(AContent);
   if Length(Hash) <> 32 then
     Exit;
@@ -92,7 +100,7 @@ begin
 
   try
     Status := BCryptImportKeyPair(Algorithm, 0, BCRYPT_ECCPUBLIC_BLOB, Key,
-      PByte(@PublicKey[0]), Length(PublicKey), 0);
+      PByte(@APublicKey[0]), Length(APublicKey), 0);
     if Status <> 0 then
       Exit(False);
 
@@ -106,6 +114,14 @@ begin
   finally
     BCryptCloseAlgorithmProvider(Algorithm, 0);
   end;
+end;
+
+function VerifySignature(const AContent, ASignature: TBytes): Boolean;
+var
+  PublicKey: TBytes;
+begin
+  PublicKey := CatalogPublicKeyBlob;
+  Result := VerifySignatureWithKey(AContent, ASignature, PublicKey);
 end;
 
 function VerifySignatureForCatalog(const AContent, ASignature: TBytes): Boolean;

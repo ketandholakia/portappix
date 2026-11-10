@@ -11,11 +11,13 @@ uses
   System.Generics.Collections,
   System.Generics.Defaults,
   Vcl.Forms,
+  Vcl.Graphics,
   Vcl.Menus,
   Vcl.ExtCtrls,
   Vcl.Dialogs,
   Portappix.Common,
   Portappix.Consent,
+  Portappix.Icons,
   Portappix.Manifest,
   Portappix.Runner,
   Portappix.State;
@@ -37,6 +39,12 @@ type
     FConsentRequest: TConsentRequest;
     FLog: TProc<string>;
     FRunning: Integer;
+    // Notification-area icon state. FBaseState is what the main form
+    // pushes (idle / paused / error / inactive); the running state is
+    // derived from the number of apps this tray launched.
+    FBaseState: TPortappixTrayIconState;
+    FCurrentState: TPortappixTrayIconState;
+    FTrayIcons: array[TPortappixTrayIconState] of TIcon;
     procedure Log(const AMessage: string);
     procedure EnsurePopupMenu;
     procedure ClearMenuItems;
@@ -50,15 +58,22 @@ type
     procedure NotifyRefresh;
     function CreateCategoryMenu(const AMenu: TPopupMenu; const ACategory: string;
       const ACategories: TDictionary<string, TMenuItem>): TMenuItem;
+    function IconForState(const AState: TPortappixTrayIconState): TIcon;
+    procedure RefreshTrayIcon;
   public
     constructor Create(ATrayIcon: TTrayIcon; const ARootPath: string = '';
       const AJournal: IPortappixJournal = nil);
     destructor Destroy; override;
     procedure RebuildMenu;
     procedure LaunchApp(const AManifestPath: string);
+    /// Sets the idle state of the notification-area icon (tisNormal,
+    /// tisPaused, tisError or tisInactive). The running state takes
+    /// precedence while apps are running.
+    procedure SetTrayState(const AState: TPortappixTrayIconState);
     property RootPath: string read FRootPath;
     property AppsDirectory: string read FAppsDir;
     property RunningCount: Integer read FRunning;
+    property TrayState: TPortappixTrayIconState read FBaseState;
     property OnShowForm: TProc read FShowForm write FShowForm;
     property OnRefreshForm: TProc read FRefreshForm write FRefreshForm;
     property OnExitRequested: TProc read FExitRequested write FExitRequested;
@@ -84,17 +99,71 @@ begin
   FJournal := AJournal;
   FRootPath := ResolveRootPath(ARootPath);
   FAppsDir := TPath.Combine(FRootPath, 'Apps');
+  FBaseState := tisNormal;
+  FCurrentState := tisNormal;
   EnsurePopupMenu;
   RebuildMenu;
+  RefreshTrayIcon;
 end;
 
 destructor TPortappixTrayUI.Destroy;
+var
+  State: TPortappixTrayIconState;
 begin
   if FTrayIcon <> nil then
     FTrayIcon.PopupMenu := nil;
   FPopupMenu.Free;
   FJournal := nil;
+  // The cached icons belong to this object: the tray icon never owns them.
+  for State := Low(FTrayIcons) to High(FTrayIcons) do
+  begin
+    FTrayIcons[State].Free;
+    FTrayIcons[State] := nil;
+  end;
   inherited;
+end;
+
+function TPortappixTrayUI.IconForState(
+  const AState: TPortappixTrayIconState): TIcon;
+begin
+  if FTrayIcons[AState] = nil then
+    FTrayIcons[AState] := TPortappixIcons.TrayIcon(AState);
+  Result := FTrayIcons[AState];
+end;
+
+procedure TPortappixTrayUI.RefreshTrayIcon;
+var
+  State: TPortappixTrayIconState;
+  Icon: TIcon;
+begin
+  if FTrayIcon = nil then
+    Exit;
+  // A running app always wins over the idle state.
+  if FRunning > 0 then
+    State := tisRunning
+  else
+    State := FBaseState;
+  if State = FCurrentState then
+    Exit;
+  Icon := IconForState(State);
+  if Icon = nil then
+  begin
+    // No icon resource in this build: keep the VCL default icon.
+    Exit;
+  end;
+  FTrayIcon.Icon := Icon;
+  FCurrentState := State;
+end;
+
+procedure TPortappixTrayUI.SetTrayState(const AState: TPortappixTrayIconState);
+begin
+  if FBaseState = AState then
+  begin
+    RefreshTrayIcon;
+    Exit;
+  end;
+  FBaseState := AState;
+  RefreshTrayIcon;
 end;
 
 procedure TPortappixTrayUI.Log(const AMessage: string);
@@ -304,6 +373,12 @@ begin
   Journal := FJournal;
 
   InterlockedIncrement(FRunning);
+  // The notification-area icon shows the running state while an app runs.
+  TThread.Queue(nil,
+    procedure
+    begin
+      RefreshTrayIcon;
+    end);
   TThread.CreateAnonymousThread(
     procedure
     var
@@ -405,6 +480,12 @@ begin
       finally
         ReleaseMutexHandle(LockHandle);
         InterlockedDecrement(FRunning);
+        // Back to the idle state once the last app finished.
+        TThread.Queue(nil,
+          procedure
+          begin
+            RefreshTrayIcon;
+          end);
       end;
     end).Start;
 end;

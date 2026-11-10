@@ -21,6 +21,7 @@ uses
   Vcl.ExtCtrls,
   Vcl.Menus,
   Portappix.Common,
+  Portappix.Icons,
   Portappix.Manifest,
   Portappix.Catalog,
   Portappix.PackageManager,
@@ -85,6 +86,9 @@ type
     FTraceInProgress: Boolean;
     FAllowClose: Boolean;
     FWaitingForApps: Boolean;
+    // True while the last user-visible operation failed; drives the
+    // notification-area icon into its error state.
+    FLastOperationFailed: Boolean;
     procedure InitializePaths;
     procedure LoadCatalogUrl;
     procedure SaveCatalogUrl;
@@ -101,6 +105,11 @@ type
     procedure RequestExit;
     procedure SetStatus(const AMessage: string);
     procedure QueueStatus(const AMessage: string);
+    // Notification-area icon state (idle / running / paused / error /
+    // inactive), derived from the real launcher state.
+    procedure UpdateTrayState;
+    procedure MarkOperationFailed;
+    procedure MarkOperationSucceeded;
     procedure SetInstallProgress(const AAppId: string; ASent, ATotal: Int64);
     procedure InstallSelectedAppInBackground;
     procedure ApplyPendingUpdatesInBackground;
@@ -380,6 +389,47 @@ begin
     end);
 end;
 
+procedure TMainLauncherForm.UpdateTrayState;
+var
+  State: TPortappixTrayIconState;
+  Pending: Boolean;
+begin
+  if not Assigned(FTrayUI) then
+    Exit;
+
+  Pending := False;
+  if Assigned(FPackageManager) then
+    try
+      Pending := Length(FPackageManager.PendingUpdateIds) > 0;
+    except
+      Pending := False;
+    end;
+
+  if FLastOperationFailed then
+    State := tisError
+  else if Pending then
+    State := tisPaused
+  else if FInstalledPaths.Count = 0 then
+    State := tisInactive
+  else
+    State := tisNormal;
+  FTrayUI.SetTrayState(State);
+end;
+
+procedure TMainLauncherForm.MarkOperationFailed;
+begin
+  FLastOperationFailed := True;
+  UpdateTrayState;
+end;
+
+procedure TMainLauncherForm.MarkOperationSucceeded;
+begin
+  if not FLastOperationFailed then
+    Exit;
+  FLastOperationFailed := False;
+  UpdateTrayState;
+end;
+
 procedure TMainLauncherForm.LoadInstalledApps;
 var
   Item: TListItem;
@@ -425,7 +475,10 @@ begin
         end;
       except
         on E: Exception do
+        begin
+          MarkOperationFailed;
           QueueStatus(Format('Unable to read "%s": %s', [ManifestPath, E.Message]));
+        end;
       end;
     end;
   finally
@@ -435,6 +488,7 @@ begin
   PopulateStoreList(SearchEdit.Text);
   if Assigned(FTrayUI) then
     FTrayUI.RebuildMenu;
+  UpdateTrayState;
 end;
 
 function TMainLauncherForm.SelectedInstalledManifestPath: string;
@@ -510,9 +564,13 @@ begin
       FPackageManager.RemovePendingUpdate(AppId);
     QueueStatus('Uninstalled ' + Item.Caption + '. Data was preserved.');
     LoadInstalledApps;
+    MarkOperationSucceeded;
   except
     on E: Exception do
+    begin
+      MarkOperationFailed;
       MessageDlg('Unable to uninstall app: ' + E.Message, mtError, [mbOK], 0);
+    end;
   end;
 end;
 
@@ -543,12 +601,16 @@ begin
       FCatalog.LoadFromFile(FCatalogCacheFile);
       PopulateStoreList(SearchEdit.Text);
       SetStatus('Loaded catalog cache.');
+      MarkOperationSucceeded;
     end
     else
       SetStatus('No catalog cache found.');
   except
     on E: Exception do
+    begin
+      MarkOperationFailed;
       SetStatus('Unable to load catalog cache: ' + E.Message);
+    end;
   end;
 end;
 
@@ -632,9 +694,13 @@ begin
                 FCatalog.LoadFromJson(Json);
                 PopulateStoreList(SearchEdit.Text);
                 SetStatus('Catalog updated.');
+                MarkOperationSucceeded;
               except
                 on E: Exception do
+                begin
+                  MarkOperationFailed;
                   SetStatus('Unable to apply catalog update: ' + E.Message);
+                end;
               end;
             end);
         except
@@ -644,6 +710,7 @@ begin
             TThread.Queue(nil,
               procedure
               begin
+                MarkOperationFailed;
                 SetStatus('Unable to refresh catalog: ' + ErrorMsg);
               end);
           end;
@@ -730,9 +797,13 @@ begin
         'Data\<%s> is never touched.', [App.Id, App.Version, App.Id]),
         mtInformation, [mbOK], 0);
       LoadInstalledApps;
+      UpdateTrayState;
     except
       on E: Exception do
+      begin
+        MarkOperationFailed;
         MessageDlg('Unable to queue the update: ' + E.Message, mtError, [mbOK], 0);
+      end;
     end;
     Exit;
   end;
@@ -815,6 +886,7 @@ begin
               ProgressBar.Position := ProgressBar.Max;
               SetStatus('Installed ' + AppCopy.Name + '.');
               LoadInstalledApps;
+              MarkOperationSucceeded;
             end);
         except
           on E: Exception do
@@ -825,6 +897,7 @@ begin
               begin
                 ProgressBar.Style := pbstNormal;
                 ProgressBar.Position := 0;
+                MarkOperationFailed;
                 SetStatus('Install failed: ' + ErrorMsg);
                 MessageDlg('Install failed: ' + ErrorMsg, mtError, [mbOK], 0);
               end);
@@ -893,9 +966,13 @@ begin
 
     ShowMessage('App imported successfully! You can configure its Level 2 sandboxing in the new Apps folder if needed.');
     LoadInstalledApps;
+    MarkOperationSucceeded;
   except
     on E: Exception do
+    begin
+      MarkOperationFailed;
       ShowMessage('Import failed: ' + E.Message);
+    end;
   end;
 end;
 
@@ -969,7 +1046,14 @@ begin
           Manager.ApplyPendingUpdates;
         except
           on E: Exception do
+          begin
+            TThread.Queue(nil,
+              procedure
+              begin
+                MarkOperationFailed;
+              end);
             QueueStatus('Applying queued updates failed: ' + E.Message);
+          end;
         end;
       finally
         Manager.Free;
@@ -982,6 +1066,7 @@ begin
             ProgressBar.Style := pbstNormal;
             SetStatus('Queued updates processed.');
             LoadInstalledApps;
+            UpdateTrayState;
           end);
       end;
     end).Start;
@@ -1045,6 +1130,7 @@ begin
               begin
                 SetStatus(Format('Trace finished (app exit code %d). Report: %s',
                   [TraceResult.AppExitCode, TraceResult.ReportDirectory]));
+                MarkOperationSucceeded;
               end);
           finally
             Runner.Free;
@@ -1056,6 +1142,7 @@ begin
             TThread.Queue(nil,
               procedure
               begin
+                MarkOperationFailed;
                 SetStatus('Trace failed: ' + ErrorMsg);
                 MessageDlg('Trace failed: ' + ErrorMsg, mtError, [mbOK], 0);
               end);
