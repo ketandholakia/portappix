@@ -38,7 +38,7 @@ python scripts/validate_catalog.py --catalog catalog.json --schema catalog.schem
 `scripts/validate_catalog.py` cross-checks (recipe file exists, schema-valid,
 id/version match the catalog entry).
 
-## Current roster (25 recipes)
+## Current roster (28 recipes)
 
 | Recipe | App | Category | Hash source |
 | --- | --- | --- | --- |
@@ -53,18 +53,21 @@ id/version match the catalog entry).
 | handle | Handle | Sysinternals | computed from vendor download |
 | keepassxc | KeePassXC | Security | computed from vendor download |
 | mpchc | Media Player Classic HC | Media | computed from vendor download |
+| notepadpp | Notepad++ | Development | vendor checksums page + download |
 | powershell | PowerShell 7 | Development | computed from vendor download |
-| procmon | Process Monitor | Sysinternals | computed from vendor download |
 | processexplorer | Process Explorer | Sysinternals | computed from vendor download |
+| procmon | Process Monitor | Sysinternals | computed from vendor download |
 | pstools | PsTools | Sysinternals | computed from vendor download |
 | rammap | RAMMap | Sysinternals | computed from vendor download |
 | sdelete | SDelete | Sysinternals | computed from vendor download |
 | sigcheck | Sigcheck | Sysinternals | computed from vendor download |
 | strings | Strings | Sysinternals | computed from vendor download |
+| sumatrapdf | SumatraPDF | Office | computed from vendor download |
 | tcpview | TCPView | Sysinternals | computed from vendor download |
 | telegram | Telegram Desktop | Communication | computed from vendor download |
 | vmmap | VMMap | Sysinternals | computed from vendor download |
 | winobj | WinObj | Sysinternals | computed from vendor download |
+| winscp | WinSCP | Network | vendor checksums page + download |
 | x64dbg | x64dbg | Development | computed from vendor download |
 | zoomit | ZoomIt | Sysinternals | computed from vendor download |
 

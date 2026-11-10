@@ -1,0 +1,23 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "winscp",
+  "name": "WinSCP",
+  "publisher": "Martin Přikryl",
+  "version": "6.7",
+  "category": "Network",
+  "homepage": "https://winscp.net/",
+  "notes": "SFTP, FTP, WebDAV, and S3 client. Session and configuration state is saved to HKCU\\Software\\Martin Prikryl\\WinSCP 2 and isolated inside Data\\winscp.",
+  "source": {
+    "url": "https://downloads.sourceforge.net/project/winscp/WinSCP/6.7/WinSCP-6.7-Portable.zip",
+    "sha256": "fef88545873aca4b353ac322b1e2702f2feadf30758b713f5fc7e2bed60f7662",
+    "size": 8832885,
+    "hashSource": "vendor checksums https://winscp.net/download/WinSCP-6.7-ReadMe.txt (re-verified by download on 2026-11-10)"
+  },
+  "manifest": {
+    "exe": "WinSCP.exe",
+    "registry": [
+      "HKCU\\Software\\Martin Prikryl\\WinSCP 2"
+    ]
+  }
+}

@@ -1,0 +1,29 @@
+{
+  "schema": 1,
+  "kind": "recipe",
+  "id": "notepadpp",
+  "name": "Notepad++",
+  "publisher": "Don Ho",
+  "version": "8.9.9",
+  "category": "Development",
+  "homepage": "https://notepad-plus-plus.org/",
+  "notes": "Text and source code editor. The official portable zip includes doLocalConf.xml, so configuration files are stored locally next to the executable. Registry keys and environment redirections are captured under Data\\notepadpp.",
+  "source": {
+    "url": "https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.9/npp.8.9.9.portable.x64.zip",
+    "sha256": "96a8216930f5316ed5961663b2cc92a62ec7d303b6c3077b92a7cfc38a8761b7",
+    "size": 8338502,
+    "hashSource": "vendor checksums https://github.com/notepad-plus-plus/notepad-plus-plus/releases/download/v8.9.9/npp.8.9.9.checksums.sha256 (re-verified by download on 2026-11-10)"
+  },
+  "manifest": {
+    "exe": "notepad++.exe",
+    "env": {
+      "APPDATA": "{data}\\AppData",
+      "LOCALAPPDATA": "{data}\\LocalAppData",
+      "TEMP": "{data}\\Temp",
+      "TMP": "{data}\\Temp"
+    },
+    "registry": [
+      "HKCU\\Software\\Notepad++\\Notepad++"
+    ]
+  }
+}

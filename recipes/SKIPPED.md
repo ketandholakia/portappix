@@ -22,8 +22,7 @@ be added following `README.md`.
 
 | App | Reason |
 | --- | --- |
-| 7-Zip | The GUI app ships as an installer; the "extra" package is a `.7z`, which Portappix cannot extract (zip only). The console tools are 7z too. |
-| Notepad++ | Official portable builds are `.7z` archives, not zips. |
+| 7-Zip | The GUI app ships as an installer; the "extra" package is a `.7z`, which Portappix cannot extract (zip only). The console tools are 7z too (or raw `.exe` like `7zr.exe`). No modern official portable `.zip` exists. |
 | Git for Windows | PortableGit is a self-extracting `.7z.exe`, not a zip. |
 | OBS Studio | Zip builds are officially offered for some versions, but the zip is only announced per-release and without published checksums; re-verify availability before adding a recipe. |
 
@@ -33,6 +32,12 @@ be added following `README.md`.
 | --- | --- |
 | LibreOffice (portable) | The vendor ships installers; the well-known portable build is a PortableApps.com repack, which is third-party packaging of the binaries. Recipes must reference vendor URLs. |
 | many "portable" aggregators (PortableApps.com, FC Portable, etc.) | Same rule: vendor URLs only. |
+
+## Blocked by package security guard
+
+| App | Reason |
+| --- | --- |
+| PuTTY | Vendor archive `putty.zip` contains `PUTTYGEN.EXE`, which contains compiled PEM markers (`-----BEGIN...PRIVATE KEY-----`) in its binary strings, triggering `package_guard.py` (`PEM_MARKER`). The distribution security guard prohibits publishing private-key markers. |
 
 ## Considered, not yet pinned
 
