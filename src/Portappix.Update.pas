@@ -168,6 +168,16 @@ begin
       raise EPortappixUpdateError.CreateFmt('Unable to download "%s" (HTTP %d).',
         [AUrl, Response.StatusCode]);
     end;
+
+    if Stream.Size > Int64(2) * 1024 * 1024 * 1024 then
+    begin
+      Stream.Free;
+      Stream := nil;
+      if TFile.Exists(ADestination + '.download') then
+        TFile.Delete(ADestination + '.download');
+      raise EPortappixUpdateError.CreateFmt(
+        'Downloaded file "%s" exceeds size limit of 2 GiB.', [AUrl]);
+    end;
   finally
     Client.Free;
     Stream.Free;
@@ -239,11 +249,12 @@ begin
             'releases.json property "sha256" must be hexadecimal.');
 
       var SizeValue := Root.FindValue('size');
-      if SizeValue is TJSONNumber then
-        Result.Size := TJSONNumber(SizeValue).AsInt64;
-      if Result.Size < 0 then
+      if (SizeValue = nil) or not (SizeValue is TJSONNumber) then
+        raise EPortappixUpdateError.Create('releases.json property "size" is required.');
+      Result.Size := TJSONNumber(SizeValue).AsInt64;
+      if Result.Size <= 0 then
         raise EPortappixUpdateError.Create(
-          'releases.json property "size" must not be negative.');
+          'releases.json property "size" must be greater than zero.');
     finally
       JsonValue.Free;
     end;
@@ -332,12 +343,54 @@ begin
   end;
 end;
 
+function GetExeFileVersion(const AExePath: string): string;
+var
+  Handle: DWORD;
+  Size: DWORD;
+  Buffer: TBytes;
+  RawValue: Pointer;
+  FixedLength: UINT;
+  FixedInfo: PVSFixedFileInfo;
+begin
+  Result := '';
+  if not TFile.Exists(AExePath) then
+    Exit;
+  Handle := 0;
+  Size := GetFileVersionInfoSize(PChar(AExePath), Handle);
+  if Size = 0 then
+    Exit;
+  SetLength(Buffer, Size);
+  if not GetFileVersionInfo(PChar(AExePath), Handle, Size, @Buffer[0]) then
+    Exit;
+  RawValue := nil;
+  FixedLength := 0;
+  if VerQueryValue(@Buffer[0], '\', RawValue, FixedLength) and
+     (RawValue <> nil) and (FixedLength >= SizeOf(TVSFixedFileInfo)) then
+  begin
+    FixedInfo := PVSFixedFileInfo(RawValue);
+    Result := Format('%d.%d.%d', [
+      HiWord(FixedInfo.dwFileVersionMS),
+      LoWord(FixedInfo.dwFileVersionMS),
+      HiWord(FixedInfo.dwFileVersionLS)]);
+    if LoWord(FixedInfo.dwFileVersionLS) > 0 then
+      Result := Result + Format('.%d', [LoWord(FixedInfo.dwFileVersionLS)]);
+  end;
+end;
+
 function TPortappixUpdateManager.InstalledVersion: string;
 var
+  ExeVer: string;
   JsonValue: TJSONValue;
   VersionValue: TJSONValue;
 begin
   Result := '0.0.0';
+  if TFile.Exists(LauncherExe) then
+  begin
+    ExeVer := GetExeFileVersion(LauncherExe);
+    if ExeVer <> '' then
+      Exit(ExeVer);
+  end;
+
   if not TFile.Exists(VersionFile) then
     Exit;
   try
@@ -390,7 +443,13 @@ end;
 
 function TPortappixUpdateManager.NeedsRollbackOffer: Boolean;
 begin
-  Result := TFile.Exists(OldLauncherExe) and (not TFile.Exists(OkFile));
+  if not TFile.Exists(OldLauncherExe) then
+  begin
+    if TFile.Exists(OkFile) then
+      RemoveFileQuiet(OkFile);
+    Exit(False);
+  end;
+  Result := not TFile.Exists(OkFile);
 end;
 
 function TPortappixUpdateManager.ReadPendingVersion: string;
@@ -433,16 +492,13 @@ begin
       [ARelease.Sha256, ActualHash]);
   end;
 
-  if ARelease.Size > 0 then
+  ActualSize := TFile.GetSize(AZipFile);
+  if ActualSize <> ARelease.Size then
   begin
-    ActualSize := TFile.GetSize(AZipFile);
-    if ActualSize <> ARelease.Size then
-    begin
-      RemoveFileQuiet(AZipFile);
-      raise EPortappixUpdateError.CreateFmt(
-        'Size mismatch for the launcher package. Expected %d bytes but got %d bytes.',
-        [ARelease.Size, ActualSize]);
-    end;
+    RemoveFileQuiet(AZipFile);
+    raise EPortappixUpdateError.CreateFmt(
+      'Size mismatch for the launcher package. Expected %d bytes but got %d bytes.',
+      [ARelease.Size, ActualSize]);
   end;
 end;
 
@@ -451,6 +507,9 @@ procedure TPortappixUpdateManager.PrepareUpdate(const AZipFile: string;
 var
   Extractor: TPortappixPackageManager;
   NewExe: string;
+  RollbackDir: string;
+  MovedRootFiles: TList<string>;
+  BaseName, Target, ExistingTarget: string;
 begin
   if ARelease = nil then
     raise EPortappixUpdateError.Create('Release must not be nil.');
@@ -475,6 +534,10 @@ begin
       [LauncherFileName]);
   end;
 
+  // Clean up any old update_ok marker so a crash during or after this update
+  // will correctly trigger the watchdog.
+  RemoveFileQuiet(OkFile);
+
   // Record the pending update BEFORE touching the exe, so a crash mid-swap
   // leaves the watchdog in charge (Launcher.exe.old present, update_ok missing).
   var Pending := TJSONObject.Create;
@@ -490,33 +553,71 @@ begin
     Pending.Free;
   end;
 
-  // Swap. Renaming a running executable is allowed on Windows.
-  if TFile.Exists(OldLauncherExe) then
-    RemoveFileQuiet(OldLauncherExe);
-  if not RenameFile(LauncherExe, OldLauncherExe) then
-    raise EPortappixUpdateError.CreateFmt(
-      'Unable to move the running launcher to "%s": %s',
-      [OldLauncherExe, SysErrorMessage(Integer(GetLastError))]);
-
+  // All-or-nothing swap. Back up any existing root files that would be replaced.
+  RollbackDir := TPath.Combine(TPath.Combine(FRootPath, 'Cache'),
+    Format('launcher_rollback_%s', [FormatDateTime('yyyymmdd_hhnnss_zzz', Now)]));
+  ForceDirectories(RollbackDir);
+  MovedRootFiles := TList<string>.Create;
   try
-    if not RenameFile(NewExe, LauncherExe) then
-      raise EPortappixUpdateError.CreateFmt(
-        'Unable to move the new launcher into place: %s',
-        [SysErrorMessage(Integer(GetLastError))]);
-
-    // Extra root files shipped with the release replace the old ones.
     for var FileName in TDirectory.GetFiles(NewDir) do
     begin
-      var Target := TPath.Combine(FRootPath, TPath.GetFileName(FileName));
-      RemoveFileQuiet(Target);
-      TFile.Move(FileName, Target);
+      BaseName := TPath.GetFileName(FileName);
+      if SameText(BaseName, LauncherFileName) then
+        Continue;
+      ExistingTarget := TPath.Combine(FRootPath, BaseName);
+      if TFile.Exists(ExistingTarget) then
+        TFile.Copy(ExistingTarget, TPath.Combine(RollbackDir, BaseName), True);
     end;
-  except
-    // Roll the swap back so the old launcher can still start.
-    if TFile.Exists(OldLauncherExe) and (not TFile.Exists(LauncherExe)) then
-      if RenameFile(OldLauncherExe, LauncherExe) then
-        Log('Update swap failed; the previous launcher was restored.');
-    raise;
+
+    // Swap. Renaming a running executable is allowed on Windows.
+    if TFile.Exists(OldLauncherExe) then
+      RemoveFileQuiet(OldLauncherExe);
+    if not RenameFile(LauncherExe, OldLauncherExe) then
+      raise EPortappixUpdateError.CreateFmt(
+        'Unable to move the running launcher to "%s": %s',
+        [OldLauncherExe, SysErrorMessage(Integer(GetLastError))]);
+
+    try
+      if not RenameFile(NewExe, LauncherExe) then
+        raise EPortappixUpdateError.CreateFmt(
+          'Unable to move the new launcher into place: %s',
+          [SysErrorMessage(Integer(GetLastError))]);
+
+      // Extra root files shipped with the release replace the old ones.
+      for var FileName in TDirectory.GetFiles(NewDir) do
+      begin
+        BaseName := TPath.GetFileName(FileName);
+        if SameText(BaseName, LauncherFileName) then
+          Continue;
+        Target := TPath.Combine(FRootPath, BaseName);
+        RemoveFileQuiet(Target);
+        TFile.Move(FileName, Target);
+        MovedRootFiles.Add(Target);
+      end;
+    except
+      // Roll the swap back completely (all-or-nothing)
+      for var MovedFile in MovedRootFiles do
+        RemoveFileQuiet(MovedFile);
+      for var BackupFile in TDirectory.GetFiles(RollbackDir) do
+      begin
+        Target := TPath.Combine(FRootPath, TPath.GetFileName(BackupFile));
+        RemoveFileQuiet(Target);
+        TFile.Move(BackupFile, Target);
+      end;
+      if TFile.Exists(LauncherExe) then
+        RemoveFileQuiet(LauncherExe);
+      if TFile.Exists(OldLauncherExe) then
+        RenameFile(OldLauncherExe, LauncherExe);
+      Log('Update swap failed; all files rolled back and previous launcher was restored.');
+      raise;
+    end;
+  finally
+    MovedRootFiles.Free;
+    try
+      if TDirectory.Exists(RollbackDir) then
+        TDirectory.Delete(RollbackDir, True);
+    except
+    end;
   end;
 
   try

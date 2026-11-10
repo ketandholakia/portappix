@@ -94,12 +94,18 @@ begin
       Exit(False);
 end;
 
+const
+  MaxCatalogDownloadBytes: Int64 = 10 * 1024 * 1024;
+
 function DownloadToBytes(const AUrl: string): TBytes;
 var
   Client: THTTPClient;
   Response: IHTTPResponse;
   Source: TStream;
   Buffer: TMemoryStream;
+  ReadChunk: array[0..65535] of Byte;
+  TotalRead: Int64;
+  BytesRead: Integer;
 begin
   Client := THTTPClient.Create;
   try
@@ -115,10 +121,28 @@ begin
     if Source = nil then
       Exit(nil);
 
+    if Source.Size > MaxCatalogDownloadBytes then
+      raise EPortappixCatalogError.CreateFmt(
+        'Catalog download from "%s" exceeds size limit of %d bytes.',
+        [AUrl, MaxCatalogDownloadBytes]);
+
     Buffer := TMemoryStream.Create;
     try
       Source.Position := 0;
-      Buffer.CopyFrom(Source, 0);
+      TotalRead := 0;
+      repeat
+        BytesRead := Source.Read(ReadChunk[0], Length(ReadChunk));
+        if BytesRead > 0 then
+        begin
+          TotalRead := TotalRead + BytesRead;
+          if TotalRead > MaxCatalogDownloadBytes then
+            raise EPortappixCatalogError.CreateFmt(
+              'Catalog download from "%s" exceeds size limit of %d bytes.',
+              [AUrl, MaxCatalogDownloadBytes]);
+          Buffer.WriteBuffer(ReadChunk[0], BytesRead);
+        end;
+      until BytesRead = 0;
+
       SetLength(Result, Buffer.Size);
       Buffer.Position := 0;
       if Length(Result) > 0 then

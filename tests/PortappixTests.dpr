@@ -25,7 +25,8 @@ uses
   Portappix.State,
   Portappix.Trace,
   Portappix.Update,
-  Portappix.Version;
+  Portappix.Version,
+  Portappix.Consent;
 
 type
   TFakeRegistryOps = class(TInterfacedObject, IPortappixRegistryOps)
@@ -290,6 +291,68 @@ begin
     Result.Free;
   end;
 
+  Result := TPolicyResult.Create;
+  try
+    Check(not TPortappixPolicy.ValidateJunctionHost('%APPDATA%\Microsoft\Portappix', Result),
+      'Policy denies junctions in %APPDATA%\Microsoft');
+  finally
+    Result.Free;
+  end;
+
+  Result := TPolicyResult.Create;
+  try
+    Check(not TPortappixPolicy.ValidateJunctionTarget('..\escape', Result),
+      'Policy denies junction targets with traversal (..)');
+  finally
+    Result.Free;
+  end;
+
+  Result := TPolicyResult.Create;
+  try
+    Check(not TPortappixPolicy.ValidateJunctionTarget('{app}\sub', Result),
+      'Policy denies junction targets pointing into {app}');
+  finally
+    Result.Free;
+  end;
+
+  Result := TPolicyResult.Create;
+  try
+    Check(not TPortappixPolicy.ValidateJunctionTarget('{root}\sub', Result),
+      'Policy denies junction targets pointing into {root}');
+  finally
+    Result.Free;
+  end;
+
+  Result := TPolicyResult.Create;
+  try
+    Check(TPortappixPolicy.ValidateJunctionTarget('{data}\config', Result),
+      'Policy allows junction targets in {data}');
+  finally
+    Result.Free;
+  end;
+
+  Env := TDictionary<string, string>.Create;
+  Result := TPolicyResult.Create;
+  try
+    Env.Add('APPDATA', '{data}\..\escape');
+    Check(not TPortappixPolicy.ValidateEnvironment(Env, Result),
+      'Policy denies environment variable values with path traversal');
+  finally
+    Result.Free;
+    Env.Free;
+  end;
+
+  Env := TDictionary<string, string>.Create;
+  Result := TPolicyResult.Create;
+  try
+    Env.Add('APPDATA', '{data}'#0'injected');
+    Check(not TPortappixPolicy.ValidateEnvironment(Env, Result),
+      'Policy denies environment variable values with null characters');
+  finally
+    Result.Free;
+    Env.Free;
+  end;
+
   Env := TDictionary<string, string>.Create;
   Result := TPolicyResult.Create;
   try
@@ -438,6 +501,73 @@ begin
         Manager.ExtractArchive(SlipZip, TPath.Combine(ARoot, 'slip-extract'));
       end,
       'Zip extraction rejects zip-slip entries');
+  finally
+    Manager.Free;
+  end;
+
+  // Alternate Data Stream rejection
+  var AdsZip := TPath.Combine(ARoot, 'ads.zip');
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(AdsZip, TZipMode.zmWrite);
+    Zip.Add(SourceFile, 'safe.txt:stream');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    ExpectException(
+      procedure
+      begin
+        Manager.ExtractArchive(AdsZip, TPath.Combine(ARoot, 'ads-extract'));
+      end,
+      'Zip extraction rejects Alternate Data Stream entries');
+  finally
+    Manager.Free;
+  end;
+
+  // Reserved Windows device name rejection
+  var ReservedZip := TPath.Combine(ARoot, 'reserved.zip');
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(ReservedZip, TZipMode.zmWrite);
+    Zip.Add(SourceFile, 'CON.txt');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    ExpectException(
+      procedure
+      begin
+        Manager.ExtractArchive(ReservedZip, TPath.Combine(ARoot, 'reserved-extract'));
+      end,
+      'Zip extraction rejects reserved Windows device names');
+  finally
+    Manager.Free;
+  end;
+
+  // Case-insensitive duplicate / collision rejection
+  var DupZip := TPath.Combine(ARoot, 'dup.zip');
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(DupZip, TZipMode.zmWrite);
+    Zip.Add(SourceFile, 'foo.txt');
+    Zip.Add(SourceFile, 'FOO.TXT');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    ExpectException(
+      procedure
+      begin
+        Manager.ExtractArchive(DupZip, TPath.Combine(ARoot, 'dup-extract'));
+      end,
+      'Zip extraction rejects duplicate/case-colliding entries');
   finally
     Manager.Free;
   end;
@@ -3818,6 +3948,21 @@ begin
     end,
     'releases.json rejects invalid sha256 values');
 
+  ExpectException(
+    procedure
+    begin
+      ParseReleasesJson('{"schema":1,"channel":"stable","version":"1.0.0",' +
+        '"url":"https://example.com/x.zip","sha256":"' + StringOfChar('a', 64) + '"}');
+    end,
+    'releases.json rejects missing size property');
+
+  ExpectException(
+    procedure
+    begin
+      ParseReleasesJson(ReleasesJsonFor('1.0.0', StringOfChar('a', 64), 0));
+    end,
+    'releases.json rejects size <= 0');
+
   // Full swap/confirm/rollback flow against a local zip (no network, no spawn).
   WriteTextFile(TPath.Combine(ARoot, 'Launcher.exe'), 'old-launcher');
   Manager := TPortappixUpdateManager.Create(ARoot);
@@ -3836,7 +3981,7 @@ begin
 
       // A wrong hash is refused and the package is deleted.
       var BadRelease := ParseReleasesJson(
-        ReleasesJsonFor('1.2.0', StringOfChar('c', 64), 0));
+        ReleasesJsonFor('1.2.0', StringOfChar('c', 64), TFile.GetSize(ZipPath)));
       try
         ExpectException(
           procedure
@@ -3882,6 +4027,11 @@ begin
       FailedFiles := TDirectory.GetFiles(ARoot, 'Launcher.exe.failed_*');
       Check(Length(FailedFiles) = 1,
         'Rollback keeps the failed build next to the launcher');
+
+      WriteTextFile(TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'update_ok'), 'stale');
+      Check(not Manager.NeedsRollbackOffer, 'NeedsRollbackOffer is false when OldLauncher is absent');
+      Check(not TFile.Exists(TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'update_ok')),
+        'NeedsRollbackOffer cleans up orphaned update_ok');
     finally
       Release.Free;
     end;
@@ -4202,6 +4352,45 @@ begin
 end;
 {$ENDIF}
 
+procedure TestConsent(const ARoot: string);
+var
+  Consent: TPortappixConsent;
+  Manifest: TPortappixManifest;
+  AppDir, ExePath, ManifestPath: string;
+begin
+  AppDir := TPath.Combine(TPath.Combine(ARoot, 'Apps'), 'consentapp');
+  ForceDirectories(AppDir);
+  ExePath := TPath.Combine(AppDir, 'consentapp.exe');
+  WriteTextFile(ExePath, 'original-exe-binary');
+
+  ManifestPath := TPath.Combine(AppDir, 'app.json');
+  WriteTextFile(ManifestPath,
+    '{"id":"consentapp","name":"Consent App","version":"1.0","exe":"consentapp.exe",' +
+    '"registry":["HKCU\\Software\\Vendor\\App"]}');
+
+  Manifest := TPortappixManifest.LoadFromFile(ManifestPath);
+  try
+    Consent := TPortappixConsent.Create(ARoot);
+    try
+      Check(Consent.NeedsConsent(Manifest), 'Unapproved app needs consent');
+      Consent.Approve(Manifest);
+      Check(not Consent.NeedsConsent(Manifest), 'Approved app does not need consent');
+
+      // Tamper exe binary: consent must be required again (consent keyed on exe hash)
+      WriteTextFile(ExePath, 'modified-exe-binary');
+      Check(Consent.NeedsConsent(Manifest), 'Modified exe binary requires consent again');
+
+      // Re-approve with modified binary
+      Consent.Approve(Manifest);
+      Check(not Consent.NeedsConsent(Manifest), 'Re-approved modified binary does not need consent');
+    finally
+      Consent.Free;
+    end;
+  finally
+    Manifest.Free;
+  end;
+end;
+
 var
   Root: string;
 begin
@@ -4243,6 +4432,7 @@ begin
     TestRollback(Root);
     TestSettings(Root);
     TestUpdateManager(Root);
+    TestConsent(Root);
 {$IFDEF PORTAPPIX_TESTCRASH}
     TestCrashPointGrammar;
     TestCrashCheckpointCoverage(Root);

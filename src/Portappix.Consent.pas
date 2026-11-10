@@ -17,9 +17,12 @@ type
   private
     FRootPath: string;
     function ConsentFileFor(const AAppId: string): string;
-    function ReadStoredHash(const AAppId: string): string;
+    procedure ReadStoredHashes(const AAppId: string;
+      out AStoredManifestHash, AStoredExeHash: string);
   public
     constructor Create(const ARootPath: string);
+    function ExePathFor(const AManifest: TPortappixManifest): string;
+    function ExeHash(const AManifest: TPortappixManifest): string;
     function ManifestHash(const AManifest: TPortappixManifest): string;
     function NeedsConsent(const AManifest: TPortappixManifest): Boolean;
     function ApprovalDescription(const AManifest: TPortappixManifest): string;
@@ -41,6 +44,32 @@ begin
     'policy_consent.json');
 end;
 
+function TPortappixConsent.ExePathFor(const AManifest: TPortappixManifest): string;
+var
+  AppDir: string;
+  ExeValue: string;
+begin
+  if (AManifest = nil) or (AManifest.Exe.Trim = '') then
+    Exit('');
+  AppDir := TPath.Combine(TPath.Combine(FRootPath, 'Apps'), AManifest.Id);
+  ExeValue := StringReplace(AManifest.Exe.Trim, '/', '\', [rfReplaceAll]);
+  ExeValue := StringReplace(ExeValue, '{app}', AppDir, [rfIgnoreCase, rfReplaceAll]);
+  ExeValue := StringReplace(ExeValue, '{root}', FRootPath, [rfIgnoreCase, rfReplaceAll]);
+  if not TPath.IsPathRooted(ExeValue) then
+    ExeValue := TPath.Combine(AppDir, ExeValue);
+  Result := TPath.GetFullPath(ExeValue);
+end;
+
+function TPortappixConsent.ExeHash(const AManifest: TPortappixManifest): string;
+var
+  Path: string;
+begin
+  Path := ExePathFor(AManifest);
+  if (Path = '') or not TFile.Exists(Path) then
+    Exit('');
+  Result := Sha256File(Path);
+end;
+
 function TPortappixConsent.ManifestHash(const AManifest: TPortappixManifest): string;
 begin
   if (AManifest = nil) or not TFile.Exists(AManifest.SourceFile) then
@@ -48,40 +77,44 @@ begin
   Result := Sha256File(AManifest.SourceFile);
 end;
 
-function TPortappixConsent.ReadStoredHash(const AAppId: string): string;
+procedure TPortappixConsent.ReadStoredHashes(const AAppId: string;
+  out AStoredManifestHash, AStoredExeHash: string);
 var
   FileName: string;
   Value: TJSONValue;
   ObjectValue: TJSONObject;
-  HashValue: TJSONValue;
+  Item: TJSONValue;
 begin
-  Result := '';
+  AStoredManifestHash := '';
+  AStoredExeHash := '';
   FileName := ConsentFileFor(AAppId);
   if not TFile.Exists(FileName) then
     Exit;
 
-  Value := nil;
   try
+    Value := TJSONObject.ParseJSONValue(TFile.ReadAllText(FileName, TEncoding.UTF8));
     try
-      Value := TJSONObject.ParseJSONValue(TFile.ReadAllText(FileName, TEncoding.UTF8));
-    except
-      Exit('');
+      if (Value <> nil) and (Value is TJSONObject) then
+      begin
+        ObjectValue := TJSONObject(Value);
+        Item := ObjectValue.GetValue('manifestHash');
+        if (Item <> nil) and (Item is TJSONString) then
+          AStoredManifestHash := TJSONString(Item).Value.Trim;
+        Item := ObjectValue.GetValue('exeHash');
+        if (Item <> nil) and (Item is TJSONString) then
+          AStoredExeHash := TJSONString(Item).Value.Trim;
+      end;
+    finally
+      Value.Free;
     end;
-    if (Value <> nil) and (Value is TJSONObject) then
-    begin
-      ObjectValue := TJSONObject(Value);
-      HashValue := ObjectValue.GetValue('manifestHash');
-      if (HashValue <> nil) and (HashValue is TJSONString) then
-        Result := TJSONString(HashValue).Value.Trim;
-    end;
-  finally
-    Value.Free;
+  except
   end;
 end;
 
 function TPortappixConsent.NeedsConsent(const AManifest: TPortappixManifest): Boolean;
 var
-  Hash: string;
+  MHash, EHash: string;
+  StoredMHash, StoredEHash: string;
 begin
   if AManifest = nil then
     Exit(True);
@@ -89,8 +122,20 @@ begin
      (AManifest.Environment.Count = 0) then
     Exit(False);
 
-  Hash := ManifestHash(AManifest);
-  Result := (Hash = '') or not SameText(ReadStoredHash(AManifest.Id), Hash);
+  MHash := ManifestHash(AManifest);
+  EHash := ExeHash(AManifest);
+  ReadStoredHashes(AManifest.Id, StoredMHash, StoredEHash);
+
+  if (MHash = '') or not SameText(StoredMHash, MHash) then
+    Exit(True);
+
+  if EHash <> '' then
+  begin
+    if (StoredEHash = '') or not SameText(StoredEHash, EHash) then
+      Exit(True);
+  end;
+
+  Result := False;
 end;
 
 function TPortappixConsent.ApprovalDescription(const AManifest: TPortappixManifest): string;
@@ -115,6 +160,7 @@ procedure TPortappixConsent.Approve(const AManifest: TPortappixManifest);
 var
   FileName: string;
   Json: TJSONObject;
+  EHash: string;
 begin
   if AManifest = nil then
     Exit;
@@ -125,6 +171,9 @@ begin
   try
     Json.AddPair('appId', AManifest.Id);
     Json.AddPair('manifestHash', ManifestHash(AManifest));
+    EHash := ExeHash(AManifest);
+    if EHash <> '' then
+      Json.AddPair('exeHash', EHash);
     Json.AddPair('approvedAt', DateToISO8601(Now));
     WriteTextFileAtomic(FileName, Json.Format(2));
   finally

@@ -231,7 +231,9 @@ begin
         Exit;
       end;
 
-  if (ProgramData <> '') and IsPathUnder(Expanded, ProgramData + '\Microsoft') then
+  if ((AppData <> '') and IsPathUnder(Expanded, AppData + '\Microsoft')) or
+     ((LocalAppData <> '') and IsPathUnder(Expanded, LocalAppData + '\Microsoft')) or
+     ((ProgramData <> '') and IsPathUnder(Expanded, ProgramData + '\Microsoft')) then
   begin
     AResult.AddError(Format('Junction host path "%s" is in a protected system folder.',
       [AHostPath]));
@@ -264,6 +266,8 @@ end;
 
 class function TPortappixPolicy.ValidateJunctionTarget(const ATargetPath: string;
   const AResult: TPolicyResult): Boolean;
+var
+  Normalized: string;
 begin
   Result := False;
   if ATargetPath.Trim = '' then
@@ -272,15 +276,29 @@ begin
     Exit;
   end;
 
-  if ContainsStr(ATargetPath, '..\') or ContainsStr(ATargetPath, '../') then
+  Normalized := StringReplace(ATargetPath.Trim, '/', '\', [rfReplaceAll]);
+  for var Part in Normalized.Split(['\']) do
+    if Part = '..' then
+    begin
+      AResult.AddError(Format('Junction target "%s" must not contain path traversal.', [ATargetPath]));
+      Exit;
+    end;
+
+  if (Normalized = '..') or ContainsStr(Normalized, '..\') or ContainsStr(Normalized, '\..') then
   begin
-    AResult.AddError(Format('Junction target "%s" must not contain path traversal.',
+    AResult.AddError(Format('Junction target "%s" must not contain path traversal.', [ATargetPath]));
+    Exit;
+  end;
+
+  if ContainsText(ATargetPath, '{root}') or ContainsText(ATargetPath, '{app}') then
+  begin
+    AResult.AddError(Format(
+      'Junction target "%s" must not reference {root} or {app}; it must live strictly inside {data}.',
       [ATargetPath]));
     Exit;
   end;
 
-  if ContainsText(ATargetPath, '{data}') or ContainsText(ATargetPath, '{app}') or
-     ContainsText(ATargetPath, '{root}') or IsRelativePath(ATargetPath) then
+  if ContainsText(ATargetPath, '{data}') or IsRelativePath(ATargetPath) then
     Exit(True);
 
   AResult.AddError(Format('Junction target "%s" must live inside the portable {data} directory.',
@@ -292,6 +310,7 @@ class function TPortappixPolicy.ValidateEnvironment(
 var
   Allowed: Boolean;
   IsPathLike: Boolean;
+  Val: string;
 begin
   Result := True;
   for var Pair in AEnvironment do
@@ -309,6 +328,24 @@ begin
       AResult.AddError(Format(
         'Environment variable "%s" is not in the allow-list; overriding it is not permitted.',
         [Pair.Key]));
+      Result := False;
+      Continue;
+    end;
+
+    Val := Pair.Value;
+    if (Val.IndexOf(#0) >= 0) or (Val.IndexOf(#10) >= 0) or (Val.IndexOf(#13) >= 0) then
+    begin
+      AResult.AddError(Format(
+        'Environment variable "%s" contains invalid control characters.', [Pair.Key]));
+      Result := False;
+      Continue;
+    end;
+
+    if (Val = '..') or ContainsStr(Val, '..\') or ContainsStr(Val, '../') or
+       ContainsStr(Val, '\..') or ContainsStr(Val, '/..') then
+    begin
+      AResult.AddError(Format(
+        'Environment variable "%s" contains path traversal.', [Pair.Key]));
       Result := False;
       Continue;
     end;

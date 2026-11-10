@@ -220,58 +220,128 @@ begin
   end;
 end;
 
+function IsReservedDeviceName(const AName: string): Boolean;
+const
+  ReservedBases: array[0..21] of string = (
+    'CON', 'PRN', 'AUX', 'NUL',
+    'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+    'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+  );
+var
+  Base: string;
+  DotPos: Integer;
+begin
+  Base := AName.Trim;
+  DotPos := Base.IndexOf('.');
+  if DotPos >= 0 then
+    Base := Base.Substring(0, DotPos);
+  for var Reserved in ReservedBases do
+    if SameText(Base, Reserved) then
+      Exit(True);
+  Result := False;
+end;
+
 procedure TPortappixPackageManager.ExtractArchive(const AZipFile, ADestinationDir: string);
 var
   Zip: TZipFile;
   FileName: string;
   DestinationPath: string;
   TotalUncompressed: Int64;
+  TotalActualBytes: Int64;
   EntrySize: Int64;
+  SeenEntries: TDictionary<string, Integer>;
+  SeenKey: string;
+  EntryStream: TStream;
+  LocalHeader: TZipHeader;
+  OutStream: TFileStream;
 begin
   if TDirectory.Exists(ADestinationDir) then
     TDirectory.Delete(ADestinationDir, True);
   ForceDirectories(ADestinationDir);
 
   TotalUncompressed := 0;
+  TotalActualBytes := 0;
+  SeenEntries := TDictionary<string, Integer>.Create;
   Zip := TZipFile.Create;
   try
-    Zip.Open(AZipFile, TZipMode.zmRead);
     try
-      if Zip.FileCount > MaxZipEntries then
-        raise EPortappixPackageError.CreateFmt(
-          'Package contains %d entries; the limit is %d.', [Zip.FileCount, MaxZipEntries]);
-
-      for var Index := 0 to Zip.FileCount - 1 do
-      begin
-        EntrySize := Zip.FileInfo[Index].UncompressedSize;
-        TotalUncompressed := TotalUncompressed + EntrySize;
-        if TotalUncompressed > MaxZipUncompressedBytes then
+      Zip.Open(AZipFile, TZipMode.zmRead);
+      try
+        if Zip.FileCount > MaxZipEntries then
           raise EPortappixPackageError.CreateFmt(
-            'Package expands to more than %d bytes; refusing to extract.',
-            [MaxZipUncompressedBytes]);
+            'Package contains %d entries; the limit is %d.', [Zip.FileCount, MaxZipEntries]);
 
-        FileName := StringReplace(Zip.FileNames[Index], '/', '\', [rfReplaceAll]);
-        if (FileName = '') or FileName.EndsWith('\') then
+        for var Index := 0 to Zip.FileCount - 1 do
         begin
-          if (FileName <> '') and IsZipSlip(ADestinationDir, FileName) then
+          EntrySize := Zip.FileInfo[Index].UncompressedSize;
+          TotalUncompressed := TotalUncompressed + EntrySize;
+          if TotalUncompressed > MaxZipUncompressedBytes then
+            raise EPortappixPackageError.CreateFmt(
+              'Package expands to more than %d bytes; refusing to extract.',
+              [MaxZipUncompressedBytes]);
+
+          FileName := StringReplace(Zip.FileNames[Index], '/', '\', [rfReplaceAll]);
+          if (FileName = '') or FileName.EndsWith('\') then
+          begin
+            if (FileName <> '') and IsZipSlip(ADestinationDir, FileName) then
+              raise EPortappixPackageError.CreateFmt('Unsafe zip entry path: "%s".', [FileName]);
+            if FileName <> '' then
+              ForceDirectories(TPath.Combine(ADestinationDir, FileName));
+            Continue;
+          end;
+
+          if FileName.IndexOf(':') >= 0 then
+            raise EPortappixPackageError.CreateFmt(
+              'Zip entry "%s" contains Alternate Data Stream separator (:); refusing to extract.', [FileName]);
+
+          for var Component in FileName.Split(['\']) do
+            if IsReservedDeviceName(Component) then
+              raise EPortappixPackageError.CreateFmt(
+                'Zip entry "%s" contains reserved Windows device name; refusing to extract.', [FileName]);
+
+          SeenKey := FileName.ToLower;
+          if SeenEntries.ContainsKey(SeenKey) then
+            raise EPortappixPackageError.CreateFmt(
+              'Duplicate or case-colliding zip entry: "%s".', [FileName]);
+          SeenEntries.Add(SeenKey, Index);
+
+          if IsZipSlip(ADestinationDir, FileName) then
             raise EPortappixPackageError.CreateFmt('Unsafe zip entry path: "%s".', [FileName]);
-          if FileName <> '' then
-            ForceDirectories(TPath.Combine(ADestinationDir, FileName));
-          Continue;
+
+          DestinationPath := TPath.Combine(ADestinationDir, FileName);
+          ForceDirectories(TPath.GetDirectoryName(DestinationPath));
+
+          EntryStream := nil;
+          Zip.Read(Index, EntryStream, LocalHeader);
+          try
+            if EntryStream <> nil then
+            begin
+              TotalActualBytes := TotalActualBytes + EntryStream.Size;
+              if TotalActualBytes > MaxZipUncompressedBytes then
+                raise EPortappixPackageError.CreateFmt(
+                  'Package uncompressed size exceeds limit of %d bytes; refusing to extract.',
+                  [MaxZipUncompressedBytes]);
+
+              OutStream := TFileStream.Create(DestinationPath, fmCreate);
+              try
+                EntryStream.Position := 0;
+                OutStream.CopyFrom(EntryStream, EntryStream.Size);
+              finally
+                OutStream.Free;
+              end;
+            end;
+          finally
+            EntryStream.Free;
+          end;
         end;
-
-        if IsZipSlip(ADestinationDir, FileName) then
-          raise EPortappixPackageError.CreateFmt('Unsafe zip entry path: "%s".', [FileName]);
-
-        DestinationPath := TPath.Combine(ADestinationDir, FileName);
-        ForceDirectories(TPath.GetDirectoryName(DestinationPath));
-        Zip.Extract(Index, ADestinationDir, True);
+      finally
+        Zip.Close;
       end;
     finally
-      Zip.Close;
+      Zip.Free;
     end;
   finally
-    Zip.Free;
+    SeenEntries.Free;
   end;
 end;
 
@@ -437,7 +507,16 @@ begin
       ValidateUpdateAllowed(Incoming);
 
       Log(Format('Installing %s.', [AppDef.Id]));
-      AtomicSwap(TempDir, FinalDir, PrevDir);
+      var LockHandle: THandle := 0;
+      if not TryAcquireMutex(AppMutexName(FRootPath, AppDef.Id), LockHandle) then
+        raise EPortappixPackageError.CreateFmt(
+          'Cannot install or update "%s": application is currently running or locked.',
+          [AppDef.Id]);
+      try
+        AtomicSwap(TempDir, FinalDir, PrevDir);
+      finally
+        ReleaseMutexHandle(LockHandle);
+      end;
     except
       DeleteDirectoryQuiet(TempDir);
       raise;
@@ -487,26 +566,34 @@ begin
     raise EPortappixPackageError.CreateFmt(
       '"%s" is running; close it before rolling back.', [AAppId]);
 
-  EnsureDirectories;
-  DeleteDirectoryQuiet(StaleDir);
-
-  if TDirectory.Exists(FinalDir) then
-  begin
-    if not RenameFile(FinalDir, StaleDir) then
-      raise EPortappixPackageError.CreateFmt(
-        'Unable to move "%s" to "%s": %s',
-        [FinalDir, StaleDir, SysErrorMessage(Integer(GetLastError))]);
-  end;
-
+  var LockHandle: THandle := 0;
+  if not TryAcquireMutex(AppMutexName(FRootPath, AAppId), LockHandle) then
+    raise EPortappixPackageError.CreateFmt(
+      '"%s" is currently running or locked; close it before rolling back.', [AAppId]);
   try
-    if not RenameFile(PrevDir, FinalDir) then
-      raise EPortappixPackageError.CreateFmt('Unable to restore "%s": %s',
-        [FinalDir, SysErrorMessage(Integer(GetLastError))]);
-  except
-    if TDirectory.Exists(StaleDir) and not TDirectory.Exists(FinalDir) then
-      if not RenameFile(StaleDir, FinalDir) then
-        Log(Format('Unable to restore the current version of "%s".', [AAppId]));
-    raise;
+    EnsureDirectories;
+    DeleteDirectoryQuiet(StaleDir);
+
+    if TDirectory.Exists(FinalDir) then
+    begin
+      if not RenameFile(FinalDir, StaleDir) then
+        raise EPortappixPackageError.CreateFmt(
+          'Unable to move "%s" to "%s": %s',
+          [FinalDir, StaleDir, SysErrorMessage(Integer(GetLastError))]);
+    end;
+
+    try
+      if not RenameFile(PrevDir, FinalDir) then
+        raise EPortappixPackageError.CreateFmt('Unable to restore "%s": %s',
+          [FinalDir, SysErrorMessage(Integer(GetLastError))]);
+    except
+      if TDirectory.Exists(StaleDir) and not TDirectory.Exists(FinalDir) then
+        if not RenameFile(StaleDir, FinalDir) then
+          Log(Format('Unable to restore the current version of "%s".', [AAppId]));
+      raise;
+    end;
+  finally
+    ReleaseMutexHandle(LockHandle);
   end;
 
   DeleteDirectoryQuiet(StaleDir);
@@ -683,32 +770,70 @@ procedure TPortappixPackageManager.ApplyPendingUpdates(
   const AProgress: TDownloadProgressEvent);
 var
   Pending: TObjectList<TCatalogApp>;
+  Catalog: TPortappixCatalog;
+  CatalogPath: string;
+  CatalogApp: TCatalogApp;
 begin
   Pending := LoadPendingUpdates;
   try
-    // Iterate downwards: applied entries are removed from the same list.
-    for var Index := Pending.Count - 1 downto 0 do
-    begin
-      var Def := Pending[Index];
+    if Pending.Count = 0 then
+      Exit;
 
-      if IsAppRunning(FRootPath, Def.Id) then
-      begin
-        Log(Format('"%s" is still running; keeping its queued update to %s.',
-          [Def.Id, Def.Version]));
-        Continue;
-      end;
+    CatalogPath := TPath.Combine(FRootPath, 'catalog.json');
+    if not TFile.Exists(CatalogPath) then
+      CatalogPath := TPath.Combine(FCacheDir, 'catalog.json');
 
+    Catalog := TPortappixCatalog.Create;
+    try
       try
-        Log(Format('Applying the queued update for "%s" to %s.', [Def.Id, Def.Version]));
-        InstallApp(Def, AProgress);
-        Pending.Delete(Index);
-        SavePendingUpdates(Pending);
-        Log(Format('Queued update for "%s" applied. Data\<id> was untouched.', [Def.Id]));
+        Catalog.LoadFromFile(CatalogPath);
       except
         on E: Exception do
-          Log(Format('Queued update for "%s" failed and stays queued: %s',
-            [Def.Id, E.Message]));
+        begin
+          Log(Format('Unable to verify pending updates against catalog: %s', [E.Message]));
+          Exit;
+        end;
       end;
+
+      // Iterate downwards: applied entries are removed from the same list.
+      for var Index := Pending.Count - 1 downto 0 do
+      begin
+        var Def := Pending[Index];
+
+        CatalogApp := Catalog.FindById(Def.Id);
+        if (CatalogApp = nil) or
+           not SameText(CatalogApp.Version, Def.Version) or
+           not SameText(CatalogApp.Sha256, Def.Sha256) or
+           (CatalogApp.Size <> Def.Size) or
+           not SameText(CatalogApp.Url, Def.Url) then
+        begin
+          Log(Format('Pending update for "%s" does not match signed catalog; discarding.', [Def.Id]));
+          Pending.Delete(Index);
+          SavePendingUpdates(Pending);
+          Continue;
+        end;
+
+        if IsAppRunning(FRootPath, Def.Id) then
+        begin
+          Log(Format('"%s" is still running; keeping its queued update to %s.',
+            [Def.Id, Def.Version]));
+          Continue;
+        end;
+
+        try
+          Log(Format('Applying the queued update for "%s" to %s.', [Def.Id, Def.Version]));
+          InstallApp(Def, AProgress);
+          Pending.Delete(Index);
+          SavePendingUpdates(Pending);
+          Log(Format('Queued update for "%s" applied. Data\<id> was untouched.', [Def.Id]));
+        except
+          on E: Exception do
+            Log(Format('Queued update for "%s" failed and stays queued: %s',
+              [Def.Id, E.Message]));
+        end;
+      end;
+    finally
+      Catalog.Free;
     end;
   finally
     Pending.Free;

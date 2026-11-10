@@ -171,6 +171,15 @@ def validate_junction_host(host: str) -> list[str]:
     if ".." in normalized.split("\\"):
         return [f"junction host {host!r} must not contain path traversal"]
 
+    lower_norm = normalized.lower()
+    if (r"%appdata%\microsoft" in lower_norm or
+        r"%localappdata%\microsoft" in lower_norm or
+        r"%programdata%\microsoft" in lower_norm or
+        r"\appdata\roaming\microsoft" in lower_norm or
+        r"\appdata\local\microsoft" in lower_norm or
+        r"\programdata\microsoft" in lower_norm):
+        return [f"junction host {host!r} is in a protected system folder"]
+
     for component in normalized.split("\\"):
         if component.lower() in DENIED_PATH_COMPONENTS:
             return [f"junction host {host!r} is in a protected system or user folder"]
@@ -187,11 +196,12 @@ def validate_junction_host(host: str) -> list[str]:
 def validate_junction_target(target: str) -> list[str]:
     if not target.strip():
         return ["junction target must not be empty"]
-    if ".." in normalize_windows_path(target).split("\\"):
+    normalized = normalize_windows_path(target.strip())
+    if ".." in normalized.split("\\") or ".." in target:
         return [f"junction target {target!r} must not contain path traversal"]
-    if "{data}" in target.lower() or "{app}" in target.lower() or "{root}" in target.lower():
-        return []
-    if not ntpath.isabs(target):
+    if "{root}" in target.lower() or "{app}" in target.lower():
+        return [f"junction target {target!r} must not reference {{root}} or {{app}}; it must live strictly inside {{data}}"]
+    if "{data}" in target.lower() or not ntpath.isabs(target):
         return []
     return [f"junction target {target!r} must live inside the portable {{data}} directory"]
 
@@ -212,9 +222,15 @@ def validate_environment(env: Any) -> list[str]:
                 f"environment variable {name!r} is not in the allow-list"
             )
             continue
+        val_str = str(value)
+        if any(c in val_str for c in ("\0", "\r", "\n")):
+            errors.append(f"environment variable {name!r} contains invalid control characters")
+            continue
+        if ".." in normalize_windows_path(val_str).split("\\") or ".." in val_str:
+            errors.append(f"environment variable {name!r} contains path traversal")
+            continue
         if name.upper() in PATH_LIKE_ENV:
-            text = str(value)
-            if "{app}" not in text.lower() and "{data}" not in text.lower():
+            if "{app}" not in val_str.lower() and "{data}" not in val_str.lower():
                 errors.append(
                     f"path-like environment variable {name!r} must reference {{app}} or {{data}}"
                 )

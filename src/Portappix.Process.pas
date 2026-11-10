@@ -38,7 +38,7 @@ type
 
 function QuoteArgument(const AValue: string): string;
 function RunHiddenProcess(const ACommandLine: string; out AExitCode: Cardinal;
-  const ACurrentDirectory: string = ''): Boolean;
+  const ACurrentDirectory: string = ''; const ATimeoutMs: DWORD = 30000): Boolean;
 function IsProcessRunningUnderPath(const ABaseDir: string): Boolean;
 
 implementation
@@ -109,13 +109,14 @@ begin
 end;
 
 function RunHiddenProcess(const ACommandLine: string; out AExitCode: Cardinal;
-  const ACurrentDirectory: string): Boolean;
+  const ACurrentDirectory: string; const ATimeoutMs: DWORD): Boolean;
 var
   StartupInfo: TStartupInfo;
   ProcessInfo: TProcessInformation;
   CommandLine: string;
   ProcessExitCode: DWORD;
   CurrentDirectoryPointer: PChar;
+  WaitResult: DWORD;
 begin
   AExitCode := Cardinal(-1);
   CurrentDirectoryPointer := nil;
@@ -137,8 +138,10 @@ begin
     Exit;
 
   try
-    if WaitForSingleObject(ProcessInfo.hProcess, INFINITE) <> WAIT_OBJECT_0 then
+    WaitResult := WaitForSingleObject(ProcessInfo.hProcess, ATimeoutMs);
+    if WaitResult <> WAIT_OBJECT_0 then
     begin
+      TerminateProcess(ProcessInfo.hProcess, 1);
       Result := False;
       Exit;
     end;
