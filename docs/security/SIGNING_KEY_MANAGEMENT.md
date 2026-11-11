@@ -95,8 +95,23 @@ Behaviour (implemented in `scripts/sign_catalog.py`):
 ## 6. Signature verification procedure
 
 - **Application:** the launcher verifies every catalog and `releases.json`
-  with the embedded public key via CNG (`Portappix.Signature.VerifySignature`);
-  unsigned or invalid files are refused (catalog dev flag excepted).
+  with the embedded public key via CNG (`Portappix.Signature.VerifySignature` /
+  `VerifySignatureForCatalog`). Specifically:
+  - **`releases.json` (self-update):** `DownloadReleases` in `Portappix.Update.pas`
+    unconditionally requires and verifies the release signature (`<url>.sig`)
+    against the embedded public key. There is no developer flag, command-line
+    switch, or bypass for `releases.json` signature verification under any build
+    configuration; an unsigned or invalid release manifest is always refused.
+  - **`catalog.json` (app store):** `LoadFromFile` and `LoadFromUrl` in
+    `Portappix.Catalog.pas` check for `<catalog>.sig` (or `<url>.sig`) and
+    verify it against the embedded key (`SignatureVerified := True`). By default,
+    unsigned or invalid catalogs raise `EPortappixCatalogError`. An internal
+    variable `AllowUnsignedCatalogs: Boolean = False` exists in `Portappix.Catalog.pas`
+    as a developer flag for development/test harnesses; in release builds it remains
+    `False` so unsigned catalogs are refused. Furthermore, `ApplyPendingUpdates`
+    in `Portappix.PackageManager.pas` verifies `Catalog.SignatureVerified` before
+    processing any queued update, ensuring unsigned catalogs cannot be used to
+    apply updates.
 - **Tooling:** `python scripts/sign_catalog.py --catalog catalog.json
   --public-key keys/catalog_public.pem --verify` (exit 0 = OK).
 - **Independent check:** the fingerprint in §2 can be compared against the

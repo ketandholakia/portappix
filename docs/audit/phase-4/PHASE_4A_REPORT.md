@@ -401,3 +401,31 @@ Explicit confirmations:
 **Overall: Phase 4A is implemented and verified on the development workstation, with the
 VM/Sandbox validation gate still OPEN.** Phase 4B/4C/4D remain untouched pending owner
 review.
+
+---
+
+## 15. Security Hardening Updates (Post-Phase 4A)
+
+On 2026-11-11, three security issues identified during review were remediated:
+
+1. **Issue 1: `--allow-insecure-release-urls` compile-time isolation**
+   - The `--allow-insecure-release-urls` CLI switch in `src/Portappix.Cli.pas`, the `AllowInsecureReleaseUrls` variable in `src/Portappix.Update.pas`, and its check in `IsPermittedReleaseUrl` are wrapped inside `{$IFDEF PORTAPPIX_TESTUPDATE}`.
+   - In normal release builds, the flag does not exist, the switch is rejected as an unknown argument, and all plain `http://` URLs (including loopback) are rejected.
+   - In `PORTAPPIX_TESTUPDATE` builds, only loopback `http://` (`127.0.0.1` and `localhost`) is accepted by default; non-loopback HTTP (such as `http://127.0.0.1.evil.com/`) is rejected unless the switch is explicitly passed.
+   - `scripts/make_release.py` release staging guard was extended to reject any launcher containing the literal byte string `allow-insecure-release-urls` (both UTF-8 and UTF-16LE).
+
+2. **Issue 2: Package extraction zip-bomb and memory exhaustion protection**
+   - Added constant `MaxZipEntryBytes = 512 MB` to `src/Portappix.PackageManager.pas`.
+   - Before reading any entry, its declared `UncompressedSize` is checked against `MaxZipEntryBytes` and rejected if exceeded.
+   - Implemented streaming chunk-based extraction (64 KB buffers) with running per-entry and total byte counters aborting immediately if caps are exceeded.
+   - Deletes partially written files on abort and cross-checks declared vs actual written bytes (`actual <> declared` aborts and fails).
+   - Entire destination directory is deleted on failure, leaving no half-extracted app or partial files behind.
+
+3. **Issue 3: `Cache\pending_updates.json` untrusted metadata elimination**
+   - Redesigned `pending_updates.json` to schema 2, storing only `id` and `version` as hints.
+   - At apply time (`ApplyPendingUpdates`), the signed catalog is verified via CNG (`Catalog.SignatureVerified`). If unverifiable, nothing is applied and the queue is preserved intact.
+   - All update metadata (`url`, `sha256`, `size`, `kind`) is drawn exclusively from the verified catalog entry, completely ignoring any values in `pending_updates.json`.
+   - Unknown app IDs and apps whose catalog version is no newer than installed are dropped (with skip logging).
+   - Atomic replacement via `WriteTextFileAtomic` and 64 KB file size cap (`MaxPendingUpdatesBytes`).
+   - Old format (schema 1) auto-migrates safely by extracting only `id`s and rewriting to schema 2.
+
