@@ -36,9 +36,11 @@ from typing import Iterable
 
 SCAN_SIZE_LIMIT = 10 * 1024 * 1024  # per-entry content-scan cap
 
+PUBLIC_KEY_PEM_PATH = "keys/catalog_public.pem"
+PEM_PUBLIC_KEY_MARKER = re.compile(rb"-----BEGIN[A-Z0-9 ]*PUBLIC KEY-----")
 PEM_PRIVATE_KEY_MARKER = re.compile(rb"-----BEGIN[A-Z0-9 ]*PRIVATE KEY-----")
 
-FORBIDDEN_DIR_COMPONENTS = {"keys", ".ssh"}
+FORBIDDEN_DIR_COMPONENTS = {".ssh"}
 FORBIDDEN_FILE_EXTENSIONS = {".pem", ".pfx", ".p12", ".key", ".pvk"}
 FORBIDDEN_FILE_BASENAMES = {"id_rsa", "id_dsa", "id_ecdsa", "id_ed25519"}
 FORBIDDEN_SECRET_BASENAMES = {"secrets.json", "secrets.yaml", "secrets.yml",
@@ -73,14 +75,24 @@ def path_findings(entry: str) -> list[tuple[str, str]]:
     if not lowered:
         return []
 
-    components = lowered.split("/")
+    components = [c for c in lowered.split("/") if c]
     if ".git" in components:
         return [("GIT_METADATA", f"'.git' path component in '{normalized}'")]
+
+    # Explicitly allowed: the catalog public key PEM and its parent directory entry.
+    if lowered == PUBLIC_KEY_PEM_PATH:
+        return []
+    if lowered in ("keys", "keys/"):
+        return []
+
+    # Any other entry containing or under a 'keys' or forbidden directory component is rejected.
+    if "keys" in components:
+        return [("PRIVATE_KEY_DIR", f"non-public entry under 'keys/' in '{normalized}'")]
     if any(component in FORBIDDEN_DIR_COMPONENTS for component in components):
         offending = next(c for c in components if c in FORBIDDEN_DIR_COMPONENTS)
         return [("PRIVATE_KEY_DIR", f"'{offending}/' directory component in '{normalized}'")]
 
-    basename = components[-1]
+    basename = components[-1] if components else ""
     stem, dot, extension = basename.rpartition(".")
     if dot and ("." + extension) in FORBIDDEN_FILE_EXTENSIONS:
         return [("PRIVATE_KEY_FILE", f"'*.{extension}' private-key file '{normalized}'")]
@@ -95,9 +107,14 @@ def path_findings(entry: str) -> list[tuple[str, str]]:
 
 def content_findings(entry: str, data: bytes) -> list[tuple[str, str]]:
     """Return (rule, detail) findings for an entry's bytes, or an empty list."""
+    normalized = normalize_archive_path(entry)
     if PEM_PRIVATE_KEY_MARKER.search(data):
         return [("PEM_MARKER",
-                 f"PEM private-key marker inside '{normalize_archive_path(entry)}'")]
+                 f"PEM private-key marker inside '{normalized}'")]
+    if normalized.lower() == PUBLIC_KEY_PEM_PATH:
+        if not PEM_PUBLIC_KEY_MARKER.search(data):
+            return [("INVALID_PUBLIC_KEY",
+                     f"expected public key PEM in '{normalized}'")]
     return []
 
 

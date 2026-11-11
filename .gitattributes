@@ -15,6 +15,9 @@ releases.json -text -eol
 *.sig binary
 *.pem -text -eol
 
-# Exclude key directory and Git control files from source release archives
-keys/ export-ignore
-.gitattributes export-ignore
+# Exclude private key material from source release archives
+keys/*.key export-ignore
+keys/*private* export-ignore
+*.pfx export-ignore
+*.p12 export-ignore
+*.pvk export-ignore

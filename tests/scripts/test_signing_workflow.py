@@ -251,6 +251,97 @@ def main() -> int:
         clean = build_zip(work / "clean.zip", CLEAN_PACKAGE)
         check(check_archive(clean) == [], "guard: a clean package passes")
 
+        # --- Public key allowance and strict keys/ isolation -----------------
+        pub_pem_data = (
+            b"-----BEGIN PUBLIC KEY-----\n"
+            b"MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE3opfkvp3mqlV17cDlLmPA/PouJA9\n"
+            b"QDhMmjoAPTr+wncrQYeWw4VGTkSSE1TUVSB1TKaIwdDIm23CVADUCk1sVg==\n"
+            b"-----END PUBLIC KEY-----\n"
+        )
+
+        # 1. The public PEM is accepted
+        findings = check_archive(build_zip(work / "public_key.zip", [
+            ("keys/catalog_public.pem", pub_pem_data), ("app.json", b"{}")]))
+        check(findings == [], "guard: keys/catalog_public.pem is accepted")
+
+        # 2. Any other file under keys/ is rejected
+        findings = check_archive(build_zip(work / "keys_other_pem.zip", [
+            ("keys/other_key.pem", pub_pem_data), ("app.json", b"{}")]))
+        check(any(f.rule == "PRIVATE_KEY_DIR" for f in findings),
+              "guard: any other file under keys/ is rejected (other_key.pem)")
+
+        findings = check_archive(build_zip(work / "keys_other_txt.zip", [
+            ("keys/notes.txt", b"plain text"), ("app.json", b"{}")]))
+        check(any(f.rule == "PRIVATE_KEY_DIR" for f in findings),
+              "guard: any other file under keys/ is rejected (notes.txt)")
+
+        findings = check_archive(build_zip(work / "keys_other_key.zip", [
+            ("keys/vendor.key", b"key data"), ("app.json", b"{}")]))
+        check(any(f.rule == "PRIVATE_KEY_DIR" for f in findings),
+              "guard: any other file under keys/ is rejected (vendor.key)")
+
+        # 3. A public-named file containing a private marker is rejected
+        findings = check_archive(build_zip(work / "public_fake_private.zip", [
+            ("keys/catalog_public.pem", FAKE_PEM_TEXT), ("app.json", b"{}")]))
+        check(any(f.rule == "PEM_MARKER" for f in findings),
+              "guard: public-named file containing private marker is rejected")
+
+        # Public-named file without valid public key marker is rejected
+        findings = check_archive(build_zip(work / "public_not_pem.zip", [
+            ("keys/catalog_public.pem", b"not a public key pem\n"), ("app.json", b"{}")]))
+        check(any(f.rule == "INVALID_PUBLIC_KEY" for f in findings),
+              "guard: public-named file without public key marker is rejected")
+
+        # 4. A *.pem private key anywhere else is rejected
+        findings = check_archive(build_zip(work / "pem_root.zip", [
+            ("catalog_public.pem", pub_pem_data), ("app.json", b"{}")]))
+        check(any(f.rule == "PRIVATE_KEY_FILE" for f in findings),
+              "guard: *.pem file at root is rejected")
+
+        findings = check_archive(build_zip(work / "pem_certs.zip", [
+            ("certs/client.pem", pub_pem_data), ("app.json", b"{}")]))
+        check(any(f.rule == "PRIVATE_KEY_FILE" for f in findings),
+              "guard: *.pem file anywhere else is rejected")
+
+        # --- Live git archive verification -----------------------------------
+        archive_out = work / "git_archive_source.zip"
+        treeish = "HEAD"
+        # If uncommitted changes exist (e.g. before committing .gitattributes),
+        # create a temporary tree snapshot for git archive.
+        status_proc = subprocess.run(["git", "status", "--porcelain"],
+                                     cwd=str(REPO), capture_output=True, text=True)
+        if status_proc.stdout.strip():
+            # Update index with working tree changes for the test snapshot
+            subprocess.run(["git", "add", "-A"], cwd=str(REPO), check=True)
+            tree_proc = subprocess.run(["git", "write-tree"], cwd=str(REPO),
+                                       capture_output=True, text=True)
+            if tree_proc.returncode == 0 and tree_proc.stdout.strip():
+                treeish = tree_proc.stdout.strip()
+
+        archive_proc = subprocess.run(
+            ["git", "archive", "--format=zip", f"--output={archive_out}", treeish],
+            cwd=str(REPO),
+            capture_output=True,
+            text=True,
+        )
+        check(archive_proc.returncode == 0, "live archive: git archive succeeds")
+        guard_findings = check_archive(archive_out)
+        check(guard_findings == [], f"live archive: package_guard reports clean (findings: {guard_findings})")
+        with zipfile.ZipFile(archive_out) as zf:
+            names = zf.namelist()
+            check("keys/catalog_public.pem" in names,
+                  "live archive: contains keys/catalog_public.pem")
+            check(not any(".git" in n.lower().split("/") for n in names),
+                  "live archive: contains no .git metadata")
+            check(not any(n.lower().endswith(".dcu") for n in names),
+                  "live archive: contains no .dcu files")
+            check(not any("__history" in n.lower() for n in names),
+                  "live archive: contains no __history")
+            check(any(n.startswith("tests/suite/") for n in names),
+                  "live archive: contains tests/suite")
+            check(any(n.startswith("tests/fakeapps/") for n in names),
+                  "live archive: contains tests/fakeapps")
+
         proc = run_guard_cli(str(build_zip(work / "cli_bad.zip", [
             (".git/config", b"[core]\n")])))
         check(proc.returncode != 0,
