@@ -27,11 +27,13 @@ function TextEndsWith(const AValue, ASuffix: string): Boolean;
 function IsPathUnder(const APath, ARootPath: string): Boolean;
 function IsZipSlip(const ABaseDir, AEntryName: string): Boolean;
 function Sha256File(const AFileName: string): string;
+function Sha256Handle(const AHandle: THandle): string;
 function Sha256Bytes(const AData: TBytes): string;
 function Sha256Raw(const AData: TBytes): TBytes;
 function Sha256FileBytes(const AFileName: string): TBytes;
 function Sha256Text(const AText: string): string;
 function BytesToHexString(const AData: TBytes): string;
+function IsValidSha256Hex(const AValue: string): Boolean;
 function MutexNameFor(const APrefix, AValue: string): string;
 function LauncherMutexName(const ARootPath: string): string;
 function AppMutexName(const ARootPath, AAppId: string): string;
@@ -41,6 +43,26 @@ procedure ReleaseMutexHandle(var AHandle: THandle);
 function WriteTextFileAtomic(const AFileName, AContent: string): Boolean;
 function WriteTextFileDurable(const AFileName, AContent: string): Boolean;
 function FlushDirectoryWindows(const ADirectory: string): Boolean;
+
+{$IFDEF PORTAPPIX_TESTINJECT}
+type
+  /// Deterministic write-failure injection, available only in test builds
+  /// (compiled with PORTAPPIX_TESTINJECT). Production binaries contain no
+  /// reference to this type, the hook variable or the marker constant.
+  TPortappixWriteHookResult = (
+    whPass,             // run the real write
+    whFail,             // return False without touching anything
+    whFailAfterTemp,    // write then remove the temp file (disk-full semantics:
+                        // the replace never happened, the old content is intact)
+    whRaiseAccessDenied // raise EInOutError(ERROR_ACCESS_DENIED)
+  );
+  TPortappixWriteHook = reference to function(const AFileName,
+    AContent: string): TPortappixWriteHookResult;
+var
+  PortappixWriteHook: TPortappixWriteHook = nil;
+const
+  PortappixTestInjectMarker = 'PORTAPPIX-TESTINJECT-BUILD-2026-11-11';
+{$ENDIF}
 
 type
   TPortappixSingleInstance = class
@@ -263,9 +285,46 @@ begin
   Result := Sha256Bytes(Sha256FileBytes(AFileName));
 end;
 
+function Sha256Handle(const AHandle: THandle): string;
+const
+  ChunkSize = 64 * 1024;
+var
+  Stream: THandleStream;
+  Hash: THashSHA2;
+  Buffer: TBytes;
+  Read: Integer;
+begin
+  // Hashes from an already-open handle so a verify-then-use sequence can keep
+  // the handle (and its share mode) open across the entire check.
+  Stream := THandleStream.Create(AHandle);
+  Hash := THashSHA2.Create(THashSHA2.TSHA2Version.SHA256);
+  SetLength(Buffer, ChunkSize);
+  repeat
+    Read := Stream.Read(Buffer[0], ChunkSize);
+    if Read > 0 then
+      Hash.Update(Buffer, Read);
+  until Read < ChunkSize;
+  Result := BytesToHexString(Hash.HashAsBytes);
+end;
+
 function Sha256Text(const AText: string): string;
 begin
   Result := Sha256Bytes(TEncoding.UTF8.GetBytes(AText));
+end;
+
+function IsValidSha256Hex(const AValue: string): Boolean;
+const
+  HexDigits = '0123456789abcdefABCDEF';
+var
+  Index: Integer;
+begin
+  Result := False;
+  if Length(AValue) <> 64 then
+    Exit;
+  for Index := 1 to Length(AValue) do
+    if Pos(AValue[Index], HexDigits) = 0 then
+      Exit;
+  Result := True;
 end;
 
 function MutexNameFor(const APrefix, AValue: string): string;
@@ -324,10 +383,45 @@ begin
     CloseHandle(Handle);
 end;
 
+{$IFDEF PORTAPPIX_TESTINJECT}
+/// Dispatches the test write hook (if armed). Returns True when the caller
+/// must stop (failure already produced); False when the real write proceeds.
+function DispatchWriteHook(const AFileName, AContent: string): Boolean;
+var
+  HookResult: TPortappixWriteHookResult;
+begin
+  Result := False;
+  if not Assigned(PortappixWriteHook) then
+    Exit;
+  HookResult := PortappixWriteHook(AFileName, AContent);
+  case HookResult of
+    whFail:
+      Result := True;
+    whFailAfterTemp:
+      begin
+        // Disk-full semantics: the temp file was written and then lost, the
+        // target was never replaced, the previous content is untouched.
+        try
+          TFile.WriteAllText(AFileName + '.tmp', AContent, TEncoding.UTF8);
+          TFile.Delete(AFileName + '.tmp');
+        except
+        end;
+        Result := True;
+      end;
+    whRaiseAccessDenied:
+      raise EInOutError.Create(SysErrorMessage(ERROR_ACCESS_DENIED));
+  end;
+end;
+{$ENDIF}
+
 function WriteTextFileAtomic(const AFileName, AContent: string): Boolean;
 var
   TemporaryFile: string;
 begin
+  {$IFDEF PORTAPPIX_TESTINJECT}
+  if DispatchWriteHook(AFileName, AContent) then
+    Exit(False);
+  {$ENDIF}
   TemporaryFile := AFileName + '.tmp';
   try
     TFile.WriteAllText(TemporaryFile, AContent, TEncoding.UTF8);
@@ -376,6 +470,10 @@ var
   Stream: TFileStream;
   ContentBytes: TBytes;
 begin
+  {$IFDEF PORTAPPIX_TESTINJECT}
+  if DispatchWriteHook(AFileName, AContent) then
+    Exit(False);
+  {$ENDIF}
   // Crash-durable variant of WriteTextFileAtomic: the data is flushed to the
   // platter (FlushFileBuffers) BEFORE the atomic replace, and the parent
   // directory is flushed afterwards so the replacement itself survives a
