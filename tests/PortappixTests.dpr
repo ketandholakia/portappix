@@ -1331,6 +1331,7 @@ begin
     Store.TestFailRemaining := 0;
     Journal.RecoverPendingCleanups;
 
+{$IFDEF PORTAPPIX_TESTCRASH}
     // Crash after intent persistence, before mutation.
     PortappixCrashHook :=
       procedure(APoint: string)
@@ -1479,6 +1480,7 @@ begin
       PortappixCrashPoint := '';
       PortappixCrashHook := nil;
     end;
+{$ENDIF}
   finally
     Store.Free;
     // Journal, RegOps and HostOps are interface-managed (the runner and the
@@ -2131,6 +2133,7 @@ begin
   try
     RegOps.AddKey('HKCU\Software\Vendor\JxPres');
 
+{$IFDEF PORTAPPIX_TESTCRASH}
     // Originally absent: the create operation persists 'absent' — verified
     // from a transaction left unreconciled by a simulated crash.
     PortappixCrashHook :=
@@ -2148,6 +2151,7 @@ begin
     Check(ContainsStr(JunctionTxJson, '"absent"'),
       'Preservation: an originally absent host path is recorded as absent');
     Journal.RecoverPendingCleanups;
+{$ENDIF}
 
     // Existing ordinary directory: never deleted; contents preserved.
     HostOps.AddDir(HostPath);
@@ -2489,6 +2493,7 @@ begin
   end;
 end;
 
+{$IFDEF PORTAPPIX_TESTCRASH}
 procedure TestJunctionCrashBoundaries(const ARoot: string);
 var
   AppDir, ManifestFile, ExeFile, HostPath, OldTarget, DataDir: string;
@@ -2657,6 +2662,7 @@ begin
     // scope exit. Manual Free here would double-free them.
   end;
 end;
+{$ENDIF}
 
 procedure TestNativeJunctionLifecycle;
 var
@@ -2850,6 +2856,7 @@ begin
   end;
 end;
 
+{$IFDEF PORTAPPIX_TESTCRASH}
 procedure TestJunctionCrashBeforeIdentityPersisted(const ARoot: string);
 // Deterministic regression for the Phase 3 ownership-verification window:
 // 1. a new Phase 3 junction-create intent is persisted (the journal
@@ -2985,6 +2992,7 @@ begin
     // scope exit.
   end;
 end;
+{$ENDIF}
 
 procedure TestJunctionOwnershipUnpersistedIdentity(const ARoot: string);
 // Second regression: the original Portappix junction is UNCHANGED (same
@@ -3397,24 +3405,50 @@ begin
   if not FExportSucceeds then
     Exit(False);
   FCallLog.Add('export:' + AKey);
-  TFile.WriteAllText(AFileName, 'backup-of-' + AKey, TEncoding.ASCII);
+  ForceDirectories(TPath.GetDirectoryName(AFileName));
+  TFile.WriteAllText(AFileName,
+    'Windows Registry Editor Version 5.00' + sLineBreak + sLineBreak +
+    '[' + AKey + ']' + sLineBreak + '"Value"="1"' + sLineBreak,
+    TEncoding.Unicode);
   Result := True;
 end;
 
 function TFakeTxRegistryOps.ImportFile(const AFileName: string): Boolean;
+var
+  Lines: TArray<string>;
+  Line, TrimmedLine, RegKey: string;
 begin
   if not FImportSucceeds then
     Exit(False);
   FCallLog.Add('import:' + TPath.GetFileName(AFileName));
+  if TFile.Exists(AFileName) then
+  begin
+    Lines := TFile.ReadAllLines(AFileName, TEncoding.Unicode);
+    for Line in Lines do
+    begin
+      TrimmedLine := Line.Trim;
+      if TrimmedLine.StartsWith('[') and TrimmedLine.EndsWith(']') then
+      begin
+        RegKey := TrimmedLine.Substring(1, TrimmedLine.Length - 2);
+        if RegKey.StartsWith('HKEY_CURRENT_USER\', True) then
+          RegKey := 'HKCU\' + RegKey.Substring(18);
+        AddKey(RegKey);
+      end;
+    end;
+  end;
   Result := True;
 end;
 
 function TFakeTxRegistryOps.DeleteKey(const AKey: string): Boolean;
+var
+  Idx: Integer;
 begin
   if not FDeleteSucceeds then
     Exit(False);
   FCallLog.Add('delete:' + AKey);
-  FKeys.Delete(FKeys.IndexOf(AKey));
+  Idx := FKeys.IndexOf(AKey);
+  if Idx >= 0 then
+    FKeys.Delete(Idx);
   Result := True;
 end;
 
@@ -3630,6 +3664,335 @@ end;
 function TFakeRegistryOps.CallOrder: string;
 begin
   Result := FCalls.Text;
+end;
+
+procedure TestRecoveryRegistryFailureSafety(const ARoot: string);
+var
+  Store: TPortappixJournalStore;
+  RegOps: TFakeTxRegistryOps;
+  HostOps: TFakeHostPathOps;
+  RegOpsRef: IPortappixRegistryOps;
+  HostOpsRef: IPortappixHostPathOps;
+  Journal: TPortappixJournal;
+  ITx: IPortappixTransaction;
+  Tx: TPortappixTransaction;
+  TxId, TxDir, DataDir, BackupPath: string;
+begin
+  Writeln('Testing recovery registry failure safety and idempotency...');
+
+  // 1. Export succeeds then delete
+  Store := TPortappixJournalStore.Create;
+  RegOps := TFakeTxRegistryOps.Create;
+  HostOps := TFakeHostPathOps.Create;
+  RegOpsRef := RegOps;
+  HostOpsRef := HostOps;
+  Journal := TPortappixJournal.Create(ARoot, RegOps, HostOps, Store);
+  try
+    DataDir := TPath.Combine(TPath.Combine(Journal.RootPath, 'Data'), 'failsafe_succ');
+    ForceDirectories(DataDir);
+    RegOps.AddKey('HKCU\Software\Vendor\App');
+    RegOps.ExportSucceeds := True;
+    RegOps.DeleteSucceeds := True;
+
+    TxId := TPortappixTransaction.NewTxId('failsafe_succ');
+    TxDir := TPath.Combine(Journal.TransactionsDirectory, TxId);
+    ForceDirectories(TxDir);
+    ITx := TPortappixTransaction.Create(Store, TxDir, TxId, 'failsafe_succ', Now,
+      txRunning, DataDir, False);
+    ITx.RecordOperation(TPortappixTransaction.MakeOperation(
+      okRegistryBackup, '', '', '', 'HKCU\Software\Vendor\App'));
+    ITx.MarkOperation(0, opAbsent);
+    TPortappixTransaction(ITx).Persist;
+    ITx := nil;
+
+    Journal.RecoverPendingCleanups;
+
+    Check(not RegOps.KeyExists('HKCU\Software\Vendor\App'),
+      'Failsafe: live host key was deleted after successful export');
+    Check(RegOps.CallLog.IndexOf('export:HKCU\Software\Vendor\App') >= 0,
+      'Failsafe: live host key was exported before delete');
+    Check(RegOps.CallLog.IndexOf('delete:HKCU\Software\Vendor\App') >= 0,
+      'Failsafe: host key delete was called');
+    Check(not TDirectory.Exists(TxDir),
+      'Failsafe: transaction directory removed on completion');
+  finally
+    Journal.Free;
+  end;
+
+  // 2. Export fails then keep (host key must NOT be deleted)
+  Store := TPortappixJournalStore.Create;
+  RegOps := TFakeTxRegistryOps.Create;
+  HostOps := TFakeHostPathOps.Create;
+  RegOpsRef := RegOps;
+  HostOpsRef := HostOps;
+  Journal := TPortappixJournal.Create(ARoot, RegOps, HostOps, Store);
+  try
+    DataDir := TPath.Combine(TPath.Combine(Journal.RootPath, 'Data'), 'failsafe_fail');
+    ForceDirectories(DataDir);
+    RegOps.AddKey('HKCU\Software\Vendor\AppFail');
+    RegOps.ExportSucceeds := False; // simulates reg.exe timeout / error
+    RegOps.DeleteSucceeds := True;
+
+    TxId := TPortappixTransaction.NewTxId('failsafe_fail');
+    TxDir := TPath.Combine(Journal.TransactionsDirectory, TxId);
+    ForceDirectories(TxDir);
+    ITx := TPortappixTransaction.Create(Store, TxDir, TxId, 'failsafe_fail', Now,
+      txRunning, DataDir, False);
+    ITx.RecordOperation(TPortappixTransaction.MakeOperation(
+      okRegistryBackup, '', '', '', 'HKCU\Software\Vendor\AppFail'));
+    ITx.MarkOperation(0, opAbsent);
+    TPortappixTransaction(ITx).Persist;
+    ITx := nil;
+
+    Journal.RecoverPendingCleanups;
+
+    Check(RegOps.KeyExists('HKCU\Software\Vendor\AppFail'),
+      'Failsafe: host key was PRESERVED when export failed');
+    Check(RegOps.CallLog.IndexOf('delete:HKCU\Software\Vendor\AppFail') < 0,
+      'Failsafe: deleteKey was NEVER called when export failed');
+    Check(TDirectory.Exists(TxDir),
+      'Failsafe: transaction directory was retained for retry');
+
+    Tx := TPortappixTransaction.Create(Store, TxDir, TxId, 'failsafe_fail', Now,
+      txRunning, DataDir, False);
+    try
+      Tx.Load;
+      Check(Pos('export failed', Tx.LastError) > 0,
+        'Failsafe: transaction persisted error surfaces export failure');
+    finally
+      Tx.Free;
+    end;
+  finally
+    Journal.Free;
+  end;
+
+  // 3. opAbsent key created during the run is removed
+  Store := TPortappixJournalStore.Create;
+  RegOps := TFakeTxRegistryOps.Create;
+  HostOps := TFakeHostPathOps.Create;
+  RegOpsRef := RegOps;
+  HostOpsRef := HostOps;
+  Journal := TPortappixJournal.Create(ARoot, RegOps, HostOps, Store);
+  try
+    DataDir := TPath.Combine(TPath.Combine(Journal.RootPath, 'Data'), 'failsafe_absent');
+    ForceDirectories(DataDir);
+    // Key did not exist before run (opAbsent), but exists now
+    RegOps.AddKey('HKCU\Software\Vendor\CreatedDuringRun');
+    RegOps.ExportSucceeds := True;
+
+    TxId := TPortappixTransaction.NewTxId('failsafe_absent');
+    TxDir := TPath.Combine(Journal.TransactionsDirectory, TxId);
+    ForceDirectories(TxDir);
+    ITx := TPortappixTransaction.Create(Store, TxDir, TxId, 'failsafe_absent', Now,
+      txCleaning, DataDir, False);
+    ITx.RecordOperation(TPortappixTransaction.MakeOperation(
+      okRegistryBackup, 'HKCU\Software\Vendor\CreatedDuringRun', '', '', 'HKCU\Software\Vendor\CreatedDuringRun'));
+    ITx.MarkOperation(0, opAbsent);
+    TPortappixTransaction(ITx).Persist;
+    ITx := nil;
+
+    Journal.RecoverPendingCleanups;
+
+    Check(not RegOps.KeyExists('HKCU\Software\Vendor\CreatedDuringRun'),
+      'Failsafe: opAbsent key created during run is removed by recovery');
+    Check(RegOps.CallLog.IndexOf('delete:HKCU\Software\Vendor\CreatedDuringRun') >= 0,
+      'Failsafe: delete called for opAbsent key');
+  finally
+    Journal.Free;
+  end;
+
+  // 4. A key that existed before the run is restored to its backup, not deleted
+  Store := TPortappixJournalStore.Create;
+  RegOps := TFakeTxRegistryOps.Create;
+  HostOps := TFakeHostPathOps.Create;
+  RegOpsRef := RegOps;
+  HostOpsRef := HostOps;
+  Journal := TPortappixJournal.Create(ARoot, RegOps, HostOps, Store);
+  try
+    DataDir := TPath.Combine(TPath.Combine(Journal.RootPath, 'Data'), 'failsafe_restore');
+    ForceDirectories(DataDir);
+    RegOps.AddKey('HKCU\Software\Vendor\PreExistingKey');
+    RegOps.ExportSucceeds := True;
+
+    TxId := TPortappixTransaction.NewTxId('failsafe_restore');
+    TxDir := TPath.Combine(Journal.TransactionsDirectory, TxId);
+    ForceDirectories(TxDir);
+    BackupPath := TPath.Combine(TxDir, 'registry_backup_0.reg');
+    TFile.WriteAllText(BackupPath,
+      'Windows Registry Editor Version 5.00' + sLineBreak + sLineBreak +
+      '[HKEY_CURRENT_USER\Software\Vendor\PreExistingKey]' + sLineBreak + '"Val"="1"' + sLineBreak,
+      TEncoding.Unicode);
+
+    ITx := TPortappixTransaction.Create(Store, TxDir, TxId, 'failsafe_restore', Now,
+      txCleaning, DataDir, False);
+    ITx.RecordOperation(TPortappixTransaction.MakeOperation(
+      okRegistryBackup, '', '', BackupPath, 'HKCU\Software\Vendor\PreExistingKey'));
+    ITx.MarkOperation(0, opDone);
+    ITx.RecordOperation(TPortappixTransaction.MakeOperation(
+      okRegistryDelete, '', '', BackupPath, 'HKCU\Software\Vendor\PreExistingKey'));
+    ITx.MarkOperation(1, opDone);
+    TPortappixTransaction(ITx).Persist;
+    ITx := nil;
+
+    Journal.RecoverPendingCleanups;
+
+    Check(RegOps.KeyExists('HKCU\Software\Vendor\PreExistingKey'),
+      'Failsafe: pre-existing key was restored and NOT deleted');
+    Check(RegOps.CallLog.IndexOf('import:registry_backup_0.reg') >= 0,
+      'Failsafe: pre-existing key backup was imported');
+    Check(not TDirectory.Exists(TxDir),
+      'Failsafe: transaction directory removed on completion of restore');
+  finally
+    Journal.Free;
+  end;
+
+  // 5. Second recovery pass is a no-op (idempotent)
+  Store := TPortappixJournalStore.Create;
+  RegOps := TFakeTxRegistryOps.Create;
+  HostOps := TFakeHostPathOps.Create;
+  RegOpsRef := RegOps;
+  HostOpsRef := HostOps;
+  Journal := TPortappixJournal.Create(ARoot, RegOps, HostOps, Store);
+  try
+    RegOps.CallLog.Clear;
+    Journal.RecoverPendingCleanups;
+    Check(RegOps.CallLog.Count = 0, 'Failsafe: second recovery pass with clean state does zero work');
+  finally
+    Journal.Free;
+  end;
+end;
+
+procedure TestUnownedJunctionReviewExperience(const ARoot: string);
+var
+  TestRoot: string;
+  Store: TPortappixJournalStore;
+  RegOps: TFakeTxRegistryOps;
+  HostOps: TFakeHostPathOps;
+  RegOpsRef: IPortappixRegistryOps;
+  HostOpsRef: IPortappixHostPathOps;
+  Journal: TPortappixJournal;
+  ITx, TxB: IPortappixTransaction;
+  TxId, TxDir, DataDir, TargetDir, HostPath, HostPathC, TargetDirC, HostPathD, TargetDirD, ErrorMsg: string;
+  ReviewItem: TPortappixReviewItem;
+  Items: TArray<TPortappixReviewItem>;
+  Blocked: Boolean;
+begin
+  Writeln('Testing unowned junction review experience...');
+  TestRoot := MakeTempRoot;
+  try
+    Store := TPortappixJournalStore.Create;
+    RegOps := TFakeTxRegistryOps.Create;
+    HostOps := TFakeHostPathOps.Create;
+    RegOpsRef := RegOps;
+    HostOpsRef := HostOps;
+    Journal := TPortappixJournal.Create(TestRoot, RegOps, HostOps, Store);
+    try
+      DataDir := TPath.Combine(TPath.Combine(Journal.RootPath, 'Data'), 'unowned_app');
+      ForceDirectories(DataDir);
+      TargetDir := TPath.Combine(DataDir, 'Storage');
+      ForceDirectories(TargetDir);
+      HostPath := ExpandPercentVariables('%APPDATA%') + '\UnownedJunctionTest';
+
+      // 1. Recovery leaves unowned junction untouched and records it in needs_review.json
+      HostOps.AddJunction(HostPath, TargetDir);
+
+      TxId := TPortappixTransaction.NewTxId('unowned_app');
+      TxDir := TPath.Combine(Journal.TransactionsDirectory, TxId);
+      ForceDirectories(TxDir);
+      ITx := TPortappixTransaction.Create(Store, TxDir, TxId, 'unowned_app', Now,
+        txRunning, DataDir, False, PortappixOwnershipFieldIdentity); // Phase 3 provenance
+      ITx.RecordOperation(TPortappixTransaction.MakeJunctionOperation(
+        okJunctionCreate, HostPath, TargetDir, 'absent'));
+      // Deliberately leave Identity empty (simulating crash before identity persisted)
+      TPortappixTransaction(ITx).Persist;
+      ITx := nil;
+
+      Journal.RecoverPendingCleanups;
+
+      Check(HostOps.PathExists(HostPath),
+        'Review: unowned junction preserved untouched by recovery');
+      Check(Journal.HasReviewItem('unowned_app', ReviewItem),
+        'Review: unowned junction recorded in review list');
+      Check(SameText(ReviewItem.JunctionPath, HostPath),
+        'Review: recorded junction path matches host path');
+      Check(TFile.Exists(TPath.Combine(Journal.TransactionsDirectory, 'needs_review.json')),
+        'Review: needs_review.json created on disk');
+
+      // 2. Recovery run twice records it once
+      Journal.RecoverPendingCleanups;
+      Items := Journal.ListReviewItems;
+      Check(Length(Items) = 1, 'Review: second recovery pass does not duplicate review entry');
+
+      // 3. The next run of that app is refused with documented error / exit code
+      Blocked := False;
+      try
+        Journal.BeginTransaction('unowned_app');
+      except
+        on E: EPortappixStateError do
+        begin
+          Blocked := True;
+          Check(Pos('manual review', E.Message) > 0,
+            'Review: error message explains manual review is required');
+        end;
+      end;
+      Check(Blocked, 'Review: next run of unowned_app is refused');
+
+      // 4. Another app still runs
+      TxB := Journal.BeginTransaction('other_app');
+      Check(TxB <> nil, 'Review: other application is NOT blocked and can begin transaction');
+      TPortappixTransaction(TxB).RemoveTransactionDirectory;
+      TxB := nil;
+
+      // 5. Clearing works only under the stated conditions
+      // (a) Clear without force or delete-junction while junction exists -> fails
+      Check(not Journal.ClearReview('unowned_app', False, False, ErrorMsg),
+        'Review: clear fails when junction exists and neither force nor delete is specified');
+      Check(Journal.HasReviewItem('unowned_app', ReviewItem),
+        'Review: entry retained after failed clear');
+
+      // (b) Clear with force -> succeeds and keeps junction
+      Check(Journal.ClearReview('unowned_app', True, False, ErrorMsg),
+        'Review: clear with --force succeeds');
+      Check(HostOps.PathExists(HostPath),
+        'Review: junction preserved on disk after force clear');
+      Check(not Journal.HasReviewItem('unowned_app', ReviewItem),
+        'Review: entry cleared after force clear');
+
+      // (c) Clear with delete-unowned-junction
+      var DataDirC := TPath.Combine(TPath.Combine(Journal.RootPath, 'Data'), 'appC');
+      ForceDirectories(DataDirC);
+      TargetDirC := TPath.Combine(DataDirC, 'Storage');
+      ForceDirectories(TargetDirC);
+      HostPathC := ExpandPercentVariables('%APPDATA%') + '\UnownedJunctionTestC';
+      HostOps.AddJunction(HostPathC, TargetDirC);
+      Journal.RecordReviewItem('appC', HostPathC, TargetDirC, 'Test');
+      Check(Journal.ClearReview('appC', False, True, ErrorMsg),
+        'Review: clear with --delete-unowned-junction succeeds');
+      Check(not HostOps.PathExists(HostPathC),
+        'Review: junction deleted when --delete-unowned-junction passed');
+      Check(not Journal.HasReviewItem('appC', ReviewItem),
+        'Review: appC entry cleared');
+
+      // (d) Clear when junction already deleted by hand
+      var DataDirD := TPath.Combine(TPath.Combine(Journal.RootPath, 'Data'), 'appD');
+      ForceDirectories(DataDirD);
+      TargetDirD := TPath.Combine(DataDirD, 'Storage');
+      ForceDirectories(TargetDirD);
+      HostPathD := ExpandPercentVariables('%APPDATA%') + '\UnownedJunctionTestD';
+      HostOps.AddJunction(HostPathD, TargetDirD);
+      Journal.RecordReviewItem('appD', HostPathD, TargetDirD, 'Test');
+      HostOps.DeleteJunction(HostPathD); // user deletes it by hand
+      Check(Journal.ClearReview('appD', False, False, ErrorMsg),
+        'Review: clear succeeds without flags when junction already deleted by hand');
+      Check(not Journal.HasReviewItem('appD', ReviewItem),
+        'Review: appD entry cleared');
+    finally
+      Journal.Free;
+    end;
+  finally
+    if TDirectory.Exists(TestRoot) then
+      TDirectory.Delete(TestRoot, True);
+  end;
 end;
 
 { Fake trace probes }
@@ -5242,13 +5605,19 @@ begin
     TestJunctionPreservation(Root);
     TestJunctionOwnership(Root);
     TestJunctionRestoration(Root);
+{$IFDEF PORTAPPIX_TESTCRASH}
     TestJunctionCrashBoundaries(Root);
+{$ENDIF}
     TestNativeJunctionLifecycle;
+{$IFDEF PORTAPPIX_TESTCRASH}
     TestJunctionCrashBeforeIdentityPersisted(Root);
+{$ENDIF}
     TestJunctionOwnershipUnpersistedIdentity(Root);
     TestNativeJunctionIdentityMandatory;
     TestRegistryOrdering(Root);
     TestRegTimeoutAndRecovery(Root);
+    TestRecoveryRegistryFailureSafety(Root);
+    TestUnownedJunctionReviewExperience(Root);
     TestTraceNoiseFilter;
     TestTraceSnapshotAndDiff(Root);
     TestTraceSnapshotCaps(Root);
