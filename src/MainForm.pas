@@ -74,7 +74,9 @@ type
     FCatalogCacheFile: string;
     FCatalogUrlFile: string;
     FCatalogUrl: string;
+{$IFDEF PORTAPPIX_TESTUPDATE}
     FAllowUnsignedCatalog: Boolean;
+{$ENDIF}
     FJournal: IPortappixJournal;
     FTrayUI: TPortappixTrayUI;
     FCatalog: TPortappixCatalog;
@@ -117,13 +119,17 @@ type
     procedure TraceSelectedAppInBackground(const AManifestPath: string);
     function AskConsent(const AAppId, ADescription, AManifestHash: string): Boolean;
     function WaitForRunningApps(const ATimeoutMs: Cardinal): Boolean;
+{$IFDEF PORTAPPIX_TESTUPDATE}
     procedure SetAllowUnsignedCatalog(const AValue: Boolean);
+{$ENDIF}
     procedure WMQueryEndSession(var Message: TWMQueryEndSession); message WM_QUERYENDSESSION;
     procedure WMEndSession(var Message: TWMEndSession); message WM_ENDSESSION;
   public
     property CatalogUrl: string read FCatalogUrl write FCatalogUrl;
+{$IFDEF PORTAPPIX_TESTUPDATE}
     property AllowUnsignedCatalog: Boolean read FAllowUnsignedCatalog
       write SetAllowUnsignedCatalog;
+{$ENDIF}
   end;
 
 var
@@ -143,7 +149,9 @@ begin
   FTraceInProgress := False;
   FAllowClose := False;
   FWaitingForApps := False;
+{$IFDEF PORTAPPIX_TESTUPDATE}
   FAllowUnsignedCatalog := False;
+{$ENDIF}
   FInstalledPaths := TStringList.Create;
   FInstalledVersions := TDictionary<string, string>.Create(TIStringComparer.Ordinal);
   InitializePaths;
@@ -186,11 +194,13 @@ begin
   end;
 end;
 
+{$IFDEF PORTAPPIX_TESTUPDATE}
 procedure TMainLauncherForm.SetAllowUnsignedCatalog(const AValue: Boolean);
 begin
   FAllowUnsignedCatalog := AValue;
   AllowUnsignedCatalogs := AValue;
 end;
+{$ENDIF}
 
 procedure TMainLauncherForm.InitializeRuntime;
 begin

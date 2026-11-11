@@ -104,12 +104,14 @@ Behaviour (implemented in `scripts/sign_catalog.py`):
     configuration; an unsigned or invalid release manifest is always refused.
   - **`catalog.json` (app store):** `LoadFromFile` and `LoadFromUrl` in
     `Portappix.Catalog.pas` check for `<catalog>.sig` (or `<url>.sig`) and
-    verify it against the embedded key (`SignatureVerified := True`). By default,
-    unsigned or invalid catalogs raise `EPortappixCatalogError`. An internal
-    variable `AllowUnsignedCatalogs: Boolean = False` exists in `Portappix.Catalog.pas`
-    as a developer flag for development/test harnesses; in release builds it remains
-    `False` so unsigned catalogs are refused. Furthermore, `ApplyPendingUpdates`
-    in `Portappix.PackageManager.pas` verifies `Catalog.SignatureVerified` before
+    verify it against the embedded key (`SignatureVerified := True`). In release
+    builds, signature verification is mandatory: any catalog without a `.sig`
+    or with an invalid signature raises `EPortappixCatalogError`, and the dev
+    flag does not exist in the compiled code. Under `PORTAPPIX_TESTUPDATE` test
+    builds only, an internal variable `AllowUnsignedCatalogs: Boolean = False`
+    is compiled in to permit unsigned catalogs for local test harnesses when
+    explicitly set. Furthermore, `ApplyPendingUpdates` in
+    `Portappix.PackageManager.pas` verifies `Catalog.SignatureVerified` before
     processing any queued update, ensuring unsigned catalogs cannot be used to
     apply updates.
 - **Tooling:** `python scripts/sign_catalog.py --catalog catalog.json

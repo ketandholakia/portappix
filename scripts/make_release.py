@@ -46,6 +46,7 @@ TESTCRASH_MARKER = "PORTAPPIX-TESTCRASH-BUILD-2026-11-10"
 TESTUPDATE_MARKER = "PORTAPPIX-TESTUPDATE-BUILD-2026-11-10"
 CRASH_ENV_VAR = "PORTAPPIX_CRASH_AT"
 INSECURE_RELEASE_URLS_SWITCH = "allow-insecure-release-urls"
+DEV_CATALOG_FLAG = "AllowUnsignedCatalogs"
 
 
 def launcher_forbidden_material(launcher_path: Path) -> list[str]:
@@ -67,6 +68,7 @@ def launcher_forbidden_material(launcher_path: Path) -> list[str]:
         TESTUPDATE_MARKER,
         CRASH_ENV_VAR,
         INSECURE_RELEASE_URLS_SWITCH,
+        DEV_CATALOG_FLAG,
     ):
         for encoding in ("utf-16-le", "utf-8"):
             encoded = needle.encode(encoding)
@@ -154,7 +156,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     print("Test isolation guard: OK (staged Launcher.exe contains no "
           f"{TESTCRASH_MARKER} / {TESTUPDATE_MARKER} / {CRASH_ENV_VAR} / "
-          f"{INSECURE_RELEASE_URLS_SWITCH} bytes)")
+          f"{INSECURE_RELEASE_URLS_SWITCH} / {DEV_CATALOG_FLAG} bytes)")
 
     if args.url_base and not args.url_base.startswith("https://"):
         if not args.allow_insecure_url_base:

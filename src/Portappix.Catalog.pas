@@ -77,8 +77,10 @@ type
     property SignatureVerified: Boolean read FSignatureVerified;
   end;
 
+{$IFDEF PORTAPPIX_TESTUPDATE}
 var
   AllowUnsignedCatalogs: Boolean = False;
+{$ENDIF}
 
 function IsHttpsUrl(const AUrl: string): Boolean;
 function DownloadToBytes(const AUrl: string): TBytes;
@@ -384,10 +386,19 @@ begin
         [FullPath]);
     FSignatureVerified := True;
   end
-  else if not AllowUnsignedCatalogs then
+  else
+  begin
+{$IFDEF PORTAPPIX_TESTUPDATE}
+    if not AllowUnsignedCatalogs then
+      raise EPortappixCatalogError.CreateFmt(
+        'Catalog "%s" is not signed. Set AllowUnsignedCatalogs for development builds.',
+        [FullPath]);
+{$ELSE}
     raise EPortappixCatalogError.CreateFmt(
-      'Catalog "%s" is not signed. Set AllowUnsignedCatalogs for development builds.',
+      'Catalog "%s" is not signed. Unsigned catalogs are not permitted in release builds.',
       [FullPath]);
+{$ENDIF}
+  end;
 
   FSource := FullPath;
   Parse(TEncoding.UTF8.GetString(Content));
@@ -422,10 +433,19 @@ begin
   FSignatureVerified := False;
   if (Length(SignatureBytes) > 0) and VerifySignatureForCatalog(Content, SignatureBytes) then
     FSignatureVerified := True
-  else if not AllowUnsignedCatalogs then
+  else
+  begin
+{$IFDEF PORTAPPIX_TESTUPDATE}
+    if not AllowUnsignedCatalogs then
+      raise EPortappixCatalogError.CreateFmt(
+        'Catalog "%s" is not correctly signed. Set AllowUnsignedCatalogs for development builds.',
+        [AUrl]);
+{$ELSE}
     raise EPortappixCatalogError.CreateFmt(
-      'Catalog "%s" is not correctly signed. Set AllowUnsignedCatalogs for development builds.',
+      'Catalog "%s" is not correctly signed. Unsigned catalogs are not permitted in release builds.',
       [AUrl]);
+{$ENDIF}
+  end;
 
   Parse(TEncoding.UTF8.GetString(Content));
 
