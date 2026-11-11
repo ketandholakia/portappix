@@ -261,15 +261,42 @@ When the launcher crashes in the `op:2:created` window (after creating the junct
      - `--delete-unowned-junction`: Validates policy and path safety, verifies the object is indeed a junction pointing into the app data directory, deletes it safely, and clears the review item.
      - `--force`: Dismisses the review item while leaving the junction on disk (acknowledging the risk).
 
-### 9.2 Production Rollback Path (`--accept-rollback`)
+### 9.2 Production Rollback Path (`--accept-rollback` and `--rollback`)
 
 In production environments where an update fails (e.g., startup crash or missing `Cache\update_ok` confirmation):
 - The launcher watchdog detects `NeedsRollbackOffer` (`Launcher.exe.old` exists and `Cache\update_ok` is missing).
-- Automated deployment scripts or operators can trigger a non-interactive rollback in release builds via:
+- Automated deployment scripts, CI/CD harnesses, or operators can trigger a non-interactive rollback in release builds via:
   ```cmd
   Launcher.exe --accept-rollback [--root <path>]
   ```
-- This command safely renames the failing `Launcher.exe` to `Launcher.exe.failed_<timestamp>`, restores `Launcher.exe.old` to `Launcher.exe`, and clears the pending update state. It is strictly compiled into release builds and accepts no untrusted code or arbitrary target paths.
+  or the alias:
+  ```cmd
+  Launcher.exe --rollback [--root <path>]
+  ```
+- Operational Command Availability: Like `--status` and `--clear-review`, `--accept-rollback` and `--rollback` are standard operational CLI commands compiled into release builds (they do not rely on test defines).
+
+#### 9.2.1 Old-Launcher Verification and Integrity Protection
+To prevent rollback to arbitrary, corrupt, or malicious executables, Portappix strictly verifies `Launcher.exe.old` before any restore action takes place:
+1. **Atomic Record Generation (`Cache\old_launcher.json`)**:
+   During the update swap in `Portappix.Update.pas` (when `Launcher.exe` is renamed to `Launcher.exe.old`), the engine immediately records cryptographic and structural metadata into `Cache\old_launcher.json` using an atomic write:
+   - `schema`: Integer schema version (`1`).
+   - `sha256`: Lowercase SHA-256 hash of `Launcher.exe.old`.
+   - `size`: Exact byte length of `Launcher.exe.old`.
+   - `version`: Version string of the retiring binary prior to swap.
+   - `time` and `recordedAt`: ISO-8601 timestamps of the update swap.
+2. **Unified Pre-Rollback Verification**:
+   Both the automatic UI watchdog (`MainForm.pas`) and headless CLI rollback paths (`Portappix.Cli.pas`) call `TPortappixUpdateManager.RollbackToOldLauncher`, which executes `VerifyOldLauncherForRollback` as its very first step prior to altering any filesystem state:
+   - **Reparse Point Guard**: `Launcher.exe.old` is checked via `IsReparsePoint`. If it is a reparse point or symbolic link, rollback is immediately aborted to prevent link-redirection attacks.
+   - **Record Validation**: `Cache\old_launcher.json` must exist, be valid JSON, and declare `schema: 1`.
+   - **Size Match**: `Launcher.exe.old` file size must exactly equal the recorded `size` property.
+   - **Cryptographic Hash Match**: The computed SHA-256 hash of `Launcher.exe.old` must match the recorded `sha256` string.
+3. **Fail-Closed Guarantees**:
+   If verification fails (missing record, corrupt JSON, size mismatch, hash mismatch, or reparse point), rollback is rejected with an explicit error. Crucially:
+   - `Launcher.exe` is left completely untouched.
+   - `Launcher.exe.old` is not renamed, moved, or deleted.
+   - No `Launcher.exe.failed_*` executable is created.
+4. **Self-Update Rotation & Swap Recovery**:
+   When sequential updates are applied (e.g. 1.0.0 -> 1.1.0 -> 1.2.0), each successful swap replaces `Cache\old_launcher.json` with the metadata of the binary being rotated into `.old`. If an update swap fails mid-flight, any previous `old_launcher.json` backed up into the rollback staging folder is safely restored. Upon successful rollback, `Cache\old_launcher.json` is cleanly removed alongside `Launcher.exe.old`.
 
 ## 10. Crash simulation support
 
