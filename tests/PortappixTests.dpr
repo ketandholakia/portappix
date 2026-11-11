@@ -5165,6 +5165,259 @@ begin
   end;
 end;
 
+procedure TestOldLauncherVerification(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  ZipPath1, ZipPath2: string;
+  Release1, Release2: TPortappixRelease;
+  LauncherExe, OldLauncherExe, RecordFile, JunctionTarget: string;
+  OldContent, NewContent, SecondNewContent: string;
+  OldHash: string;
+  JsonText, Err: string;
+  JsonObj: TJSONObject;
+  FailedBefore, FailedAfter: TArray<string>;
+  F: string;
+begin
+  // Ensure clean test directory state
+  for F in TDirectory.GetFiles(ARoot, 'Launcher.exe*') do
+    TFile.Delete(F);
+  if TDirectory.Exists(TPath.Combine(ARoot, 'Cache')) then
+    TDirectory.Delete(TPath.Combine(ARoot, 'Cache'), True);
+  ForceDirectories(TPath.Combine(ARoot, 'Cache'));
+
+  LauncherExe := TPath.Combine(ARoot, 'Launcher.exe');
+  OldLauncherExe := TPath.Combine(ARoot, 'Launcher.exe.old');
+  RecordFile := TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'old_launcher.json');
+  OldContent := 'launcher-v1-original';
+  NewContent := 'launcher-v2-updated';
+  SecondNewContent := 'launcher-v3-second-update';
+
+  TFile.WriteAllText(LauncherExe, OldContent, TEncoding.ASCII);
+  OldHash := Sha256File(LauncherExe).ToLower;
+  var OldSize: Int64 := TFile.GetSize(LauncherExe);
+
+  Manager := TPortappixUpdateManager.Create(ARoot);
+  try
+    ZipPath1 := TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'update_v2.zip');
+    BuildLauncherZip(ZipPath1, NewContent);
+    Release1 := ParseReleasesJson(ReleasesJsonFor('1.1.0', Sha256File(ZipPath1), TFile.GetSize(ZipPath1)));
+    try
+      // Apply first update
+      Manager.PrepareUpdate(ZipPath1, Release1, False);
+      Check(TFile.ReadAllText(LauncherExe) = NewContent, 'PrepareUpdate puts new launcher in place');
+      Check(TFile.ReadAllText(OldLauncherExe) = OldContent, 'PrepareUpdate preserves old launcher');
+      Check(TFile.Exists(RecordFile), 'PrepareUpdate records old_launcher.json');
+
+      // 1. Verify old_launcher.json contents
+      JsonText := TFile.ReadAllText(RecordFile, TEncoding.UTF8);
+      JsonObj := TJSONObject.ParseJSONValue(JsonText) as TJSONObject;
+      try
+        Check(JsonObj <> nil, 'old_launcher.json is valid JSON');
+        Check((JsonObj.FindValue('schema') as TJSONNumber).AsInt = 1, 'old_launcher.json schema is 1');
+        Check(SameText(JsonObj.FindValue('sha256').Value, OldHash), 'old_launcher.json records correct SHA-256');
+        Check((JsonObj.FindValue('size') as TJSONNumber).AsInt64 = OldSize, 'old_launcher.json records correct size');
+        Check(JsonObj.FindValue('version').Value = '0.0.0', 'old_launcher.json records previous version');
+      finally
+        JsonObj.Free;
+      end;
+
+      // Direct VerifyOldLauncher call reports true
+      Check(Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher succeeds on clean state');
+      Check(Err = '', 'VerifyOldLauncher returns empty error on success');
+
+      // 2. Tampered .old with different size is refused and nothing is renamed
+      TFile.WriteAllText(OldLauncherExe, 'tampered-old-launcher-longer-size', TEncoding.ASCII);
+      Check(not Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher fails on size mismatch');
+      Check(ContainsText(Err, 'size mismatch'), 'VerifyOldLauncher reports size mismatch');
+      FailedBefore := TDirectory.GetFiles(ARoot, 'Launcher.exe.failed_*');
+      ExpectException(
+        procedure
+        begin
+          Manager.RollbackToOldLauncher(False);
+        end,
+        'Rollback with size-tampered Launcher.exe.old is refused');
+      Check(TFile.ReadAllText(LauncherExe) = NewContent,
+        'Failed rollback leaves Launcher.exe untouched after size mismatch');
+      Check(TFile.ReadAllText(OldLauncherExe) = 'tampered-old-launcher-longer-size',
+        'Failed rollback leaves Launcher.exe.old untouched after size mismatch');
+      FailedAfter := TDirectory.GetFiles(ARoot, 'Launcher.exe.failed_*');
+      Check(Length(FailedBefore) = Length(FailedAfter),
+        'Failed rollback does not create a .failed_* executable after size mismatch');
+
+      // 3. Tampered .old with same size is refused and nothing is renamed
+      TFile.WriteAllText(OldLauncherExe, StringOfChar('X', OldSize), TEncoding.ASCII);
+      Check(not Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher fails on hash mismatch');
+      Check(ContainsText(Err, 'SHA-256 mismatch'), 'VerifyOldLauncher reports hash mismatch');
+      ExpectException(
+        procedure
+        begin
+          Manager.RollbackToOldLauncher(False);
+        end,
+        'Rollback with content-tampered Launcher.exe.old is refused');
+      Check(TFile.ReadAllText(LauncherExe) = NewContent,
+        'Failed rollback leaves Launcher.exe untouched after hash mismatch');
+      Check(TFile.ReadAllText(OldLauncherExe) = StringOfChar('X', OldSize),
+        'Failed rollback leaves Launcher.exe.old untouched after hash mismatch');
+      FailedAfter := TDirectory.GetFiles(ARoot, 'Launcher.exe.failed_*');
+      Check(Length(FailedBefore) = Length(FailedAfter),
+        'Failed rollback does not create a .failed_* executable after hash mismatch');
+
+      // 4. Missing record is refused and nothing is renamed
+      TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
+      TFile.Delete(RecordFile);
+      Check(not TFile.Exists(RecordFile), 'old_launcher.json removed for missing record test');
+      Check(not Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher fails when record missing');
+      Check(ContainsText(Err, 'missing'), 'VerifyOldLauncher reports record missing');
+      ExpectException(
+        procedure
+        begin
+          Manager.RollbackToOldLauncher(False);
+        end,
+        'Rollback with missing old_launcher.json is refused');
+      Check(TFile.ReadAllText(LauncherExe) = NewContent,
+        'Failed rollback leaves Launcher.exe untouched after missing record');
+      Check(TFile.ReadAllText(OldLauncherExe) = OldContent,
+        'Failed rollback leaves Launcher.exe.old untouched after missing record');
+
+      // 5. Malformed record is refused
+      WriteTextFile(RecordFile, '{ invalid json');
+      Check(not Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher fails on corrupt json');
+      ExpectException(
+        procedure
+        begin
+          Manager.RollbackToOldLauncher(False);
+        end,
+        'Rollback with corrupt JSON in old_launcher.json is refused');
+      Check(TFile.ReadAllText(LauncherExe) = NewContent,
+        'Failed rollback leaves Launcher.exe untouched after corrupt json');
+
+      // 6. Record with schema mismatch is refused
+      WriteTextFile(RecordFile, '{"schema":99,"sha256":"' + OldHash + '","size":' + IntToStr(OldSize) + '}');
+      Check(not Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher fails on schema mismatch');
+      ExpectException(
+        procedure
+        begin
+          Manager.RollbackToOldLauncher(False);
+        end,
+        'Rollback with unexpected schema in old_launcher.json is refused');
+      Check(TFile.ReadAllText(LauncherExe) = NewContent,
+        'Failed rollback leaves Launcher.exe untouched after schema mismatch');
+
+      // 7. Record with negative size is refused
+      WriteTextFile(RecordFile, '{"schema":1,"sha256":"' + OldHash + '","size":-10}');
+      Check(not Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher fails on negative size');
+      ExpectException(
+        procedure
+        begin
+          Manager.RollbackToOldLauncher(False);
+        end,
+        'Rollback with negative size in old_launcher.json is refused');
+
+      // 8. Record with invalid SHA-256 length is refused
+      WriteTextFile(RecordFile, '{"schema":1,"sha256":"tooshort","size":' + IntToStr(OldSize) + '}');
+      Check(not Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher fails on short sha256');
+      ExpectException(
+        procedure
+        begin
+          Manager.RollbackToOldLauncher(False);
+        end,
+        'Rollback with short sha256 in old_launcher.json is refused');
+
+      // 9. Record from earlier update does not validate newer .old
+      var EarlierHash := Sha256Text('earlier-version').ToLower;
+      WriteTextFile(RecordFile, '{"schema":1,"sha256":"' + EarlierHash + '","size":' + IntToStr(OldSize) + '}');
+      Check(not Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher fails on earlier hash mismatch');
+      ExpectException(
+        procedure
+        begin
+          Manager.RollbackToOldLauncher(False);
+        end,
+        'Rollback with mismatched SHA-256 from earlier record is refused');
+      Check(TFile.ReadAllText(LauncherExe) = NewContent,
+        'Failed rollback leaves Launcher.exe untouched after earlier record mismatch');
+
+      // 10. Reparse point rejection
+      TFile.Delete(OldLauncherExe);
+      JunctionTarget := TPath.Combine(ARoot, 'JunctionDir');
+      ForceDirectories(JunctionTarget);
+      CreateJunction(OldLauncherExe, JunctionTarget);
+      try
+        Check(IsReparsePoint(OldLauncherExe), 'Test junction created at OldLauncherExe');
+        Check(not Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher fails on reparse point');
+        Check(ContainsText(Err, 'reparse point'), 'VerifyOldLauncher reports reparse point error');
+        ExpectException(
+          procedure
+          begin
+            Manager.RollbackToOldLauncher(False);
+          end,
+          'Rollback with reparse point Launcher.exe.old is refused');
+        Check(TFile.ReadAllText(LauncherExe) = NewContent,
+          'Failed rollback leaves Launcher.exe untouched after reparse point check');
+      finally
+        DeleteJunction(OldLauncherExe);
+        TDirectory.Delete(JunctionTarget, True);
+      end;
+
+      // 11. Verified rollback succeeds with valid record
+      TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
+      WriteTextFile(RecordFile, '{"schema":1,"sha256":"' + OldHash + '","size":' + IntToStr(OldSize) + ',"version":"0.0.0"}');
+      Check(Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher succeeds with restored valid record');
+      Check(Manager.RollbackToOldLauncher(False), 'Rollback with valid record reports success');
+      Check(TFile.ReadAllText(LauncherExe) = OldContent, 'Verified rollback restores previous Launcher.exe');
+      Check(not TFile.Exists(OldLauncherExe), 'Verified rollback consumes Launcher.exe.old');
+      Check(not TFile.Exists(RecordFile), 'Verified rollback consumes old_launcher.json');
+      Check(Length(TDirectory.GetFiles(ARoot, 'Launcher.exe.failed_*')) = 1,
+        'Verified rollback creates a single .failed_* backup');
+    finally
+      Release1.Free;
+    end;
+
+    // 12. Self-update rotation: second update replaces old_launcher.json
+    for F in TDirectory.GetFiles(ARoot, 'Launcher.exe.failed_*') do
+      TFile.Delete(F);
+
+    ZipPath1 := TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'update_rot1.zip');
+    BuildLauncherZip(ZipPath1, NewContent);
+    Release1 := ParseReleasesJson(ReleasesJsonFor('1.1.0', Sha256File(ZipPath1), TFile.GetSize(ZipPath1)));
+    try
+      Manager.PrepareUpdate(ZipPath1, Release1, False);
+      Manager.ConfirmUpdate;
+      Check(Manager.InstalledVersion = '1.1.0', 'Update 1 installed 1.1.0');
+
+      ZipPath2 := TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'update_rot2.zip');
+      BuildLauncherZip(ZipPath2, SecondNewContent);
+      Release2 := ParseReleasesJson(ReleasesJsonFor('1.2.0', Sha256File(ZipPath2), TFile.GetSize(ZipPath2)));
+      try
+        Manager.PrepareUpdate(ZipPath2, Release2, False);
+        Check(TFile.ReadAllText(LauncherExe) = SecondNewContent, 'Update 2 puts v3 launcher in place');
+        Check(TFile.ReadAllText(OldLauncherExe) = NewContent, 'Update 2 rotates v2 into Launcher.exe.old');
+        JsonText := TFile.ReadAllText(RecordFile, TEncoding.UTF8);
+        JsonObj := TJSONObject.ParseJSONValue(JsonText) as TJSONObject;
+        try
+          Check(JsonObj <> nil, 'Rotated old_launcher.json is valid');
+          Check(SameText(JsonObj.FindValue('sha256').Value, Sha256File(OldLauncherExe).ToLower),
+            'Rotated old_launcher.json records v2 SHA-256');
+          Check(JsonObj.FindValue('version').Value = '1.1.0',
+            'Rotated old_launcher.json records version 1.1.0');
+        finally
+          JsonObj.Free;
+        end;
+
+        Check(Manager.RollbackToOldLauncher(False), 'Rollback after second update succeeds');
+        Check(TFile.ReadAllText(LauncherExe) = NewContent, 'Rollback after second update restores v2');
+        Check(not TFile.Exists(OldLauncherExe), 'Launcher.exe.old consumed after second rollback');
+        Check(not TFile.Exists(RecordFile), 'old_launcher.json consumed after second rollback');
+      finally
+        Release2.Free;
+      end;
+    finally
+      Release1.Free;
+    end;
+  finally
+    Manager.Free;
+  end;
+end;
+
 procedure TestReleaseUrlSecurity;
 var
   Cli: TPortappixCli;
@@ -5631,6 +5884,7 @@ begin
     TestVendorLinkAppInstallation(Root);
     TestSettings(Root);
     TestUpdateManager(Root);
+    TestOldLauncherVerification(Root);
     TestReleaseUrlSecurity;
     TestConsent(Root);
 {$IFDEF PORTAPPIX_TESTCRASH}

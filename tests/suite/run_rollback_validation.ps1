@@ -236,6 +236,118 @@ try {
     Assert-Condition ((Get-ExeVersion (Join-Path $WorkDir "Launcher.exe")) -eq "1.1.0.0") "Rollback restored working 1.1.0.0 launcher"
     Assert-Condition (-not (Test-Path (Join-Path $WorkDir "Launcher.exe.old"))) "Launcher.exe.old was consumed"
 
+    # =========================================================================
+    # Case 3: Update 1.1.0 -> 1.2.0, verify old_launcher.json, tamper Launcher.exe.old
+    # =========================================================================
+    Write-Host "`nCase 3: Update 1.1.0 -> 1.2.0, verify old_launcher.json, tamper Launcher.exe.old..."
+    Set-Content -Path $ActiveFeedFile -Value "releases-1.2.0.json" -NoNewline -Encoding utf8
+    $p = Start-Process -FilePath (Join-Path $WorkDir "Launcher.exe") `
+        -ArgumentList "--self-update http://127.0.0.1:$Port/releases.json --root `"$WorkDir`"" `
+        -NoNewWindow -Wait -PassThru
+    Assert-Condition ($p.ExitCode -eq 0) "Update 1.1.0 -> 1.2.0 staged"
+
+    $Elapsed = 0
+    while (-not (Test-Path $UpdateOkPath) -and ($Elapsed -lt 15)) {
+        Start-Sleep -Milliseconds 250
+        $Elapsed += 0.25
+    }
+    Assert-Condition (Test-Path $UpdateOkPath) "update_ok created confirming 1.2.0 update"
+    Assert-Condition ((Get-ExeVersion (Join-Path $WorkDir "Launcher.exe")) -eq "1.2.0.0") "Launcher is updated to 1.2.0.0"
+    Assert-Condition (Test-Path (Join-Path $WorkDir "Launcher.exe.old")) "Launcher.exe.old exists (1.1.0.0)"
+
+    # Verify old_launcher.json was recorded and contains correct metadata
+    $RecordFile = Join-Path $WorkDir "Cache\old_launcher.json"
+    Assert-Condition (Test-Path $RecordFile) "Cache\old_launcher.json created during update swap"
+    $recordJson = Get-Content $RecordFile -Raw | ConvertFrom-Json
+    $expectedOldHash = (Get-FileHash -Path (Join-Path $WorkDir "Launcher.exe.old") -Algorithm SHA256).Hash.ToLower()
+    $expectedOldSize = (Get-Item (Join-Path $WorkDir "Launcher.exe.old")).Length
+    Assert-Condition ($recordJson.schema -eq 1) "old_launcher.json schema is 1"
+    Assert-Condition ($recordJson.sha256.ToLower() -eq $expectedOldHash) "old_launcher.json matches Launcher.exe.old SHA-256"
+    Assert-Condition ($recordJson.size -eq $expectedOldSize) "old_launcher.json matches Launcher.exe.old size"
+
+    # Remove update_ok to simulate watchdog rollback state
+    Remove-Item $UpdateOkPath -Force
+    Assert-Condition (-not (Test-Path $UpdateOkPath)) "Cache\update_ok removed"
+
+    # Case 3a: Size-tampered Launcher.exe.old (appended byte)
+    Write-Host "Testing rollback refusal on size-tampered Launcher.exe.old..."
+    [System.IO.File]::AppendAllText((Join-Path $WorkDir "Launcher.exe.old"), "X")
+    $p = Start-Process -FilePath $Launcher `
+        -ArgumentList "--accept-rollback --root `"$WorkDir`"" `
+        -NoNewWindow -Wait -PassThru
+    Assert-Condition ($p.ExitCode -ne 0) "Production launcher --accept-rollback failed on size-tampered .old (exit code != 0)"
+    Assert-Condition ((Get-ExeVersion (Join-Path $WorkDir "Launcher.exe")) -eq "1.2.0.0") "Failed rollback left Launcher.exe untouched at 1.2.0.0"
+    Assert-Condition (Test-Path (Join-Path $WorkDir "Launcher.exe.old")) "Launcher.exe.old was not consumed after size mismatch"
+
+    # Case 3b: Content-tampered Launcher.exe.old (same size, modified byte)
+    Write-Host "Testing rollback refusal on content-tampered Launcher.exe.old (hash mismatch)..."
+    Copy-Item (Join-Path $FixtureDir "1.1.0\Launcher.exe") (Join-Path $WorkDir "Launcher.exe.old") -Force
+    $oldBytes = [System.IO.File]::ReadAllBytes((Join-Path $WorkDir "Launcher.exe.old"))
+    $oldBytes[128] = [byte]($oldBytes[128] -bxor 0xFF)
+    [System.IO.File]::WriteAllBytes((Join-Path $WorkDir "Launcher.exe.old"), $oldBytes)
+    $p = Start-Process -FilePath $Launcher `
+        -ArgumentList "--accept-rollback --root `"$WorkDir`"" `
+        -NoNewWindow -Wait -PassThru
+    Assert-Condition ($p.ExitCode -ne 0) "Production launcher --accept-rollback failed on content-tampered .old (exit code != 0)"
+    Assert-Condition ((Get-ExeVersion (Join-Path $WorkDir "Launcher.exe")) -eq "1.2.0.0") "Failed rollback left Launcher.exe untouched at 1.2.0.0"
+    Assert-Condition (Test-Path (Join-Path $WorkDir "Launcher.exe.old")) "Launcher.exe.old was not consumed after hash mismatch"
+
+    # =========================================================================
+    # Case 4: Missing old_launcher.json refuses rollback
+    # =========================================================================
+    Write-Host "`nCase 4: Testing rollback refusal on missing old_launcher.json..."
+    Copy-Item (Join-Path $FixtureDir "1.1.0\Launcher.exe") (Join-Path $WorkDir "Launcher.exe.old") -Force
+    Remove-Item $RecordFile -Force
+    Assert-Condition (-not (Test-Path $RecordFile)) "old_launcher.json removed"
+    $p = Start-Process -FilePath $Launcher `
+        -ArgumentList "--accept-rollback --root `"$WorkDir`"" `
+        -NoNewWindow -Wait -PassThru
+    Assert-Condition ($p.ExitCode -ne 0) "Production launcher --accept-rollback failed on missing record (exit code != 0)"
+    Assert-Condition ((Get-ExeVersion (Join-Path $WorkDir "Launcher.exe")) -eq "1.2.0.0") "Failed rollback left Launcher.exe untouched at 1.2.0.0"
+    Assert-Condition (Test-Path (Join-Path $WorkDir "Launcher.exe.old")) "Launcher.exe.old was not consumed when record was missing"
+
+    # =========================================================================
+    # Case 5: Record from earlier update does not validate newer .old
+    # =========================================================================
+    Write-Host "`nCase 5: Testing rollback refusal on mismatched record from earlier version..."
+    $earlierHash = (Get-FileHash -Path (Join-Path $FixtureDir "1.0.0\Launcher.exe") -Algorithm SHA256).Hash.ToLower()
+    $earlierRecord = @{
+        schema = 1
+        sha256 = $earlierHash
+        size = $expectedOldSize
+        version = "1.0.0"
+        time = (Get-Date -Format "o")
+        recordedAt = (Get-Date -Format "o")
+    } | ConvertTo-Json
+    Set-Content -Path $RecordFile -Value $earlierRecord -Encoding utf8
+    $p = Start-Process -FilePath $Launcher `
+        -ArgumentList "--accept-rollback --root `"$WorkDir`"" `
+        -NoNewWindow -Wait -PassThru
+    Assert-Condition ($p.ExitCode -ne 0) "Production launcher --accept-rollback failed on mismatched hash record (exit code != 0)"
+    Assert-Condition ((Get-ExeVersion (Join-Path $WorkDir "Launcher.exe")) -eq "1.2.0.0") "Failed rollback left Launcher.exe untouched at 1.2.0.0"
+    Assert-Condition (Test-Path (Join-Path $WorkDir "Launcher.exe.old")) "Launcher.exe.old was not consumed on earlier record mismatch"
+
+    # =========================================================================
+    # Case 6: Verified rollback succeeds with valid record
+    # =========================================================================
+    Write-Host "`nCase 6: Testing verified rollback success with matching authentic record..."
+    $validRecord = @{
+        schema = 1
+        sha256 = $expectedOldHash
+        size = $expectedOldSize
+        version = "1.1.0"
+        time = (Get-Date -Format "o")
+        recordedAt = (Get-Date -Format "o")
+    } | ConvertTo-Json
+    Set-Content -Path $RecordFile -Value $validRecord -Encoding utf8
+    $p = Start-Process -FilePath $Launcher `
+        -ArgumentList "--accept-rollback --root `"$WorkDir`"" `
+        -NoNewWindow -Wait -PassThru
+    Assert-Condition ($p.ExitCode -eq 0) "Production launcher --accept-rollback succeeded with matching record"
+    Assert-Condition ((Get-ExeVersion (Join-Path $WorkDir "Launcher.exe")) -eq "1.1.0.0") "Rollback restored authentic 1.1.0.0 launcher"
+    Assert-Condition (-not (Test-Path (Join-Path $WorkDir "Launcher.exe.old"))) "Launcher.exe.old was consumed"
+    Assert-Condition (-not (Test-Path $RecordFile)) "old_launcher.json was consumed on rollback"
+
     Write-Host "`n============================================================"
     Write-Host "ALL PRODUCTION ROLLBACK VALIDATION CHECKS PASSED: $Passed passed, 0 failed." -ForegroundColor Green
     Write-Host "============================================================"
