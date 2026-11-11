@@ -183,7 +183,7 @@ To determine whether `TZipFile.Read(Index, EntryStream, LocalHeader)` decompress
   - Verified: Production Win32 and Win64 binaries contain none of the 5 forbidden needles (`PORTAPPIX-TESTCRASH-BUILD-2026-11-10`, `PORTAPPIX-TESTUPDATE-BUILD-2026-11-10`, `PORTAPPIX_CRASH_AT`, `allow-insecure-release-urls`, `AllowUnsignedCatalogs`).
   - Verified: Test-mode Win32 and Win64 binaries contain expected test markers.
 - **`tests/scripts/test_signing_workflow.py`**:
-  - Result: **30 passed, 0 failed**.
+  - Result: **46 passed, 0 failed** (including 16 new package guard & public key export tests).
 - **`tests/scripts/test_icons.py`**:
   - Result: **76 passed, 0 failed**.
 - **`scripts/validate_catalog.py`**:
@@ -205,3 +205,45 @@ To determine whether `TZipFile.Read(Index, EntryStream, LocalHeader)` decompress
   - Crash harness (`run_crash_validation.ps1`): pending.
   - Compatibility suite (`run_suite.ps1`): pending.
   - Self-update validation (`run_selfupdate_validation.ps1`): pending.
+
+---
+
+## Public Key Export & Package Guard Hardening (Follow-up)
+
+### Problem
+In the previous round, `.gitattributes` was given `keys/ export-ignore` (and `.gitattributes export-ignore`). This caused `git archive` to exclude `keys/catalog_public.pem`, depriving downstream builders and verifiers of the public trust key required by `scripts/sign_catalog.py` and `scripts/validate_catalog.py`.
+
+### Remediations
+1. **`.gitattributes` Export Rules:**
+   - Removed `keys/ export-ignore` and `.gitattributes export-ignore`.
+   - Replaced with granular private material exclusion rules:
+     ```gitattributes
+     keys/*.key export-ignore
+     keys/*private* export-ignore
+     *.pfx export-ignore
+     *.p12 export-ignore
+     *.pvk export-ignore
+     ```
+   - Preserved byte-exact handling for `catalog.json`, `releases.json`, `*.sig`, and `*.pem` (`-text -eol`).
+   - Retained `.gitattributes` in source distribution archives as standard project metadata.
+2. **`scripts/package_guard.py` Hardening:**
+   - Explicitly allowed `keys/catalog_public.pem` (exact path match).
+   - In `path_findings`:
+     - Allows `keys/catalog_public.pem` and its parent directory entry `keys/`.
+     - Rejects any other entry containing or under a `keys/` directory component (`PRIVATE_KEY_DIR`).
+     - Rejects any `.pem` private key anywhere else in the archive (`PRIVATE_KEY_FILE`).
+   - In `content_findings`:
+     - Verifies `keys/catalog_public.pem` contains a valid public key marker (`-----BEGIN ... PUBLIC KEY-----`); missing marker triggers `INVALID_PUBLIC_KEY`.
+     - Scans for private key markers (`-----BEGIN ... PRIVATE KEY-----`); presence triggers `PEM_MARKER`.
+3. **Investigation into Prior Deletion of `tests/suite` and `tests/fakeapps`:**
+   - Git log and transcript analysis reveals that at the close of the Nov 10 session (commit `6087b7b`), `git status` was completely clean (`nothing to commit, working tree clean`).
+   - The working tree at the start of the Nov 11 session had 22 tracked files deleted under `tests/suite/` and `tests/fakeapps/`.
+   - Inspection of repo scripts (`tests/suite/run_suite.ps1`, `scripts/build_selfupdate_fixture.ps1`, `tests/fakeapps/build.cmd`) shows none of them delete `tests/fakeapps/src` or suite documentation during normal runs.
+   - The deletion occurred out-of-band on the host between Nov 10 20:54 and Nov 11 12:44 outside recorded agent sessions, and cannot be definitively reproduced by any script in the repository.
+4. **Independent Verification from Extracted Source Archive:**
+   - Exported `git archive --format=zip HEAD` to an external directory.
+   - Ran `package_guard.py` on the archive: **OK: contains no forbidden material**.
+   - Extracted archive into a fresh temporary folder and executed:
+     `python scripts\sign_catalog.py --catalog catalog.json --public-key keys\catalog_public.pem --verify`
+     Result: **Signature: OK (catalog.json)** (Exit code: 0).
+   - Executed `python scripts\validate_catalog.py` from the extracted folder: verified catalog signature, schema, recipe provenance, and packages.
