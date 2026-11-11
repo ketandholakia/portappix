@@ -260,6 +260,7 @@ var
   SeenEntries: TDictionary<string, Integer>;
   SeenKey: string;
   EntryStream: TStream;
+  Header: TZipHeader;
   LocalHeader: TZipHeader;
   OutStream: TFileStream;
   Buffer: array[0..65535] of Byte;
@@ -294,11 +295,24 @@ begin
 
           for var Index := 0 to Zip.FileCount - 1 do
           begin
-            EntrySize := Zip.FileInfo[Index].UncompressedSize;
+            Header := Zip.FileInfo[Index];
+            EntrySize := Header.UncompressedSize;
             if (EntrySize < 0) or (EntrySize > EntryCap) then
               raise EPortappixPackageError.CreateFmt(
                 'Zip entry "%s" declares uncompressed size of %d bytes, which exceeds the per-entry cap of %d bytes; refusing to extract.',
                 [Zip.FileNames[Index], EntrySize, EntryCap]);
+
+            // Reject compression methods other than stored (0) and deflate (8)
+            if (Header.CompressionMethod <> 0) and (Header.CompressionMethod <> 8) then
+              raise EPortappixPackageError.CreateFmt(
+                'Unsupported compression method %d in zip entry "%s"; only Stored (0) and Deflate (8) are supported.',
+                [Header.CompressionMethod, Zip.FileNames[Index]]);
+
+            // Reject stored entries where compressed size differs from uncompressed size
+            if (Header.CompressionMethod = 0) and (Header.CompressedSize <> Header.UncompressedSize) then
+              raise EPortappixPackageError.CreateFmt(
+                'Stored zip entry "%s" compressed size (%d) differs from uncompressed size (%d); package is corrupt.',
+                [Zip.FileNames[Index], Header.CompressedSize, Header.UncompressedSize]);
 
             TotalUncompressed := TotalUncompressed + EntrySize;
             if TotalUncompressed > TotalCap then
@@ -340,6 +354,16 @@ begin
             EntryStream := nil;
             Zip.Read(Index, EntryStream, LocalHeader);
             try
+              if (LocalHeader.CompressionMethod <> 0) and (LocalHeader.CompressionMethod <> 8) then
+                raise EPortappixPackageError.CreateFmt(
+                  'Unsupported compression method %d in local header of zip entry "%s"; only Stored (0) and Deflate (8) are supported.',
+                  [LocalHeader.CompressionMethod, FileName]);
+
+              if (LocalHeader.CompressionMethod = 0) and (LocalHeader.CompressedSize <> LocalHeader.UncompressedSize) then
+                raise EPortappixPackageError.CreateFmt(
+                  'Stored zip entry "%s" local compressed size (%d) differs from uncompressed size (%d); package is corrupt.',
+                  [FileName, LocalHeader.CompressedSize, LocalHeader.UncompressedSize]);
+
               if EntryStream <> nil then
               begin
                 OutStream := TFileStream.Create(DestinationPath, fmCreate);

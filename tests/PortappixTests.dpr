@@ -468,6 +468,72 @@ begin
   end;
 end;
 
+procedure TestCatalogSignatureEnforcement(const ARoot: string);
+var
+  Catalog: TPortappixCatalog;
+  CatalogFile: string;
+  SigFile: string;
+  GoodJson: string;
+begin
+  GoodJson := '{"apps":[{"id":"demo","name":"Demo","version":"1.0","category":"Utilities",' +
+    '"url":"https://example.com/demo.zip","sha256":"' + StringOfChar('a', 64) + '","size":123}]}';
+  CatalogFile := TPath.Combine(ARoot, 'enforce_catalog.json');
+  SigFile := CatalogFile + '.sig';
+
+  WriteTextFile(CatalogFile, GoodJson);
+  if TFile.Exists(SigFile) then
+    TFile.Delete(SigFile);
+
+  Catalog := TPortappixCatalog.Create;
+  try
+{$IFDEF PORTAPPIX_TESTUPDATE}
+    // 1. In test-update build, unsigned catalog fails by default (AllowUnsignedCatalogs is False)
+    AllowUnsignedCatalogs := False;
+    ExpectException(
+      procedure
+      begin
+        Catalog.LoadFromFile(CatalogFile);
+      end,
+      'Test-update build rejects unsigned catalog by default');
+
+    // 2. Only test-update build can opt into unsigned catalogs via AllowUnsignedCatalogs
+    AllowUnsignedCatalogs := True;
+    Catalog.LoadFromFile(CatalogFile);
+    Check(Catalog.Apps.Count = 1, 'Test-update build loads unsigned catalog when AllowUnsignedCatalogs is true');
+    AllowUnsignedCatalogs := False;
+{$ELSE}
+    // In release configuration, unsigned catalog always fails to load
+    ExpectException(
+      procedure
+      begin
+        Catalog.LoadFromFile(CatalogFile);
+      end,
+      'Release build rejects unsigned catalog without .sig');
+{$ENDIF}
+
+    // 3. A catalog with an invalid .sig fails in both configurations
+    WriteTextFile(SigFile, 'invalid-signature-bytes');
+{$IFDEF PORTAPPIX_TESTUPDATE}
+    AllowUnsignedCatalogs := True; // Even if dev flag is enabled, invalid signature must still be rejected
+{$ENDIF}
+    ExpectException(
+      procedure
+      begin
+        Catalog.LoadFromFile(CatalogFile);
+      end,
+      'Catalog with invalid .sig fails to load');
+{$IFDEF PORTAPPIX_TESTUPDATE}
+    AllowUnsignedCatalogs := False;
+{$ENDIF}
+  finally
+    Catalog.Free;
+    if TFile.Exists(SigFile) then
+      TFile.Delete(SigFile);
+    if TFile.Exists(CatalogFile) then
+      TFile.Delete(CatalogFile);
+  end;
+end;
+
 procedure TestZipExtraction(const ARoot: string);
 var
   SourceFile: string;
@@ -616,6 +682,62 @@ begin
   end;
 end;
 
+procedure PatchZipCompressionMethod(const AZipPath: string; const AMethod: Word);
+var
+  Stream: TFileStream;
+  Sig: Cardinal;
+begin
+  Stream := TFileStream.Create(AZipPath, fmOpenReadWrite);
+  try
+    while Stream.Position <= Stream.Size - 4 do
+    begin
+      Stream.ReadBuffer(Sig, 4);
+      if Sig = $04034B50 then // Local file header PK#3#4
+      begin
+        Stream.Seek(4, soCurrent); // skip to compression method (offset 8)
+        Stream.WriteBuffer(AMethod, 2);
+      end
+      else if Sig = $02014B50 then // Central directory file header PK#1#2
+      begin
+        Stream.Seek(6, soCurrent); // skip to compression method (offset 10)
+        Stream.WriteBuffer(AMethod, 2);
+      end
+      else
+        Stream.Seek(-3, soCurrent);
+    end;
+  finally
+    Stream.Free;
+  end;
+end;
+
+procedure PatchZipCompressedSize(const AZipPath: string; const ANewSize: Cardinal);
+var
+  Stream: TFileStream;
+  Sig: Cardinal;
+begin
+  Stream := TFileStream.Create(AZipPath, fmOpenReadWrite);
+  try
+    while Stream.Position <= Stream.Size - 4 do
+    begin
+      Stream.ReadBuffer(Sig, 4);
+      if Sig = $04034B50 then // Local file header PK#3#4
+      begin
+        Stream.Seek(14, soCurrent); // skip to compressed size (offset 18)
+        Stream.WriteBuffer(ANewSize, 4);
+      end
+      else if Sig = $02014B50 then // Central directory file header PK#1#2
+      begin
+        Stream.Seek(16, soCurrent); // skip to compressed size (offset 20)
+        Stream.WriteBuffer(ANewSize, 4);
+      end
+      else
+        Stream.Seek(-3, soCurrent);
+    end;
+  finally
+    Stream.Free;
+  end;
+end;
+
 procedure TestZipBombAndHardening(const ARoot: string);
 var
   SourceFile: string;
@@ -743,6 +865,61 @@ begin
       'Extraction fails when actual uncompressed bytes differ from declared size');
     Check(not TDirectory.Exists(DestDir),
       'Corrupt size mismatch leaves no partial files');
+  finally
+    Manager.Free;
+  end;
+
+  // 5. Unsupported compression method rejection (only Stored 0 and Deflate 8 allowed)
+  var UnsupportedZip := TPath.Combine(ARoot, 'unsupported_method.zip');
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(UnsupportedZip, TZipMode.zmWrite);
+    Zip.Add(SourceFile, 'unsupported.txt');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+  PatchZipCompressionMethod(UnsupportedZip, 9); // Deflate64 (unsupported)
+
+  DestDir := TPath.Combine(ARoot, 'dest-unsupported');
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    ExpectException(
+      procedure
+      begin
+        Manager.ExtractArchive(UnsupportedZip, DestDir);
+      end,
+      'Extraction fails on unsupported compression method');
+    Check(not TDirectory.Exists(DestDir),
+      'Unsupported compression method leaves no partial destination folder');
+  finally
+    Manager.Free;
+  end;
+
+  // 6. Stored entry with mismatched compressed size rejection
+  var StoredMismatchZip := TPath.Combine(ARoot, 'stored_mismatch.zip');
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(StoredMismatchZip, TZipMode.zmWrite);
+    Zip.Add(SourceFile, 'stored_bad.txt');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+  // Mark entry as Stored (method 0), but compressed size remains the deflated size (< uncompressed size)
+  PatchZipCompressionMethod(StoredMismatchZip, 0);
+
+  DestDir := TPath.Combine(ARoot, 'dest-stored-mismatch');
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    ExpectException(
+      procedure
+      begin
+        Manager.ExtractArchive(StoredMismatchZip, DestDir);
+      end,
+      'Extraction fails for stored entry whose compressed size differs from uncompressed size');
+    Check(not TDirectory.Exists(DestDir),
+      'Stored entry mismatch leaves no partial destination folder');
   finally
     Manager.Free;
   end;
@@ -4550,6 +4727,29 @@ begin
         BadRelease.Free;
       end;
 
+      // A package with lying declared size is rejected and leaves no partial files
+      var LieZipPath := TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'update_lying.zip');
+      BuildLauncherZip(LieZipPath, 'new-launcher-lying-payload-bytes');
+      PatchZipUncompressedSize(LieZipPath, 5); // Declare 5 bytes, actual is much larger
+      var LieRelease := ParseReleasesJson(ReleasesJsonFor('1.3.0',
+        Sha256File(LieZipPath), TFile.GetSize(LieZipPath)));
+      try
+        ExpectException(
+          procedure
+          begin
+            Manager.PrepareUpdate(LieZipPath, LieRelease, False);
+          end,
+          'PrepareUpdate rejects a launcher package with lying uncompressed size');
+        Check(TFile.ReadAllText(TPath.Combine(ARoot, 'Launcher.exe')) = 'old-launcher',
+          'PrepareUpdate with lying size leaves existing Launcher.exe untouched');
+        Check(not TDirectory.Exists(TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'new')),
+          'PrepareUpdate cleans up temporary extraction folder on lying size error');
+      finally
+        LieRelease.Free;
+        if TFile.Exists(LieZipPath) then
+          TFile.Delete(LieZipPath);
+      end;
+
       BuildLauncherZip(ZipPath, 'new-launcher');
       Manager.PrepareUpdate(ZipPath, Release, False);
       Check(TFile.ReadAllText(TPath.Combine(ARoot, 'Launcher.exe')) = 'new-launcher',
@@ -5027,6 +5227,7 @@ begin
     TestManifestParsing(Root);
     TestPolicy;
     TestCatalog(Root);
+    TestCatalogSignatureEnforcement(Root);
     TestZipExtraction(Root);
     TestZipBombAndHardening(Root);
     TestHashing;
