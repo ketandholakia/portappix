@@ -1024,9 +1024,16 @@ begin
       end;
     end;
 
-    Manager.RollbackToOldLauncher;
-    // The previous launcher was started; this (failing) process exits.
-    Halt(0);
+    try
+      Manager.RollbackToOldLauncher;
+      // The previous launcher was started; this (failing) process exits.
+      Halt(0);
+    except
+      on E: Exception do
+      begin
+        QueueStatus('Rollback failed: ' + E.Message);
+      end;
+    end;
   finally
     Manager.Free;
   end;

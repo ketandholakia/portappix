@@ -55,6 +55,7 @@ uses
   System.Generics.Collections,
   Portappix.Common,
   Portappix.Catalog,
+  Portappix.Junction,
   Portappix.PackageManager,
   Portappix.Process,
   Portappix.Signature,
@@ -62,6 +63,7 @@ uses
 
 const
   ReleaseSchemaVersion = 1;
+  OldLauncherRecordSchemaVersion = 1;
 
 {$IFDEF PORTAPPIX_TESTUPDATE}
 var
@@ -117,13 +119,17 @@ type
     function ReadPendingVersion: string;
     procedure RemoveFileQuiet(const AFileName: string);
     procedure SpawnNewLauncher(const AArguments: string);
+    procedure RecordOldLauncher(const AOldExePath, AOldVersion: string);
   public
     constructor Create(const ARootPath: string = '');
+    function OldLauncherRecordFile: string;
     function InstalledVersion: string;
     procedure SetInstalledVersion(const AVersion: string);
     function PendingUpdateVersion: string;
     function IsUpdateAvailable(const ARelease: TPortappixRelease): Boolean;
     function NeedsRollbackOffer: Boolean;
+    function VerifyOldLauncher(out AError: string): Boolean;
+    procedure VerifyOldLauncherForRollback;
     procedure PrepareUpdate(const AZipFile: string; const ARelease: TPortappixRelease;
       const ALaunchNewExe: Boolean = True);
     procedure ApplyUpdateFromUrl(const AUrl: string);
@@ -346,6 +352,152 @@ end;
 function TPortappixUpdateManager.OkFile: string;
 begin
   Result := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), 'update_ok');
+end;
+
+function TPortappixUpdateManager.OldLauncherRecordFile: string;
+begin
+  Result := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), 'old_launcher.json');
+end;
+
+procedure TPortappixUpdateManager.RecordOldLauncher(const AOldExePath,
+  AOldVersion: string);
+var
+  RecordObj: TJSONObject;
+  OldSha256: string;
+  OldSize: Int64;
+  NowIso: string;
+begin
+  OldSha256 := Sha256File(AOldExePath).ToLower;
+  OldSize := TFile.GetSize(AOldExePath);
+  NowIso := DateToISO8601(Now);
+
+  RecordObj := TJSONObject.Create;
+  try
+    RecordObj.AddPair('schema', TJSONNumber.Create(OldLauncherRecordSchemaVersion));
+    RecordObj.AddPair('sha256', OldSha256);
+    RecordObj.AddPair('size', TJSONNumber.Create(OldSize));
+    RecordObj.AddPair('version', AOldVersion);
+    RecordObj.AddPair('time', NowIso);
+    RecordObj.AddPair('recordedAt', NowIso);
+    ForceDirectories(TPath.GetDirectoryName(OldLauncherRecordFile));
+    if not WriteTextFileAtomic(OldLauncherRecordFile, RecordObj.Format(2)) then
+      raise EPortappixUpdateError.Create('Unable to write old_launcher.json.');
+  finally
+    RecordObj.Free;
+  end;
+end;
+
+function TPortappixUpdateManager.VerifyOldLauncher(out AError: string): Boolean;
+var
+  JsonText: string;
+  JsonValue: TJSONValue;
+  Root: TJSONObject;
+  SchemaVal, ShaVal, SizeVal: TJSONValue;
+  ExpectedSha256, ActualSha256: string;
+  ExpectedSize, ActualSize: Int64;
+begin
+  AError := '';
+  if IsReparsePoint(OldLauncherExe) then
+  begin
+    AError := Format('Refusing rollback: "%s" is a reparse point or symbolic link.',
+      [TPath.GetFileName(OldLauncherExe)]);
+    Exit(False);
+  end;
+
+  if not TFile.Exists(OldLauncherExe) then
+  begin
+    AError := 'No Launcher.exe.old exists to restore.';
+    Exit(False);
+  end;
+
+  if not TFile.Exists(OldLauncherRecordFile) then
+  begin
+    AError := Format(
+      'Refusing rollback: rollback verification record ("%s") is missing.',
+      [TPath.GetFileName(OldLauncherRecordFile)]);
+    Exit(False);
+  end;
+
+  try
+    JsonText := TFile.ReadAllText(OldLauncherRecordFile, TEncoding.UTF8);
+  except
+    on E: Exception do
+    begin
+      AError := Format('Refusing rollback: unable to read "%s": %s',
+        [TPath.GetFileName(OldLauncherRecordFile), E.Message]);
+      Exit(False);
+    end;
+  end;
+
+  JsonValue := TJSONObject.ParseJSONValue(JsonText);
+  if (JsonValue = nil) or not (JsonValue is TJSONObject) then
+  begin
+    if JsonValue <> nil then
+      JsonValue.Free;
+    AError := 'Refusing rollback: rollback verification record is malformed (not a JSON object).';
+    Exit(False);
+  end;
+
+  Root := TJSONObject(JsonValue);
+  try
+    SchemaVal := Root.FindValue('schema');
+    if (SchemaVal = nil) or not (SchemaVal is TJSONNumber) or
+       (TJSONNumber(SchemaVal).AsInt <> OldLauncherRecordSchemaVersion) then
+    begin
+      AError := 'Refusing rollback: rollback verification record has missing or unsupported schema.';
+      Exit(False);
+    end;
+
+    ShaVal := Root.FindValue('sha256');
+    if (ShaVal = nil) or not (ShaVal is TJSONString) or
+       (Length(TJSONString(ShaVal).Value.Trim) <> 64) then
+    begin
+      AError := 'Refusing rollback: rollback verification record has missing or invalid sha256.';
+      Exit(False);
+    end;
+    ExpectedSha256 := TJSONString(ShaVal).Value.Trim.ToLower;
+
+    SizeVal := Root.FindValue('size');
+    if (SizeVal = nil) or not (SizeVal is TJSONNumber) then
+    begin
+      AError := 'Refusing rollback: rollback verification record has missing or invalid size.';
+      Exit(False);
+    end;
+    ExpectedSize := TJSONNumber(SizeVal).AsInt64;
+    if ExpectedSize < 0 then
+    begin
+      AError := 'Refusing rollback: rollback verification record specifies a negative size.';
+      Exit(False);
+    end;
+
+    ActualSize := TFile.GetSize(OldLauncherExe);
+    if ActualSize <> ExpectedSize then
+    begin
+      AError := Format('Refusing rollback: "%s" size mismatch (expected %d bytes, got %d bytes).',
+        [TPath.GetFileName(OldLauncherExe), ExpectedSize, ActualSize]);
+      Exit(False);
+    end;
+
+    ActualSha256 := Sha256File(OldLauncherExe).ToLower;
+    if not SameText(ActualSha256, ExpectedSha256) then
+    begin
+      AError := Format('Refusing rollback: "%s" SHA-256 mismatch (expected %s, got %s).',
+        [TPath.GetFileName(OldLauncherExe), ExpectedSha256, ActualSha256]);
+      Exit(False);
+    end;
+  finally
+    Root.Free;
+  end;
+
+  Result := True;
+end;
+
+procedure TPortappixUpdateManager.VerifyOldLauncherForRollback;
+var
+  ErrorMsg: string;
+begin
+  if not VerifyOldLauncher(ErrorMsg) then
+    raise EPortappixUpdateError.Create(ErrorMsg);
 end;
 
 function TPortappixUpdateManager.VersionFile: string;
@@ -595,13 +747,21 @@ begin
         TFile.Copy(ExistingTarget, TPath.Combine(RollbackDir, BaseName), True);
     end;
 
+    // All-or-nothing swap. Back up any existing root files that would be replaced.
+    if TFile.Exists(OldLauncherRecordFile) then
+      TFile.Copy(OldLauncherRecordFile, TPath.Combine(RollbackDir, 'old_launcher.json'), True);
+
     // Swap. Renaming a running executable is allowed on Windows.
+    var OldVersionBeforeSwap := InstalledVersion;
     if TFile.Exists(OldLauncherExe) then
       RemoveFileQuiet(OldLauncherExe);
     if not RenameFile(LauncherExe, OldLauncherExe) then
       raise EPortappixUpdateError.CreateFmt(
         'Unable to move the running launcher to "%s": %s',
         [OldLauncherExe, SysErrorMessage(Integer(GetLastError))]);
+
+    // Record the saved old launcher's SHA-256 and size atomically
+    RecordOldLauncher(OldLauncherExe, OldVersionBeforeSwap);
 
     try
       if not RenameFile(NewExe, LauncherExe) then
@@ -634,6 +794,10 @@ begin
         RemoveFileQuiet(LauncherExe);
       if TFile.Exists(OldLauncherExe) then
         RenameFile(OldLauncherExe, LauncherExe);
+      if TFile.Exists(OldLauncherRecordFile) then
+        RemoveFileQuiet(OldLauncherRecordFile);
+      if TFile.Exists(TPath.Combine(RollbackDir, 'old_launcher.json')) then
+        TFile.Move(TPath.Combine(RollbackDir, 'old_launcher.json'), OldLauncherRecordFile);
       Log('Update swap failed; all files rolled back and previous launcher was restored.');
       raise;
     end;
@@ -730,8 +894,7 @@ function TPortappixUpdateManager.RollbackToOldLauncher(
 var
   StaleExe: string;
 begin
-  if not TFile.Exists(OldLauncherExe) then
-    raise EPortappixUpdateError.Create('No Launcher.exe.old exists to restore.');
+  VerifyOldLauncherForRollback;
 
   Log('Restoring the previous launcher version...');
   StaleExe := Format('%s.failed_%s', [LauncherExe,
@@ -755,6 +918,7 @@ begin
 
   RemoveFileQuiet(OkFile);
   RemoveFileQuiet(PendingFile);
+  RemoveFileQuiet(OldLauncherRecordFile);
   Log('Previous launcher restored. The failed build stays next to it as ' +
     LauncherFileName + '.failed_* and can be deleted.');
 
