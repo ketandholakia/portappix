@@ -887,51 +887,88 @@ var
   JsonVal: TJSONValue;
   JsonArr: TJSONArray;
   ItemObj: TJSONObject;
+  FieldValue: TJSONValue;
   List: TList<TPortappixReviewItem>;
   Item: TPortappixReviewItem;
   I: Integer;
 begin
   SetLength(Result, 0);
   FilePath := ReviewFilePath;
+  // A missing review file is the normal empty state (fresh installation or
+  // no unowned junction ever recorded), not an error.
   if not TFile.Exists(FilePath) then
     Exit;
 
   FSync.Enter;
   try
+    // Fail closed: any problem reading or interpreting the review file must
+    // raise. Degrading to an empty list would silently unblock applications
+    // that require manual review and report a clean status.
+    Content := TFile.ReadAllText(FilePath, TEncoding.UTF8);
+    JsonVal := TJSONObject.ParseJSONValue(Content);
+    if JsonVal = nil then
+      raise EPortappixStateError.CreateFmt(
+        'The review file "%s" is malformed JSON; refusing to treat it as an empty review list.',
+        [FilePath]);
     try
-      Content := TFile.ReadAllText(FilePath, TEncoding.UTF8);
-      JsonVal := TJSONObject.ParseJSONValue(Content);
-      if JsonVal = nil then
-        Exit;
+      if not (JsonVal is TJSONArray) then
+        raise EPortappixStateError.CreateFmt(
+          'The review file "%s" must contain a JSON array; refusing to treat it as an empty review list.',
+          [FilePath]);
+      JsonArr := TJSONArray(JsonVal);
+      List := TList<TPortappixReviewItem>.Create;
       try
-        if not (JsonVal is TJSONArray) then
-          Exit;
-        JsonArr := TJSONArray(JsonVal);
-        List := TList<TPortappixReviewItem>.Create;
-        try
-          for I := 0 to JsonArr.Count - 1 do
+        for I := 0 to JsonArr.Count - 1 do
+        begin
+          if not (JsonArr.Items[I] is TJSONObject) then
+            raise EPortappixStateError.CreateFmt(
+              'The review file "%s" contains a non-object entry at index %d.',
+              [FilePath, I]);
+          ItemObj := TJSONObject(JsonArr.Items[I]);
+
+          // Required identity fields must be present, typed and non-empty.
+          // NOTE: TJSONNumber inherits from TJSONString in the Delphi RTL,
+          // so plain `is TJSONString` would accept numeric values.
+          for var RequiredField in TArray<string>.Create('appId', 'junctionPath', 'target') do
           begin
-            if JsonArr.Items[I] is TJSONObject then
-            begin
-              ItemObj := TJSONObject(JsonArr.Items[I]);
-              Item.AppId := ItemObj.GetValue<string>('appId', '');
-              Item.JunctionPath := ItemObj.GetValue<string>('junctionPath', '');
-              Item.Target := ItemObj.GetValue<string>('target', '');
-              Item.Time := ItemObj.GetValue<string>('time', '');
-              Item.Reason := ItemObj.GetValue<string>('reason', '');
-              List.Add(Item);
-            end;
+            FieldValue := ItemObj.FindValue(RequiredField);
+            if (FieldValue = nil) or (not (FieldValue is TJSONString)) or
+               (FieldValue is TJSONNumber) or
+               (TJSONString(FieldValue).Value = '') then
+              raise EPortappixStateError.CreateFmt(
+                'The review file "%s" entry at index %d has a missing or invalid "%s".',
+                [FilePath, I, RequiredField]);
           end;
-          Result := List.ToArray;
-        finally
-          List.Free;
+          // Optional descriptive fields must be strings when present.
+          for var OptionalField in TArray<string>.Create('time', 'reason') do
+          begin
+            FieldValue := ItemObj.FindValue(OptionalField);
+            if (FieldValue <> nil) and
+               ((not (FieldValue is TJSONString)) or (FieldValue is TJSONNumber)) then
+              raise EPortappixStateError.CreateFmt(
+                'The review file "%s" entry at index %d has an invalid "%s".',
+                [FilePath, I, OptionalField]);
+          end;
+
+          Item.AppId := TJSONString(ItemObj.FindValue('appId')).Value;
+          Item.JunctionPath := TJSONString(ItemObj.FindValue('junctionPath')).Value;
+          Item.Target := TJSONString(ItemObj.FindValue('target')).Value;
+          if ItemObj.FindValue('time') <> nil then
+            Item.Time := TJSONString(ItemObj.FindValue('time')).Value
+          else
+            Item.Time := '';
+          if ItemObj.FindValue('reason') <> nil then
+            Item.Reason := TJSONString(ItemObj.FindValue('reason')).Value
+          else
+            Item.Reason := '';
+          List.Add(Item);
         end;
+        Result := List.ToArray;
       finally
-        JsonVal.Free;
+        List.Free;
       end;
-    except
-      on E: Exception do
-        Log('Error reading review file: ' + E.Message);
+    finally
+      JsonVal.Free;
     end;
   finally
     FSync.Leave;
@@ -997,7 +1034,12 @@ begin
 
       ForceDirectories(FTransactionsDir);
       FilePath := ReviewFilePath;
-      WriteTextFileAtomic(FilePath, JsonArr.Format(2));
+      // Fail closed: a failed persistence must raise so the caller knows the
+      // unowned junction was NOT recorded and the app is not blocked yet.
+      if not WriteTextFileDurable(FilePath, JsonArr.Format(2)) then
+        raise EPortappixStateError.CreateFmt(
+          'Unable to persist the review file "%s" for app "%s"; the unowned ' +
+          'junction was NOT recorded.', [FilePath, AAppId]);
       Log(Format('Recorded unowned junction for app "%s" at "%s" in needs_review.json.',
         [AAppId, AJunctionPath]));
     finally
@@ -1026,7 +1068,17 @@ begin
   Result := False;
   FSync.Enter;
   try
-    Items := ListReviewItems;
+    // Fail closed on an unreadable/corrupt review file: report the error
+    // instead of treating the review list as empty.
+    try
+      Items := ListReviewItems;
+    except
+      on E: Exception do
+      begin
+        AError := Format('Unable to read the review state: %s', [E.Message]);
+        Exit(False);
+      end;
+    end;
     Matching := TList<TPortappixReviewItem>.Create;
     Remaining := TList<TPortappixReviewItem>.Create;
     try
@@ -1087,12 +1139,22 @@ begin
         end;
       end;
 
-      // Update needs_review.json
+      // Update needs_review.json. Fail closed: on any persistence problem
+      // the review entries must survive so the review state stays accurate.
       FilePath := ReviewFilePath;
       if Remaining.Count = 0 then
       begin
         if TFile.Exists(FilePath) then
-          TFile.Delete(FilePath);
+          try
+            TFile.Delete(FilePath);
+          except
+            on E: Exception do
+            begin
+              AError := Format('Unable to delete the review file "%s": %s',
+                [FilePath, E.Message]);
+              Exit(False);
+            end;
+          end;
       end
       else
       begin
@@ -1108,7 +1170,12 @@ begin
             ItemObj.AddPair('reason', Item.Reason);
             JsonArr.AddElement(ItemObj);
           end;
-          WriteTextFileAtomic(FilePath, JsonArr.Format(2));
+          if not WriteTextFileDurable(FilePath, JsonArr.Format(2)) then
+          begin
+            AError := Format('Unable to persist the updated review file "%s"; ' +
+              'the review entries were kept.', [FilePath]);
+            Exit(False);
+          end;
         finally
           JsonArr.Free;
         end;

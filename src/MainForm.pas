@@ -160,10 +160,17 @@ begin
   InitializeRuntime;      // includes TPortappixJournal.RecoverPendingCleanups (boot)
   if FJournal <> nil then
   begin
-    var ReviewItems := FJournal.ListReviewItems;
-    if Length(ReviewItems) > 0 then
-      QueueStatus(Format('WARNING: %d unowned junction(s) require manual review (see --status).',
-        [Length(ReviewItems)]));
+    // Fail closed: an unreadable or corrupt review state is surfaced as a
+    // warning, never silently treated as an empty review list.
+    try
+      var ReviewItems := FJournal.ListReviewItems;
+      if Length(ReviewItems) > 0 then
+        QueueStatus(Format('WARNING: %d unowned junction(s) require manual review (see --status).',
+          [Length(ReviewItems)]));
+    except
+      on E: EPortappixStateError do
+        QueueStatus('WARNING: the review state is unreadable: ' + E.Message);
+    end;
   end;
   InitializeTray;
   LoadInstalledApps;

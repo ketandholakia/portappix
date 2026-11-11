@@ -430,20 +430,34 @@ begin
         end;
 
       var ReviewItem: TPortappixReviewItem;
-      if Journal.HasReviewItem(AppId, ReviewItem) then
-      begin
-        var ReviewMsg := Format(
-          'Application "%s" requires manual review before it can run.' + sLineBreak +
-          'Unowned junction: "%s" -> "%s"' + sLineBreak +
-          'Recorded at: %s' + sLineBreak +
-          'Reason: %s' + sLineBreak +
-          'Action required: Verify the folder, delete it by hand, or run:' + sLineBreak +
-          '  Launcher.exe --clear-review %s [--delete-unowned-junction] [--force]',
-          [AppId, ReviewItem.JunctionPath, ReviewItem.Target, ReviewItem.Time,
-           ReviewItem.Reason, AppId]);
-        Log(ReviewMsg);
-        WriteExitCodeFile(CliExitNeedsReview, AppId, ReviewMsg);
-        Exit(CliExitNeedsReview);
+      try
+        if Journal.HasReviewItem(AppId, ReviewItem) then
+        begin
+          var ReviewMsg := Format(
+            'Application "%s" requires manual review before it can run.' + sLineBreak +
+            'Unowned junction: "%s" -> "%s"' + sLineBreak +
+            'Recorded at: %s' + sLineBreak +
+            'Reason: %s' + sLineBreak +
+            'Action required: Verify the folder, delete it by hand, or run:' + sLineBreak +
+            '  Launcher.exe --clear-review %s [--delete-unowned-junction] [--force]',
+            [AppId, ReviewItem.JunctionPath, ReviewItem.Target, ReviewItem.Time,
+             ReviewItem.Reason, AppId]);
+          Log(ReviewMsg);
+          WriteExitCodeFile(CliExitNeedsReview, AppId, ReviewMsg);
+          Exit(CliExitNeedsReview);
+        end;
+      except
+        // Fail closed: an unreadable review state must refuse the run with
+        // the needs-review contract instead of crashing or running blind.
+        on E: EPortappixStateError do
+        begin
+          var UnreadableMsg := Format(
+            'Application "%s" cannot be started: the review state is unreadable. %s',
+            [AppId, E.Message]);
+          Log(UnreadableMsg);
+          WriteExitCodeFile(CliExitNeedsReview, AppId, UnreadableMsg);
+          Exit(CliExitNeedsReview);
+        end;
       end;
 
       Consent := TPortappixConsent.Create(FRootPath);
@@ -962,7 +976,19 @@ var
 begin
   Journal := TPortappixJournal.Create(FRootPath);
   try
-    Items := Journal.ListReviewItems;
+    // Fail closed: an unreadable or corrupt review state must never be
+    // reported as "Clean".
+    try
+      Items := Journal.ListReviewItems;
+    except
+      on E: EPortappixStateError do
+      begin
+        Msg := 'Status: REVIEW STATE UNREADABLE. ' + E.Message;
+        Log(Msg);
+        WriteExitCodeFile(CliExitNeedsReview, '', Msg);
+        Exit(CliExitNeedsReview);
+      end;
+    end;
     if Length(Items) = 0 then
     begin
       Msg := 'Status: Clean. No unowned junctions require review.';
