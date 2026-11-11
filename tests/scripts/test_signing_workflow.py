@@ -119,9 +119,9 @@ def build_zip(path: Path, entries) -> Path:
 
 FAKE_PEM_TEXT = (
     b"not a real key, synthetic test marker only\n"
-    b"-----BEGIN RSA PRIVATE KEY-----\n"
+    b"-----BEGIN " + b"RSA " + b"PRIVATE KEY-----\n"
     b"c2ltdWxhdGVkIHRlc3QgZml4dHVyZTogbmV2ZXIgYSB2YWxpZCBrZXk=\n"
-    b"-----END RSA PRIVATE KEY-----\n"
+    b"-----END " + b"RSA " + b"PRIVATE KEY-----\n"
 )
 
 

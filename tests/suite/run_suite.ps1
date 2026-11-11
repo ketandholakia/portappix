@@ -78,7 +78,9 @@ $Results = (Resolve-Path $Results).Path
 if (-not $Root) { $Root = Join-Path $Results 'root' }
 $RootFull = [System.IO.Path]::GetFullPath($Root)
 foreach ($forbidden in @($env:USERPROFILE, $env:SystemRoot, $env:APPDATA,
-                         $env:LOCALAPPDATA, $env:ProgramData, $RepoDir)) {
+                         $env:LOCALAPPDATA, $env:ProgramData, $RepoDir,
+                         $SuiteDir, (Join-Path $RepoDir 'tests'), (Join-Path $RepoDir 'tests\suite'),
+                         (Join-Path $RepoDir 'tests\fakeapps'), (Join-Path $RepoDir 'src'))) {
     if ($forbidden -and ($RootFull.TrimEnd('\') -eq $forbidden.TrimEnd('\'))) {
         throw "Refusing to use '$RootFull' as the launcher root (protected location)."
     }

@@ -21,6 +21,14 @@ if ([string]::IsNullOrWhiteSpace($StagingDir)) {
 }
 $StagingDir = [System.IO.Path]::GetFullPath($StagingDir)
 
+# Safety check: ensure $StagingDir is not repo root or a critical tracked folder
+$ForbiddenStaging = @($RepoRoot, (Join-Path $RepoRoot "tests"), (Join-Path $RepoRoot "tests\suite"), (Join-Path $RepoRoot "tests\fakeapps"), (Join-Path $RepoRoot "src"))
+foreach ($forbidden in $ForbiddenStaging) {
+    if ($StagingDir.TrimEnd('\') -eq $forbidden.TrimEnd('\')) {
+        throw "Refusing to use '$StagingDir' as staging directory: protected repository directory."
+    }
+}
+
 Write-Host "Self-update fixture builder"
 Write-Host "  Repo root   : $RepoRoot"
 Write-Host "  Staging dir : $StagingDir"

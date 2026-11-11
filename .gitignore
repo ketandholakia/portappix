@@ -3,6 +3,7 @@ __history/
 __recovery/
 *.dcu
 *.exe
+tests/*.exe
 *.dll
 *.bpl
 *.dcp
@@ -21,11 +22,14 @@ Win32/
 Win64/
 Debug/
 Release/
+bin/
 
 # Portappix runtime data
 Cache/
 Data/
 Apps/
+src/Apps/
+src/Cache/
 Transactions/
 run_state.json
 run_state.json.tmp
@@ -55,12 +59,16 @@ secrets.yaml
 secrets.yml
 credentials.json
 
-# Local release artifacts
+# Local release artifacts and test fixture output
 portappix.zip
 dist/
-bin/selfupdate/
-tests/suite/fixtures/selfupdate/
+tests/suite/fixtures/
 src/LauncherVersion.rc
+src/LauncherVersion.res
+
+# Tooling and IDE caches
+.commandcode/
+!.commandcode/taste/taste.md
 
 # Python
 __pycache__/
