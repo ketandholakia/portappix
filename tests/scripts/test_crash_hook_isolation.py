@@ -52,6 +52,7 @@ from make_release import (  # noqa: E402
     CRASH_ENV_VAR,
     TESTCRASH_MARKER,
     TESTUPDATE_MARKER,
+    INSECURE_RELEASE_URLS_SWITCH,
     launcher_forbidden_material,
 )
 
@@ -221,7 +222,7 @@ def main(argv: list[str] | None = None) -> int:
         if path is None or not path.is_file():
             continue
         data = path.read_bytes()
-        for needle in (TESTCRASH_MARKER, CRASH_ENV_VAR):
+        for needle in (TESTCRASH_MARKER, TESTUPDATE_MARKER, CRASH_ENV_VAR, INSECURE_RELEASE_URLS_SWITCH):
             check(not contains_bytes(data, needle),
                   f"{label} launcher contains neither {needle} nor "
                   f"the test marker" if needle == CRASH_ENV_VAR else
@@ -302,6 +303,18 @@ def main(argv: list[str] | None = None) -> int:
             CRASH_ENV_VAR.encode("utf-8") + b"MZ" + bytes(128))
         check(launcher_forbidden_material(envstr) != [],
               "guard rejects a launcher carrying PORTAPPIX_CRASH_AT")
+
+        insecure_str = staging / "LauncherInsecure"
+        insecure_str.write_bytes(
+            INSECURE_RELEASE_URLS_SWITCH.encode("utf-8") + b"MZ" + bytes(128))
+        check(launcher_forbidden_material(insecure_str) != [],
+              "guard rejects a launcher carrying allow-insecure-release-urls")
+
+        insecure_str16 = staging / "LauncherInsecure16"
+        insecure_str16.write_bytes(
+            INSECURE_RELEASE_URLS_SWITCH.encode("utf-16-le") + b"MZ" + bytes(128))
+        check(launcher_forbidden_material(insecure_str16) != [],
+              "guard rejects a launcher carrying allow-insecure-release-urls (utf-16-le)")
 
         both = staging / "LauncherBoth"
         both.write_bytes(

@@ -246,8 +246,10 @@ begin
 
     if SameText(Arg, '--accept-policy') then
       FAcceptPolicy := True
+{$IFDEF PORTAPPIX_TESTUPDATE}
     else if SameText(Arg, '--allow-insecure-release-urls') then
       AllowInsecureReleaseUrls := True
+{$ENDIF}
     else if SameText(Arg, '--wait') then
       FWait := True
     else if SameText(Arg, '--recover') then

@@ -63,8 +63,10 @@ uses
 const
   ReleaseSchemaVersion = 1;
 
+{$IFDEF PORTAPPIX_TESTUPDATE}
 var
   AllowInsecureReleaseUrls: Boolean = False;
+{$ENDIF}
 
 type
   EPortappixUpdateError = class(Exception);
@@ -95,6 +97,9 @@ function ParseReleasesJson(const AJson: string): TPortappixRelease;
 
 /// Downloads releases.json from AUrl, verifies its signature and parses it.
 function DownloadReleases(const AUrl: string): TPortappixRelease;
+
+/// Checks if AUrl is permitted for release metadata and payload download.
+function IsPermittedReleaseUrl(const AUrl: string): Boolean;
 
 type
   TPortappixUpdateManager = class
@@ -269,14 +274,17 @@ var
   CleanUrl: string;
 begin
   CleanUrl := AUrl.Trim;
-  if IsHttpsUrl(CleanUrl) or AllowInsecureReleaseUrls then
+  if IsHttpsUrl(CleanUrl) then
     Exit(True);
 {$IFDEF PORTAPPIX_TESTUPDATE}
+  if AllowInsecureReleaseUrls then
+    Exit(True);
   if TextStartsWith(CleanUrl, 'http://127.0.0.1:') or
      TextStartsWith(CleanUrl, 'http://127.0.0.1/') or
      (CleanUrl = 'http://127.0.0.1') or
      TextStartsWith(CleanUrl, 'http://localhost:') or
-     TextStartsWith(CleanUrl, 'http://localhost/') then
+     TextStartsWith(CleanUrl, 'http://localhost/') or
+     (CleanUrl = 'http://localhost') then
     Exit(True);
 {$ENDIF}
   Result := False;

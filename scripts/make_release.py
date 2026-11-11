@@ -45,6 +45,7 @@ SEMVER_RE = re.compile(
 TESTCRASH_MARKER = "PORTAPPIX-TESTCRASH-BUILD-2026-11-10"
 TESTUPDATE_MARKER = "PORTAPPIX-TESTUPDATE-BUILD-2026-11-10"
 CRASH_ENV_VAR = "PORTAPPIX_CRASH_AT"
+INSECURE_RELEASE_URLS_SWITCH = "allow-insecure-release-urls"
 
 
 def launcher_forbidden_material(launcher_path: Path) -> list[str]:
@@ -61,7 +62,12 @@ def launcher_forbidden_material(launcher_path: Path) -> list[str]:
     if not data:
         return ["the staged launcher is empty"]
     findings = []
-    for needle in (TESTCRASH_MARKER, TESTUPDATE_MARKER, CRASH_ENV_VAR):
+    for needle in (
+        TESTCRASH_MARKER,
+        TESTUPDATE_MARKER,
+        CRASH_ENV_VAR,
+        INSECURE_RELEASE_URLS_SWITCH,
+    ):
         for encoding in ("utf-16-le", "utf-8"):
             encoded = needle.encode(encoding)
             if encoded in data:
@@ -147,7 +153,8 @@ def main(argv: list[str] | None = None) -> int:
               "artifact from the staging folder.")
         return 1
     print("Test isolation guard: OK (staged Launcher.exe contains no "
-          f"{TESTCRASH_MARKER} / {TESTUPDATE_MARKER} / {CRASH_ENV_VAR} bytes)")
+          f"{TESTCRASH_MARKER} / {TESTUPDATE_MARKER} / {CRASH_ENV_VAR} / "
+          f"{INSECURE_RELEASE_URLS_SWITCH} bytes)")
 
     if args.url_base and not args.url_base.startswith("https://"):
         if not args.allow_insecure_url_base:

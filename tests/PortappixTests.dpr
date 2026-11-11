@@ -27,7 +27,8 @@ uses
   Portappix.Update,
   Portappix.Version,
   Portappix.Process,
-  Portappix.Consent;
+  Portappix.Consent,
+  Portappix.Cli;
 
 type
   TFakeRegistryOps = class(TInterfacedObject, IPortappixRegistryOps)
@@ -582,6 +583,166 @@ begin
         Manager.ExtractArchive(DupZip, TPath.Combine(ARoot, 'dup-extract'));
       end,
       'Zip extraction rejects duplicate/case-colliding entries');
+  finally
+    Manager.Free;
+  end;
+end;
+
+procedure PatchZipUncompressedSize(const AZipPath: string; const ANewSize: Cardinal);
+var
+  Stream: TFileStream;
+  Sig: Cardinal;
+begin
+  Stream := TFileStream.Create(AZipPath, fmOpenReadWrite);
+  try
+    while Stream.Position <= Stream.Size - 4 do
+    begin
+      Stream.ReadBuffer(Sig, 4);
+      if Sig = $04034B50 then // Local file header PK#3#4
+      begin
+        Stream.Seek(18, soCurrent); // skip to uncompressed size (offset 22)
+        Stream.WriteBuffer(ANewSize, 4);
+      end
+      else if Sig = $02014B50 then // Central directory file header PK#1#2
+      begin
+        Stream.Seek(20, soCurrent); // skip to uncompressed size (offset 24)
+        Stream.WriteBuffer(ANewSize, 4);
+      end
+      else
+        Stream.Seek(-3, soCurrent);
+    end;
+  finally
+    Stream.Free;
+  end;
+end;
+
+procedure TestZipBombAndHardening(const ARoot: string);
+var
+  SourceFile: string;
+  ZipPath: string;
+  Zip: TZipFile;
+  Manager: TPortappixPackageManager;
+  DestDir: string;
+begin
+  SourceFile := WriteTextFile(TPath.Combine(ARoot, 'zip-source.txt'), 'Sample uncompressed text content for testing');
+
+  // 1. An entry declaring a size over the cap is rejected before any bytes are read
+  ZipPath := TPath.Combine(ARoot, 'over_declared_cap.zip');
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(ZipPath, TZipMode.zmWrite);
+    Zip.Add(SourceFile, 'overcap.txt');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+  // Patch declared size to 600 MB (629,145,600 bytes), which exceeds MaxZipEntryBytes (512 MB)
+  PatchZipUncompressedSize(ZipPath, 629145600);
+
+  DestDir := TPath.Combine(ARoot, 'dest-overcap');
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    ExpectException(
+      procedure
+      begin
+        Manager.ExtractArchive(ZipPath, DestDir);
+      end,
+      'Entry declaring size over cap is rejected before reading');
+    Check(not TDirectory.Exists(DestDir),
+      'Failed extraction for over-cap entry leaves no destination folder');
+  finally
+    Manager.Free;
+  end;
+
+  // 2. An entry whose declared size lies (small declared, large actual) is aborted at the cap
+  var LieSource := WriteTextFile(TPath.Combine(ARoot, 'lie-source.txt'), StringOfChar('X', 500));
+  var LieZip := TPath.Combine(ARoot, 'lie_size.zip');
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(LieZip, TZipMode.zmWrite);
+    Zip.Add(LieSource, 'bomb.txt');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+  // Patch declared uncompressed size to 50 bytes (smaller than the actual 500 bytes)
+  PatchZipUncompressedSize(LieZip, 50);
+
+  DestDir := TPath.Combine(ARoot, 'dest-lie');
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    // Set per-entry cap to 100 bytes: streaming should abort at 100 bytes, before reaching 500 bytes
+    Manager.MaxZipEntryBytesCap := 100;
+    ExpectException(
+      procedure
+      begin
+        Manager.ExtractArchive(LieZip, DestDir);
+      end,
+      'Entry whose declared size lies is aborted when streaming reaches cap');
+    Check(not TDirectory.Exists(DestDir),
+      'Aborted streaming extraction leaves no destination folder or partial files');
+  finally
+    Manager.Free;
+  end;
+
+  // 3. Total cap is enforced across many small entries
+  var MultiZip := TPath.Combine(ARoot, 'multi_entries.zip');
+  var SmallSource := WriteTextFile(TPath.Combine(ARoot, 'small.txt'), StringOfChar('Y', 80));
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(MultiZip, TZipMode.zmWrite);
+    Zip.Add(SmallSource, 'entry1.txt');
+    Zip.Add(SmallSource, 'entry2.txt');
+    Zip.Add(SmallSource, 'entry3.txt');
+    Zip.Add(SmallSource, 'entry4.txt');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+
+  DestDir := TPath.Combine(ARoot, 'dest-totalcap');
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    // Total cap of 200 bytes; each entry is 80 bytes (total 320 bytes).
+    // Entry 1 (80) + Entry 2 (80) = 160. Entry 3 brings total > 200 bytes.
+    Manager.MaxZipUncompressedBytesCap := 200;
+    Manager.MaxZipEntryBytesCap := 500;
+    ExpectException(
+      procedure
+      begin
+        Manager.ExtractArchive(MultiZip, DestDir);
+      end,
+      'Total cap is enforced across multiple entries');
+    Check(not TDirectory.Exists(DestDir),
+      'Total cap abort leaves no destination folder or partial files');
+  finally
+    Manager.Free;
+  end;
+
+  // 4. Declared size mismatch cross-check (actual bytes differ from declared size -> corrupt package)
+  var MismatchZip := TPath.Combine(ARoot, 'mismatch.zip');
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(MismatchZip, TZipMode.zmWrite);
+    Zip.Add(SourceFile, 'mismatch.txt');
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+  // Actual size is 43 bytes. Patch declared size to 40 bytes.
+  PatchZipUncompressedSize(MismatchZip, 40);
+
+  DestDir := TPath.Combine(ARoot, 'dest-mismatch');
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    ExpectException(
+      procedure
+      begin
+        Manager.ExtractArchive(MismatchZip, DestDir);
+      end,
+      'Extraction fails when actual uncompressed bytes differ from declared size');
+    Check(not TDirectory.Exists(DestDir),
+      'Corrupt size mismatch leaves no partial files');
   finally
     Manager.Free;
   end;
@@ -3906,6 +4067,151 @@ begin
   end;
 end;
 
+procedure TestPendingUpdatesSecurity(const ARoot: string);
+var
+  Manager: TPortappixPackageManager;
+  PendingFile: string;
+  CatalogPath: string;
+  SigPath: string;
+  RepoCatalog: string;
+  RepoSig: string;
+  LogOutput: TStringList;
+begin
+  RepoCatalog := 'catalog.json';
+  if not TFile.Exists(RepoCatalog) then
+    RepoCatalog := TPath.Combine('..', 'catalog.json');
+  RepoSig := RepoCatalog + '.sig';
+
+  Check(TFile.Exists(RepoCatalog), 'catalog.json fixture exists');
+  Check(TFile.Exists(RepoSig), 'catalog.json.sig fixture exists');
+
+  CatalogPath := TPath.Combine(ARoot, 'catalog.json');
+  SigPath := TPath.Combine(ARoot, 'catalog.json.sig');
+  TFile.Copy(RepoCatalog, CatalogPath, True);
+  TFile.Copy(RepoSig, SigPath, True);
+
+  Manager := TPortappixPackageManager.Create(ARoot);
+  try
+    PendingFile := TPath.Combine(TPath.Combine(ARoot, 'Cache'), 'pending_updates.json');
+    ForceDirectories(TPath.GetDirectoryName(PendingFile));
+
+    // 1. Malformed JSON is treated as empty
+    TFile.WriteAllText(PendingFile, '{ malformed json [[', TEncoding.UTF8);
+    Check(Length(Manager.PendingUpdateIds) = 0, 'Malformed pending_updates.json is treated as empty');
+
+    // 2. Oversized file is treated as empty
+    TFile.WriteAllText(PendingFile, StringOfChar(' ', MaxPendingUpdatesBytes + 100), TEncoding.UTF8);
+    Check(Length(Manager.PendingUpdateIds) = 0, 'Oversized pending_updates.json is treated as empty');
+
+    // 3. Old format migrates to schema 2 (retaining only IDs, dropping url/sha256/size)
+    TFile.WriteAllText(PendingFile,
+      '{"schema":1,"updates":[{"id":"everything","version":"1.4.1.1032",' +
+      '"url":"https://evil.example.com/bad.zip","sha256":"' + StringOfChar('e', 64) + '","size":999}]}',
+      TEncoding.UTF8);
+    var MigratedIds := Manager.PendingUpdateIds;
+    Check((Length(MigratedIds) = 1) and (MigratedIds[0] = 'everything'),
+      'Old format migrates and preserves app ID');
+    var RawPending := TFile.ReadAllText(PendingFile, TEncoding.UTF8);
+    Check(ContainsStr(RawPending, '"schema": 2') or ContainsStr(RawPending, '"schema":2'),
+      'Old format migrates to schema 2');
+    Check(not ContainsStr(RawPending, 'evil.example.com'),
+      'Old format migration drops attacker url');
+    Check(not ContainsStr(RawPending, StringOfChar('e', 64)),
+      'Old format migration drops attacker sha256');
+
+    // 4. An unverifiable catalog means no apply and the queue is kept
+    TFile.Delete(SigPath); // remove signature file so catalog cannot be verified
+    var AppToQueue := TCatalogApp.Create;
+    try
+      AppToQueue.Id := 'fastfetch';
+      AppToQueue.Version := '2.71.0';
+      Manager.QueueUpdate(AppToQueue);
+    finally
+      AppToQueue.Free;
+    end;
+    Check(Manager.HasPendingUpdate('fastfetch'), 'App is queued before apply');
+    Manager.ApplyPendingUpdates;
+    Check(Manager.HasPendingUpdate('fastfetch'),
+      'Unverifiable catalog keeps the pending updates queue intact');
+    Manager.RemovePendingUpdate('fastfetch');
+
+    // 5. Unknown ids are dropped
+    TFile.Copy(RepoSig, SigPath, True); // restore valid signature
+    var UnknownApp := TCatalogApp.Create;
+    try
+      UnknownApp.Id := 'nonexistent-app-xyz';
+      UnknownApp.Version := '1.0.0';
+      Manager.QueueUpdate(UnknownApp);
+    finally
+      UnknownApp.Free;
+    end;
+    Check(Manager.HasPendingUpdate('nonexistent-app-xyz'), 'Unknown app is queued');
+    Manager.ApplyPendingUpdates;
+    Check(not Manager.HasPendingUpdate('nonexistent-app-xyz'),
+      'Unknown app ID is dropped during apply');
+
+    // 6. Entries whose catalog version is no newer than the installed one are dropped
+    ForceDirectories(TPath.Combine(ARoot, 'Apps\everything'));
+    TFile.WriteAllText(TPath.Combine(ARoot, 'Apps\everything\app.json'),
+      '{"id":"everything","exe":"everything.exe","version":"1.4.1.1032"}', TEncoding.UTF8);
+    var NoNewerApp := TCatalogApp.Create;
+    try
+      NoNewerApp.Id := 'everything';
+      NoNewerApp.Version := '1.4.1.1032';
+      Manager.QueueUpdate(NoNewerApp);
+    finally
+      NoNewerApp.Free;
+    end;
+    Check(Manager.HasPendingUpdate('everything'), 'everything queued');
+    Manager.ApplyPendingUpdates;
+    Check(not Manager.HasPendingUpdate('everything'),
+      'Queued update with catalog version no newer than installed is dropped');
+
+    // 7. A file that names an attacker URL and hash still results in catalog URL and hash being used
+    LogOutput := TStringList.Create;
+    try
+      Manager.OnLog := procedure(AMessage: string)
+      begin
+        LogOutput.Add(AMessage);
+      end;
+
+      // Write a pending_updates.json with an attacker URL and bogus hash for fastfetch
+      TFile.WriteAllText(PendingFile,
+        '{"schema":1,"updates":[{"id":"fastfetch","version":"2.71.0",' +
+        '"url":"https://attacker.evil.com/malicious.zip",' +
+        '"sha256":"0000000000000000000000000000000000000000000000000000000000000000",' +
+        '"size":666}]}', TEncoding.UTF8);
+
+      // Pre-stage an older installed version for fastfetch so update is allowed
+      ForceDirectories(TPath.Combine(ARoot, 'Apps\fastfetch'));
+      TFile.WriteAllText(TPath.Combine(ARoot, 'Apps\fastfetch\app.json'),
+        '{"id":"fastfetch","exe":"fastfetch.exe","version":"1.0.0"}', TEncoding.UTF8);
+
+      Manager.ApplyPendingUpdates(
+        procedure(const AId: string; ARead, ATotal: Int64; var AAbort: Boolean)
+        begin
+          AAbort := True;
+        end);
+
+      // Verify that the catalog's hash (7633fff...) was expected, NOT the attacker's hash (000000...)
+      var CombinedLogs := LogOutput.Text;
+      Check(not ContainsStr(CombinedLogs, 'attacker.evil.com'),
+        'Attacker URL from pending_updates.json was NOT used');
+      Check(not ContainsStr(CombinedLogs, '0000000000000000000000000000000000000000000000000000000000000000'),
+        'Attacker sha256 from pending_updates.json was NOT used');
+      Check(ContainsStr(CombinedLogs, '7633fff87cc0a22a21378d1d9f97ed08423f2eb7b1f0fb50720cf0df89145bab'),
+        'Catalog sha256 was used for verification');
+      Check(ContainsStr(CombinedLogs, 'store-seed-v1/fastfetch.package.zip'),
+        'Catalog URL was used for update');
+    finally
+      LogOutput.Free;
+      Manager.OnLog := nil;
+    end;
+  finally
+    Manager.Free;
+  end;
+end;
+
 procedure TestRollback(const ARoot: string);
 var
   Manager: TPortappixPackageManager;
@@ -4296,6 +4602,76 @@ begin
   end;
 end;
 
+procedure TestReleaseUrlSecurity;
+var
+  Cli: TPortappixCli;
+begin
+{$IFDEF PORTAPPIX_TESTUPDATE}
+  // 1. Loopback-only allowance accepts 127.0.0.1 and localhost
+  Check(IsPermittedReleaseUrl('http://127.0.0.1:8080/releases.json'),
+    'Test-update build accepts loopback 127.0.0.1 with port');
+  Check(IsPermittedReleaseUrl('http://127.0.0.1/releases.json'),
+    'Test-update build accepts loopback 127.0.0.1 with path');
+  Check(IsPermittedReleaseUrl('http://127.0.0.1'),
+    'Test-update build accepts bare loopback 127.0.0.1');
+  Check(IsPermittedReleaseUrl('http://localhost:8080/releases.json'),
+    'Test-update build accepts loopback localhost with port');
+  Check(IsPermittedReleaseUrl('http://localhost/releases.json'),
+    'Test-update build accepts loopback localhost with path');
+  Check(IsPermittedReleaseUrl('http://localhost'),
+    'Test-update build accepts bare loopback localhost');
+  Check(IsPermittedReleaseUrl('https://example.com/releases.json'),
+    'Test-update build accepts https URL');
+
+  // 2. Loopback-only allowance rejects non-loopback http:// URLs, including http://127.0.0.1.evil.com/
+  Check(not IsPermittedReleaseUrl('http://127.0.0.1.evil.com/'),
+    'Test-update build rejects http://127.0.0.1.evil.com/');
+  Check(not IsPermittedReleaseUrl('http://127.0.0.1.evil.com/releases.json'),
+    'Test-update build rejects http://127.0.0.1.evil.com/releases.json');
+  Check(not IsPermittedReleaseUrl('http://localhost.evil.com/'),
+    'Test-update build rejects http://localhost.evil.com/');
+  Check(not IsPermittedReleaseUrl('http://localhost.evil.com/releases.json'),
+    'Test-update build rejects http://localhost.evil.com/releases.json');
+  Check(not IsPermittedReleaseUrl('http://example.com/releases.json'),
+    'Test-update build rejects plain http://example.com URL');
+  Check(not IsPermittedReleaseUrl('http://evil.com/releases.json'),
+    'Test-update build rejects plain http://evil.com URL');
+
+  // 3. Switch --allow-insecure-release-urls exists and works under PORTAPPIX_TESTUPDATE
+  Check(not AllowInsecureReleaseUrls, 'AllowInsecureReleaseUrls is False by default');
+  Cli := TPortappixCli.Create;
+  try
+    Check(Cli.Parse(['--check-updates', 'http://127.0.0.1:8080/releases.json', '--allow-insecure-release-urls']),
+      'Test-update build accepts --allow-insecure-release-urls switch');
+    Check(AllowInsecureReleaseUrls, 'Switch sets AllowInsecureReleaseUrls to True');
+    Check(IsPermittedReleaseUrl('http://evil.com/releases.json'),
+      'AllowInsecureReleaseUrls permits non-loopback http URL in test build');
+  finally
+    Cli.Free;
+    AllowInsecureReleaseUrls := False;
+  end;
+{$ELSE}
+  // Normal release build: all plain http URLs are rejected, even loopback
+  Check(not IsPermittedReleaseUrl('http://127.0.0.1:8080/releases.json'),
+    'Normal build rejects loopback http 127.0.0.1');
+  Check(not IsPermittedReleaseUrl('http://localhost:8080/releases.json'),
+    'Normal build rejects loopback http localhost');
+  Check(not IsPermittedReleaseUrl('http://example.com/releases.json'),
+    'Normal build rejects http://example.com');
+  Check(IsPermittedReleaseUrl('https://example.com/releases.json'),
+    'Normal build accepts https URL');
+
+  // Normal release build: switch --allow-insecure-release-urls is rejected as unknown argument
+  Cli := TPortappixCli.Create;
+  try
+    Check(not Cli.Parse(['--check-updates', 'https://example.com/releases.json', '--allow-insecure-release-urls']),
+      'Normal build rejects --allow-insecure-release-urls switch');
+  finally
+    Cli.Free;
+  end;
+{$ENDIF}
+end;
+
 {$IFDEF PORTAPPIX_TESTCRASH}
 procedure TestCrashPointGrammar;
 const
@@ -4652,6 +5028,7 @@ begin
     TestPolicy;
     TestCatalog(Root);
     TestZipExtraction(Root);
+    TestZipBombAndHardening(Root);
     TestHashing;
     TestSignatureVerification;
     TestJournal(Root);
@@ -4679,10 +5056,12 @@ begin
     TestSemVer;
     TestDataVersion(Root);
     TestPendingUpdatesAndRollback(Root);
+    TestPendingUpdatesSecurity(Root);
     TestRollback(Root);
     TestVendorLinkAppInstallation(Root);
     TestSettings(Root);
     TestUpdateManager(Root);
+    TestReleaseUrlSecurity;
     TestConsent(Root);
 {$IFDEF PORTAPPIX_TESTCRASH}
     TestCrashPointGrammar;
