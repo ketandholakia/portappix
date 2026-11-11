@@ -158,6 +158,13 @@ begin
   CheckLauncherUpdateWatchdog;
   LoadCatalogUrl;
   InitializeRuntime;      // includes TPortappixJournal.RecoverPendingCleanups (boot)
+  if FJournal <> nil then
+  begin
+    var ReviewItems := FJournal.ListReviewItems;
+    if Length(ReviewItems) > 0 then
+      QueueStatus(Format('WARNING: %d unowned junction(s) require manual review (see --status).',
+        [Length(ReviewItems)]));
+  end;
   InitializeTray;
   LoadInstalledApps;
   LoadCatalogFromCache;   // instant local cache
@@ -1002,16 +1009,19 @@ begin
       Exit;
 
     PendingVersion := Manager.PendingUpdateVersion;
-    if MessageDlg(
-      Format('A launcher update to %s was applied but the new version never ' +
-        'confirmed that it started (no update_ok marker).' + sLineBreak + sLineBreak +
-        'Restore the previous version from Launcher.exe.old now?',
-        [PendingVersion]),
-      mtWarning, [mbYes, mbNo], 0) <> mrYes then
+    if not FindCmdLineSwitch('accept-rollback') and not FindCmdLineSwitch('auto-rollback') then
     begin
-      QueueStatus('Rollback declined; the offer reappears on the next start ' +
-        'until the update is confirmed or Launcher.exe.old is deleted.');
-      Exit;
+      if MessageDlg(
+        Format('A launcher update to %s was applied but the new version never ' +
+          'confirmed that it started (no update_ok marker).' + sLineBreak + sLineBreak +
+          'Restore the previous version from Launcher.exe.old now?',
+          [PendingVersion]),
+        mtWarning, [mbYes, mbNo], 0) <> mrYes then
+      begin
+        QueueStatus('Rollback declined; the offer reappears on the next start ' +
+          'until the update is confirmed or Launcher.exe.old is deleted.');
+        Exit;
+      end;
     end;
 
     Manager.RollbackToOldLauncher;

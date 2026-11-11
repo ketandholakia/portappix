@@ -56,6 +56,7 @@ const
   CliExitUsage = 3;
   CliExitAlreadyRunning = 4;
   CliExitConsentRequired = 5;
+  CliExitNeedsReview = 6;
   CliExitGenericFailure = 7;
   CliExitElevationRequired = 740;
 
@@ -66,6 +67,9 @@ const
     '                    [--exit-code-file <path>] [--log-file <path>]' + sLineBreak +
     '       Launcher.exe --check-manifest <app.json> [--exit-code-file <path>]' + sLineBreak +
     '       Launcher.exe --recover [--root <path>] [--log-file <path>]' + sLineBreak +
+    '       Launcher.exe --status [--root <path>] [--exit-code-file <path>]' + sLineBreak +
+    '       Launcher.exe --clear-review <app-id> [--delete-unowned-junction] [--force] [--root <path>]' + sLineBreak +
+    '       Launcher.exe --accept-rollback [--root <path>]' + sLineBreak +
     '       Launcher.exe --apply-updates [--root <path>]' + sLineBreak +
     '       Launcher.exe --check-updates <releases.json-url> [--root <path>]' + sLineBreak +
     '       Launcher.exe --self-update <releases.json-url> [--root <path>]' + sLineBreak +
@@ -87,6 +91,8 @@ type
     FLogFilePath: string;
     FAcceptPolicy: Boolean;
     FWait: Boolean;
+    FDeleteUnownedJunction: Boolean;
+    FForce: Boolean;
     procedure Log(const AMessage: string);
     procedure WriteExitCodeFile(const AExitCode: Integer; const AAppId,
       AMessage: string; const AAlreadyRunning: Boolean = False);
@@ -98,13 +104,13 @@ type
     function ExecuteTrace: Integer;
     function ExecuteCheckManifest: Integer;
     function ExecuteRecover: Integer;
+    function ExecuteStatus: Integer;
+    function ExecuteClearReview: Integer;
     function ExecuteApplyUpdates: Integer;
     function ExecuteCheckUpdates: Integer;
     function ExecuteSelfUpdate: Integer;
     function ExecutePostUpdate: Integer;
-{$IFDEF PORTAPPIX_TESTUPDATE}
     function ExecuteRollback: Integer;
-{$ENDIF}
   public
     constructor Create;
     function Parse(const AArgs: TArray<string>): Boolean;
@@ -172,6 +178,8 @@ begin
   FRootPath := ResolveRootPath('');
   FCommand := '';
   FArgument := '';
+  FDeleteUnownedJunction := False;
+  FForce := False;
 end;
 
 procedure TPortappixCli.Log(const AMessage: string);
@@ -258,10 +266,21 @@ begin
       FCommand := 'apply-updates'
     else if SameText(Arg, '--post-update') then
       FCommand := 'post-update'
-{$IFDEF PORTAPPIX_TESTUPDATE}
-    else if SameText(Arg, '--rollback') then
+    else if SameText(Arg, '--rollback') or SameText(Arg, '--accept-rollback') then
       FCommand := 'rollback'
-{$ENDIF}
+    else if SameText(Arg, '--status') then
+      FCommand := 'status'
+    else if SameText(Arg, '--delete-unowned-junction') then
+      FDeleteUnownedJunction := True
+    else if SameText(Arg, '--force') then
+      FForce := True
+    else if SameText(Arg, '--clear-review') then
+    begin
+      if not TakeValue(Arg, FArgument) then
+        Exit;
+      FCommand := 'clear-review';
+      Inc(Index);
+    end
     else if SameText(Arg, '--check-updates') or SameText(Arg, '--check-update') then
     begin
       if not TakeValue(Arg, FArgument) then
@@ -410,6 +429,23 @@ begin
         begin
           Log(AMsg);
         end;
+
+      var ReviewItem: TPortappixReviewItem;
+      if Journal.HasReviewItem(AppId, ReviewItem) then
+      begin
+        var ReviewMsg := Format(
+          'Application "%s" requires manual review before it can run.' + sLineBreak +
+          'Unowned junction: "%s" -> "%s"' + sLineBreak +
+          'Recorded at: %s' + sLineBreak +
+          'Reason: %s' + sLineBreak +
+          'Action required: Verify the folder, delete it by hand, or run:' + sLineBreak +
+          '  Launcher.exe --clear-review %s [--delete-unowned-junction] [--force]',
+          [AppId, ReviewItem.JunctionPath, ReviewItem.Target, ReviewItem.Time,
+           ReviewItem.Reason, AppId]);
+        Log(ReviewMsg);
+        WriteExitCodeFile(CliExitNeedsReview, AppId, ReviewMsg);
+        Exit(CliExitNeedsReview);
+      end;
 
       Consent := TPortappixConsent.Create(FRootPath);
       try
@@ -919,7 +955,78 @@ begin
   end;
 end;
 
-{$IFDEF PORTAPPIX_TESTUPDATE}
+function TPortappixCli.ExecuteStatus: Integer;
+var
+  Journal: TPortappixJournal;
+  Items: TArray<TPortappixReviewItem>;
+  Msg: string;
+begin
+  Journal := TPortappixJournal.Create(FRootPath);
+  try
+    Items := Journal.ListReviewItems;
+    if Length(Items) = 0 then
+    begin
+      Msg := 'Status: Clean. No unowned junctions require review.';
+      Log(Msg);
+      WriteExitCodeFile(CliExitOk, '', Msg);
+      Exit(CliExitOk);
+    end;
+
+    Msg := Format('Status: %d unowned junction(s) require manual review:' + sLineBreak, [Length(Items)]);
+    for var Item in Items do
+    begin
+      Msg := Msg + Format('  App: %s' + sLineBreak +
+                          '  Junction: %s' + sLineBreak +
+                          '  Target: %s' + sLineBreak +
+                          '  Recorded: %s' + sLineBreak +
+                          '  Reason: %s' + sLineBreak,
+                          [Item.AppId, Item.JunctionPath, Item.Target, Item.Time, Item.Reason]);
+    end;
+    Log(Msg);
+    WriteExitCodeFile(CliExitNeedsReview, '', Msg);
+    Result := CliExitNeedsReview;
+  finally
+    Journal.Free;
+  end;
+end;
+
+function TPortappixCli.ExecuteClearReview: Integer;
+var
+  Journal: TPortappixJournal;
+  ErrorMsg: string;
+begin
+  if FArgument = '' then
+  begin
+    Log('Missing app id for --clear-review.');
+    WriteExitCodeFile(CliExitUsage, '', 'Missing app id for --clear-review.');
+    Exit(CliExitUsage);
+  end;
+
+  Journal := TPortappixJournal.Create(FRootPath);
+  try
+    Journal.OnLog :=
+      procedure(AMsg: string)
+      begin
+        Log(AMsg);
+      end;
+
+    if Journal.ClearReview(FArgument, FForce, FDeleteUnownedJunction, ErrorMsg) then
+    begin
+      Log(Format('Review cleared for app "%s".', [FArgument]));
+      WriteExitCodeFile(CliExitOk, FArgument, Format('Review cleared for app "%s".', [FArgument]));
+      Result := CliExitOk;
+    end
+    else
+    begin
+      Log(Format('Failed to clear review for app "%s": %s', [FArgument, ErrorMsg]));
+      WriteExitCodeFile(CliExitGenericFailure, FArgument, ErrorMsg);
+      Result := CliExitGenericFailure;
+    end;
+  finally
+    Journal.Free;
+  end;
+end;
+
 function TPortappixCli.ExecuteRollback: Integer;
 var
   Manager: TPortappixUpdateManager;
@@ -954,7 +1061,6 @@ begin
     Manager.Free;
   end;
 end;
-{$ENDIF}
 
 function TPortappixCli.Execute: Integer;
 begin
@@ -966,6 +1072,10 @@ begin
     Result := ExecuteCheckManifest
   else if FCommand = 'recover' then
     Result := ExecuteRecover
+  else if FCommand = 'status' then
+    Result := ExecuteStatus
+  else if FCommand = 'clear-review' then
+    Result := ExecuteClearReview
   else if FCommand = 'apply-updates' then
     Result := ExecuteApplyUpdates
   else if FCommand = 'check-updates' then
@@ -974,10 +1084,8 @@ begin
     Result := ExecuteSelfUpdate
   else if FCommand = 'post-update' then
     Result := ExecutePostUpdate
-{$IFDEF PORTAPPIX_TESTUPDATE}
   else if FCommand = 'rollback' then
     Result := ExecuteRollback
-{$ENDIF}
   else
   begin
     CliWrite(CliUsageText);

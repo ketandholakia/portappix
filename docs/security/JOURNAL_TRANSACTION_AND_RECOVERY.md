@@ -233,16 +233,43 @@ junction), then delete the transaction directory — or fix the underlying
 cause and restart the launcher to let recovery retry. See the error text;
 it always names the offending path or file.
 
-## 9. Recovery failure handling
+## 9. Recovery failure handling & Unowned Junction UX
 
 - Retryable failures (transient `reg.exe`/rename errors) keep the
   transaction in its current state with a persisted error note; the next
   boot retries.
 - Manual failures set `recoveryRequired`, retain the journal and all
-  backups, and **block all new transactions** until resolved.
+  backups, and block subsequent runs of the affected application until resolved.
 - A corrupt journal is quarantined (`transaction.json.bad`) and skipped.
 - Recovery never silently converts a failed restore into a successful
   cleanup, and never deletes the only remaining backup.
+
+### 9.1 Unowned Junction User Experience (`op:2:created`)
+
+When the launcher crashes in the `op:2:created` window (after creating the junction on the host but before durably persisting its filesystem creation identity), ownership cannot be proven from target+tag match alone. To prevent deleting an unowned or swapped directory:
+1. **Durable Review List (`Transactions\needs_review.json`):** Recovery preserves the junction untouched, marks the transaction `recoveryRequired`, and atomically records the unowned junction in `Transactions\needs_review.json`. The record stores:
+   - `appId`: The application identifier.
+   - `junctionPath`: The host reparse point path.
+   - `target`: The junction target directory.
+   - `time`: ISO 8601 timestamp of recovery.
+   - `reason`: Description of why the junction was preserved.
+2. **App-Specific Isolation:** The next `--run <id>` for the affected app is refused with exit code 6 (`CliExitNeedsReview = 6`) and a clear error message explaining that manual review is required, pointing at the unowned junction and describing how to clear it. Crucially, other applications are **NOT blocked** and continue to run normally.
+3. **Status Warnings:** Both the GUI (system tray / main launcher window) and the CLI command (`Launcher.exe --status`) display a visible warning whenever `needs_review.json` contains pending items.
+4. **Resolution via `--clear-review`:**
+   - `Launcher.exe --clear-review <id>`: Checks whether the junction is still present on the host. If the user already verified and deleted the junction by hand, `--clear-review` clears the record cleanly without extra flags.
+   - If the junction still exists on the host, `--clear-review` refuses without flags. The operator can pass:
+     - `--delete-unowned-junction`: Validates policy and path safety, verifies the object is indeed a junction pointing into the app data directory, deletes it safely, and clears the review item.
+     - `--force`: Dismisses the review item while leaving the junction on disk (acknowledging the risk).
+
+### 9.2 Production Rollback Path (`--accept-rollback`)
+
+In production environments where an update fails (e.g., startup crash or missing `Cache\update_ok` confirmation):
+- The launcher watchdog detects `NeedsRollbackOffer` (`Launcher.exe.old` exists and `Cache\update_ok` is missing).
+- Automated deployment scripts or operators can trigger a non-interactive rollback in release builds via:
+  ```cmd
+  Launcher.exe --accept-rollback [--root <path>]
+  ```
+- This command safely renames the failing `Launcher.exe` to `Launcher.exe.failed_<timestamp>`, restores `Launcher.exe.old` to `Launcher.exe`, and clears the pending update state. It is strictly compiled into release builds and accepts no untrusted code or arbitrary target paths.
 
 ## 10. Crash simulation support
 

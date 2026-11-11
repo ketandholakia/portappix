@@ -37,6 +37,7 @@ uses
   Portappix.Common,
   Portappix.Process,
   Portappix.Registry,
+  Portappix.Junction,
   Portappix.Transactions,
   Portappix.Runner;
 
@@ -70,6 +71,7 @@ type
     procedure RestoreScannedBackups(const ADataDir: string);
     function GetOnLog: TProc<string>;
     procedure SetOnLog(const AValue: TProc<string>);
+    function ReviewFilePath: string;
   public
     constructor Create(const ARootPath: string = '';
       const ARegistryOps: IPortappixRegistryOps = nil;
@@ -79,6 +81,11 @@ type
 
     function BeginTransaction(const AAppId: string): IPortappixTransaction;
     procedure RecoverPendingCleanups;
+    function HasReviewItem(const AAppId: string; out AItem: TPortappixReviewItem): Boolean;
+    function ListReviewItems: TArray<TPortappixReviewItem>;
+    procedure RecordReviewItem(const AAppId, AJunctionPath, ATarget, AReason: string);
+    function ClearReview(const AAppId: string; const AForce: Boolean;
+      const ADeleteJunction: Boolean; out AError: string): Boolean;
 
     property RootPath: string read FRootPath;
     property LegacyStateFile: string read FStateFile;
@@ -325,8 +332,6 @@ var
   TxId: string;
   Transaction: TPortappixTransaction;
 begin
-  // Called under the journal lock before a new transaction is created: an
-  // incomplete recovery blocks new host work entirely.
   for TxId in ListTransactionIds do
   begin
     Transaction := LoadTransaction(TxId);
@@ -334,12 +339,8 @@ begin
       Continue;
     try
       if Transaction.State = txRecoveryRequired then
-        raise EPortappixStateError.CreateFmt(
-          'Transaction "%s" (app "%s") requires manual intervention before new ' +
-          'applications can run: %s See ' +
-          'docs/security/JOURNAL_TRANSACTION_AND_RECOVERY.md for the manual ' +
-          'recovery procedure.',
-          [TxId, Transaction.AppId, Transaction.LastError]);
+        Log(Format('Transaction "%s" (app "%s") requires manual intervention: %s',
+          [TxId, Transaction.AppId, Transaction.LastError]));
       if SameText(Transaction.AppId, '') then
         Continue;
     finally
@@ -356,6 +357,7 @@ var
   Transaction: TPortappixTransaction;
   TxId, TxDir: string;
   Existing: TPortappixTransaction;
+  RevItem: TPortappixReviewItem;
 begin
   if (AAppId = '') or not IsSafeFileComponent(AAppId) then
     raise EPortappixStateError.CreateFmt('Invalid app id "%s".', [AAppId]);
@@ -376,23 +378,31 @@ begin
         ReconcileAllTransactions;
       end;
 
-      // Refuse new work while any recovery requires manual intervention, and
-      // while the same app already has an unfinished transaction.
+      // Check durable review list first: refuse if this specific app needs manual review.
+      if HasReviewItem(AAppId, RevItem) then
+        raise EPortappixStateError.CreateFmt(
+          'Application "%s" requires manual review before it can run (unowned junction: "%s"). ' +
+          'Resolve it with --clear-review %s or delete it by hand.',
+          [AAppId, RevItem.JunctionPath, AAppId]);
+
+      // Refuse new work for AAppId while it has an unfinished or recoveryRequired transaction.
+      // Other applications are not blocked.
       for TxId in ListTransactionIds do
       begin
         Existing := LoadTransaction(TxId);
         if Existing = nil then
           Continue;
         try
-          if Existing.State = txRecoveryRequired then
-            raise EPortappixStateError.CreateFmt(
-              'Transaction "%s" (app "%s") requires manual intervention before new ' +
-              'applications can run: %s',
-              [TxId, Existing.AppId, Existing.LastError]);
           if SameText(Existing.AppId, AAppId) then
+          begin
+            if Existing.State = txRecoveryRequired then
+              raise EPortappixStateError.CreateFmt(
+                'Transaction "%s" (app "%s") requires manual intervention before it can run: %s',
+                [TxId, Existing.AppId, Existing.LastError]);
             raise EPortappixStateError.CreateFmt(
               'App "%s" already has an unfinished transaction ("%s"); recover it first.',
               [AAppId, TxId]);
+          end;
         finally
           Existing.Free;
         end;
@@ -811,7 +821,13 @@ begin
               KeysList.Add(Op.RegistryKey);
         end;
         if KeysList.Count > 0 then
-          ExportKeysToRegistryFile(FRegistryOps, KeysList.ToArray, ATx.DataDir, FOnLog);
+        begin
+          if not ExportKeysToRegistryFile(FRegistryOps, KeysList.ToArray, ATx.DataDir, FOnLog) then
+          begin
+            ATx.SetErrorPersisted('Recovery aborted: live registry export failed; host keys kept in place for retry.');
+            Exit(False);
+          end;
+        end;
       finally
         KeysList.Free;
       end;
@@ -822,8 +838,19 @@ begin
       if Reconciler.ManualFailure then
       begin
         ATx.ApplyState(txRecoveryRequired);
+        for Index := 0 to ATx.GetOperationCount - 1 do
+        begin
+          Op := ATx.OperationAt(Index);
+          if (Op.Kind = okJunctionCreate) and (Op.HostPath <> '') then
+          begin
+            var Inspection := FHostPathOps.InspectPath(Op.HostPath);
+            if Inspection.Kind = rkJunction then
+              RecordReviewItem(ATx.AppId, Op.HostPath, Inspection.Target,
+                'Unowned junction: filesystem identity was never persisted');
+          end;
+        end;
         Log(Format('Transaction "%s" is now recoveryRequired; manual intervention is ' +
-          'required before new applications can run.', [ATx.TxId]));
+          'required before app "%s" can run.', [ATx.TxId, ATx.AppId]));
       end
       else
         ATx.SetErrorPersisted('Recovery incomplete: ' + Reconciler.LastError);
@@ -845,6 +872,274 @@ begin
     Result := True;
   finally
     Reconciler.Free;
+  end;
+end;
+
+function TPortappixJournal.ReviewFilePath: string;
+begin
+  Result := TPath.Combine(FTransactionsDir, 'needs_review.json');
+end;
+
+function TPortappixJournal.ListReviewItems: TArray<TPortappixReviewItem>;
+var
+  FilePath: string;
+  Content: string;
+  JsonVal: TJSONValue;
+  JsonArr: TJSONArray;
+  ItemObj: TJSONObject;
+  List: TList<TPortappixReviewItem>;
+  Item: TPortappixReviewItem;
+  I: Integer;
+begin
+  SetLength(Result, 0);
+  FilePath := ReviewFilePath;
+  if not TFile.Exists(FilePath) then
+    Exit;
+
+  FSync.Enter;
+  try
+    try
+      Content := TFile.ReadAllText(FilePath, TEncoding.UTF8);
+      JsonVal := TJSONObject.ParseJSONValue(Content);
+      if JsonVal = nil then
+        Exit;
+      try
+        if not (JsonVal is TJSONArray) then
+          Exit;
+        JsonArr := TJSONArray(JsonVal);
+        List := TList<TPortappixReviewItem>.Create;
+        try
+          for I := 0 to JsonArr.Count - 1 do
+          begin
+            if JsonArr.Items[I] is TJSONObject then
+            begin
+              ItemObj := TJSONObject(JsonArr.Items[I]);
+              Item.AppId := ItemObj.GetValue<string>('appId', '');
+              Item.JunctionPath := ItemObj.GetValue<string>('junctionPath', '');
+              Item.Target := ItemObj.GetValue<string>('target', '');
+              Item.Time := ItemObj.GetValue<string>('time', '');
+              Item.Reason := ItemObj.GetValue<string>('reason', '');
+              List.Add(Item);
+            end;
+          end;
+          Result := List.ToArray;
+        finally
+          List.Free;
+        end;
+      finally
+        JsonVal.Free;
+      end;
+    except
+      on E: Exception do
+        Log('Error reading review file: ' + E.Message);
+    end;
+  finally
+    FSync.Leave;
+  end;
+end;
+
+function TPortappixJournal.HasReviewItem(const AAppId: string;
+  out AItem: TPortappixReviewItem): Boolean;
+var
+  Items: TArray<TPortappixReviewItem>;
+  Item: TPortappixReviewItem;
+begin
+  Result := False;
+  Items := ListReviewItems;
+  for Item in Items do
+  begin
+    if SameText(Item.AppId, AAppId) then
+    begin
+      AItem := Item;
+      Exit(True);
+    end;
+  end;
+end;
+
+procedure TPortappixJournal.RecordReviewItem(const AAppId, AJunctionPath,
+  ATarget, AReason: string);
+var
+  Items: TArray<TPortappixReviewItem>;
+  Item: TPortappixReviewItem;
+  JsonArr: TJSONArray;
+  ItemObj: TJSONObject;
+  FilePath: string;
+begin
+  FSync.Enter;
+  try
+    Items := ListReviewItems;
+    for Item in Items do
+    begin
+      if SameText(Item.AppId, AAppId) and SameText(Item.JunctionPath, AJunctionPath) then
+        Exit; // Already recorded (idempotent)
+    end;
+
+    JsonArr := TJSONArray.Create;
+    try
+      for Item in Items do
+      begin
+        ItemObj := TJSONObject.Create;
+        ItemObj.AddPair('appId', Item.AppId);
+        ItemObj.AddPair('junctionPath', Item.JunctionPath);
+        ItemObj.AddPair('target', Item.Target);
+        ItemObj.AddPair('time', Item.Time);
+        ItemObj.AddPair('reason', Item.Reason);
+        JsonArr.AddElement(ItemObj);
+      end;
+
+      ItemObj := TJSONObject.Create;
+      ItemObj.AddPair('appId', AAppId);
+      ItemObj.AddPair('junctionPath', AJunctionPath);
+      ItemObj.AddPair('target', ATarget);
+      ItemObj.AddPair('time', DateToISO8601(Now));
+      ItemObj.AddPair('reason', AReason);
+      JsonArr.AddElement(ItemObj);
+
+      ForceDirectories(FTransactionsDir);
+      FilePath := ReviewFilePath;
+      WriteTextFileAtomic(FilePath, JsonArr.Format(2));
+      Log(Format('Recorded unowned junction for app "%s" at "%s" in needs_review.json.',
+        [AAppId, AJunctionPath]));
+    finally
+      JsonArr.Free;
+    end;
+  finally
+    FSync.Leave;
+  end;
+end;
+
+function TPortappixJournal.ClearReview(const AAppId: string; const AForce: Boolean;
+  const ADeleteJunction: Boolean; out AError: string): Boolean;
+var
+  Items: TArray<TPortappixReviewItem>;
+  Remaining: TList<TPortappixReviewItem>;
+  Item: TPortappixReviewItem;
+  Matching: TList<TPortappixReviewItem>;
+  Inspection: TPortappixPathInspection;
+  JsonArr: TJSONArray;
+  ItemObj: TJSONObject;
+  FilePath: string;
+  TxIds: TArray<string>;
+  Tx: TPortappixTransaction;
+begin
+  AError := '';
+  Result := False;
+  FSync.Enter;
+  try
+    Items := ListReviewItems;
+    Matching := TList<TPortappixReviewItem>.Create;
+    Remaining := TList<TPortappixReviewItem>.Create;
+    try
+      for Item in Items do
+      begin
+        if SameText(Item.AppId, AAppId) then
+          Matching.Add(Item)
+        else
+          Remaining.Add(Item);
+      end;
+
+      if Matching.Count = 0 then
+      begin
+        AError := Format('No review entries found for application "%s".', [AAppId]);
+        Exit(False);
+      end;
+
+      for Item in Matching do
+      begin
+        Inspection := FHostPathOps.InspectPath(Item.JunctionPath);
+        if Inspection.Kind <> rkMissing then
+        begin
+          if ADeleteJunction then
+          begin
+            if not TPortappixTransaction.ValidateHostPath(Item.JunctionPath) then
+            begin
+              AError := Format('Junction path "%s" failed host safety validation.', [Item.JunctionPath]);
+              Exit(False);
+            end;
+            if Inspection.Kind <> rkJunction then
+            begin
+              AError := Format('Refusing to delete "%s": object is not a junction.', [Item.JunctionPath]);
+              Exit(False);
+            end;
+            if not TPortappixTransaction.ValidateDataDir(Item.Target, FRootPath, AAppId) and
+               not TPortappixTransaction.ValidateHostPath(Item.Target) then
+            begin
+              AError := Format('Junction target "%s" failed safety validation.', [Item.Target]);
+              Exit(False);
+            end;
+            if not FHostPathOps.DeleteJunction(Item.JunctionPath) then
+            begin
+              AError := Format('Failed to delete junction "%s".', [Item.JunctionPath]);
+              Exit(False);
+            end;
+            Log(Format('Deleted unowned junction "%s" for app "%s".', [Item.JunctionPath, AAppId]));
+          end
+          else if not AForce then
+          begin
+            AError := Format('Junction "%s" still exists. Verify the folder and delete it by hand, ' +
+              'pass --force to dismiss the review while keeping the folder, or pass ' +
+              '--delete-unowned-junction to remove it automatically.', [Item.JunctionPath]);
+            Exit(False);
+          end
+          else
+            Log(Format('Forced dismissal of review item for app "%s"; junction "%s" left in place.',
+              [AAppId, Item.JunctionPath]));
+        end;
+      end;
+
+      // Update needs_review.json
+      FilePath := ReviewFilePath;
+      if Remaining.Count = 0 then
+      begin
+        if TFile.Exists(FilePath) then
+          TFile.Delete(FilePath);
+      end
+      else
+      begin
+        JsonArr := TJSONArray.Create;
+        try
+          for Item in Remaining do
+          begin
+            ItemObj := TJSONObject.Create;
+            ItemObj.AddPair('appId', Item.AppId);
+            ItemObj.AddPair('junctionPath', Item.JunctionPath);
+            ItemObj.AddPair('target', Item.Target);
+            ItemObj.AddPair('time', Item.Time);
+            ItemObj.AddPair('reason', Item.Reason);
+            JsonArr.AddElement(ItemObj);
+          end;
+          WriteTextFileAtomic(FilePath, JsonArr.Format(2));
+        finally
+          JsonArr.Free;
+        end;
+      end;
+
+      // Remove any pending txRecoveryRequired transactions for this app
+      TxIds := ListTransactionIds;
+      for var TxId in TxIds do
+      begin
+        Tx := LoadTransaction(TxId);
+        if Tx <> nil then
+        begin
+          try
+            if SameText(Tx.AppId, AAppId) and (Tx.State = txRecoveryRequired) then
+            begin
+              Tx.RemoveTransactionDirectory;
+              Log(Format('Cleared recovery transaction "%s" for app "%s".', [TxId, AAppId]));
+            end;
+          finally
+            Tx.Free;
+          end;
+        end;
+      end;
+
+      Result := True;
+    finally
+      Matching.Free;
+      Remaining.Free;
+    end;
+  finally
+    FSync.Leave;
   end;
 end;
 

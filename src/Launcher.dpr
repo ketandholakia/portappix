@@ -81,7 +81,7 @@ var
   I: Integer;
 begin
   for I := 1 to ParamCount do
-    if SameText(ParamStr(I), '--rollback') then
+    if SameText(ParamStr(I), '--rollback') or SameText(ParamStr(I), '--accept-rollback') then
       Exit(True);
   Result := False;
 end;

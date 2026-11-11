@@ -47,12 +47,25 @@ type
   EPortappixPolicyError = class(EPortappixRunnerError);
   EPortappixElevationRequired = class(EPortappixRunnerError);
 
+  TPortappixReviewItem = record
+    AppId: string;
+    JunctionPath: string;
+    Target: string;
+    Time: string;
+    Reason: string;
+  end;
+
   IPortappixJournal = interface
     ['{B8A13E7E-3A9D-4B0B-9C13-6F4E9E2C4D52}']
     function BeginTransaction(const AAppId: string): IPortappixTransaction;
     procedure RecoverPendingCleanups;
     function GetOnLog: TProc<string>;
     procedure SetOnLog(const AValue: TProc<string>);
+    function HasReviewItem(const AAppId: string; out AItem: TPortappixReviewItem): Boolean;
+    function ListReviewItems: TArray<TPortappixReviewItem>;
+    procedure RecordReviewItem(const AAppId, AJunctionPath, ATarget, AReason: string);
+    function ClearReview(const AAppId: string; const AForce: Boolean;
+      const ADeleteJunction: Boolean; out AError: string): Boolean;
     property OnLog: TProc<string> read GetOnLog write SetOnLog;
   end;
 
