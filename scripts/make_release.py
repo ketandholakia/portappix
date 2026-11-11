@@ -44,6 +44,7 @@ SEMVER_RE = re.compile(
 # accidental reformulation can't slip through a lax check either.
 TESTCRASH_MARKER = "PORTAPPIX-TESTCRASH-BUILD-2026-11-10"
 TESTUPDATE_MARKER = "PORTAPPIX-TESTUPDATE-BUILD-2026-11-10"
+TESTINJECT_MARKER = "PORTAPPIX-TESTINJECT-BUILD-2026-11-11"
 CRASH_ENV_VAR = "PORTAPPIX_CRASH_AT"
 INSECURE_RELEASE_URLS_SWITCH = "allow-insecure-release-urls"
 DEV_CATALOG_FLAG = "AllowUnsignedCatalogs"
@@ -66,6 +67,7 @@ def launcher_forbidden_material(launcher_path: Path) -> list[str]:
     for needle in (
         TESTCRASH_MARKER,
         TESTUPDATE_MARKER,
+        TESTINJECT_MARKER,
         CRASH_ENV_VAR,
         INSECURE_RELEASE_URLS_SWITCH,
         DEV_CATALOG_FLAG,

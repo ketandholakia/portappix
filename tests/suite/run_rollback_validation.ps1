@@ -261,7 +261,8 @@ try {
     $recordJson = Get-Content $RecordFile -Raw | ConvertFrom-Json
     $expectedOldHash = (Get-FileHash -Path (Join-Path $WorkDir "Launcher.exe.old") -Algorithm SHA256).Hash.ToLower()
     $expectedOldSize = (Get-Item (Join-Path $WorkDir "Launcher.exe.old")).Length
-    Assert-Condition ($recordJson.schema -eq 1) "old_launcher.json schema is 1"
+    Assert-Condition ($recordJson.schema -eq 2) "old_launcher.json schema is 2 (authenticated record)"
+    Assert-Condition ($recordJson.hmac -and $recordJson.hmac.Length -eq 64) "old_launcher.json carries an HMAC"
     Assert-Condition ($recordJson.sha256.ToLower() -eq $expectedOldHash) "old_launcher.json matches Launcher.exe.old SHA-256"
     Assert-Condition ($recordJson.size -eq $expectedOldSize) "old_launcher.json matches Launcher.exe.old size"
 
