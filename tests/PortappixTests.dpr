@@ -6,12 +6,14 @@ uses
   Winapi.Windows,
   System.SysUtils,
   System.StrUtils,
+  System.DateUtils,
   System.Classes,
   System.IOUtils,
   System.Zip,
   System.JSON,
   System.Generics.Collections,
   Portappix.Common,
+  Portappix.RecordAuth,
   Portappix.Junction,
   Portappix.Transactions,
   Portappix.Manifest,
@@ -142,6 +144,16 @@ type
 var
   Passed: Integer = 0;
   Failed: Integer = 0;
+  // Baseline rollback-record key location for the whole run (set in the main
+  // block under PORTAPPIX_TESTCRASH). Tests that temporarily point the
+  // override elsewhere restore this value afterwards.
+  RecordKeyBasePath: string = '';
+{$IFDEF PORTAPPIX_TESTINJECT}
+  // Runtime copy of the injection marker so the constant string is
+  // genuinely materialized in the test-mode binary (the isolation tests
+  // byte-scan for it; a plain constant comparison would be folded away).
+  InjectMarkerProbe: string;
+{$ENDIF}
 
 // Directory symbolic links need the SeCreateSymbolicLink privilege; the
 // inspection test skips gracefully when the host lacks it.
@@ -5005,6 +5017,686 @@ begin
   TFile.Delete(TempFile);
 end;
 
+function BytesEqual(const A, B: TBytes): Boolean;
+var
+  I: Integer;
+begin
+  Result := Length(A) = Length(B);
+  if not Result then
+    Exit;
+  for I := 0 to High(A) do
+    if A[I] <> B[I] then
+      Exit(False);
+end;
+
+procedure TestIsValidSha256Hex;
+begin
+  Check(IsValidSha256Hex(StringOfChar('a', 64)),
+    'IsValidSha256Hex accepts 64 lowercase hex characters');
+  Check(IsValidSha256Hex(StringOfChar('A', 64)),
+    'IsValidSha256Hex accepts uppercase hex characters');
+  Check(IsValidSha256Hex('0123456789abcdef' + StringOfChar('0', 48)),
+    'IsValidSha256Hex accepts mixed hex characters');
+  Check(not IsValidSha256Hex(StringOfChar('g', 64)),
+    'IsValidSha256Hex rejects 64 non-hex characters');
+  Check(not IsValidSha256Hex(StringOfChar('a', 63)),
+    'IsValidSha256Hex rejects 63 characters');
+  Check(not IsValidSha256Hex(StringOfChar('a', 65)),
+    'IsValidSha256Hex rejects 65 characters');
+  Check(not IsValidSha256Hex(''),
+    'IsValidSha256Hex rejects the empty string');
+  Check(not IsValidSha256Hex(StringOfChar('a', 64) + ' '),
+    'IsValidSha256Hex rejects trailing whitespace');
+  ExpectException(
+    procedure
+    begin
+      ParseReleasesJson(ReleasesJsonFor('1.0.0', StringOfChar('g', 64), 5));
+    end,
+    'releases.json rejects a full-length non-hex sha256 (format validation)');
+end;
+
+procedure TestRecordAuth(const ARoot: string);
+var
+  KeyDir1, KeyDir2: string;
+  Key1, Key1b, Key2: TBytes;
+  Hmac1, Hmac2: string;
+begin
+  // Synthetic keys for the pure-HMAC assertions: no DPAPI dependency.
+  SetLength(Key1, 32);
+  FillChar(Key1[0], 32, $11);
+  SetLength(Key2, 32);
+  FillChar(Key2[0], 32, $22);
+
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  KeyDir1 := TPath.Combine(ARoot, 'recordauth1');
+  KeyDir2 := TPath.Combine(ARoot, 'recordauth2');
+  ForceDirectories(KeyDir1);
+  ForceDirectories(KeyDir2);
+  PortappixRecordKeyPathOverride := TPath.Combine(KeyDir1, 'rollback_key.bin');
+  try
+    Key1 := GetRollbackKey;
+    Check(Length(Key1) = 32, 'RecordAuth: rollback key is 32 bytes');
+    Check(TFile.Exists(PortappixRecordKeyPathOverride),
+      'RecordAuth: DPAPI-protected key file persisted');
+    Key1b := GetRollbackKey;
+    Check(BytesEqual(Key1, Key1b),
+      'RecordAuth: key round-trips through DPAPI protection');
+    PortappixRecordKeyPathOverride := TPath.Combine(KeyDir2, 'rollback_key.bin');
+    Key2 := GetRollbackKey;
+    Check(not BytesEqual(Key1, Key2),
+      'RecordAuth: each installation generates an independent key');
+  finally
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+  end;
+  {$ENDIF}
+
+  Hmac1 := ComputeRecordHmac(Key1, StringOfChar('a', 64), 5, '1.0.0',
+    '2026-11-11T00:00:00.000Z');
+  Check(Length(Hmac1) = 64, 'RecordAuth: HMAC digest is 64 hex characters');
+  Check(RecordHmacMatches(Hmac1, Hmac1.ToUpper),
+    'RecordAuth: HMAC comparison is case-insensitive');
+  Check(not RecordHmacMatches(Hmac1, Copy(Hmac1, 1, 63) + '0'),
+    'RecordAuth: a single changed HMAC character is rejected');
+  Check(not RecordHmacMatches(Hmac1, 'short'),
+    'RecordAuth: a wrong-length HMAC is rejected');
+  Check(not RecordHmacMatches(Hmac1, ''),
+    'RecordAuth: an empty HMAC is rejected');
+
+  // Every protected field participates in the canonical serialization.
+  Check(not RecordHmacMatches(Hmac1, ComputeRecordHmac(Key1,
+    StringOfChar('b', 64), 5, '1.0.0', '2026-11-11T00:00:00.000Z')),
+    'RecordAuth: a modified sha256 field changes the HMAC');
+  Check(not RecordHmacMatches(Hmac1, ComputeRecordHmac(Key1,
+    StringOfChar('a', 64), 6, '1.0.0', '2026-11-11T00:00:00.000Z')),
+    'RecordAuth: a modified size field changes the HMAC');
+  Check(not RecordHmacMatches(Hmac1, ComputeRecordHmac(Key1,
+    StringOfChar('a', 64), 5, '1.0.1', '2026-11-11T00:00:00.000Z')),
+    'RecordAuth: a modified version field changes the HMAC');
+  Check(not RecordHmacMatches(Hmac1, ComputeRecordHmac(Key1,
+    StringOfChar('a', 64), 5, '1.0.0', '2026-11-12T00:00:00.000Z')),
+    'RecordAuth: a modified recordedAt field changes the HMAC');
+
+  Hmac2 := ComputeRecordHmac(Key2, StringOfChar('a', 64), 5, '1.0.0',
+    '2026-11-11T00:00:00.000Z');
+  Check(not RecordHmacMatches(Hmac1, Hmac2),
+    'RecordAuth: a different key produces a different HMAC');
+end;
+
+procedure TestOldLauncherRecordAuth(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  LauncherExe, OldLauncherExe, RecordFile, CacheDir: string;
+  OldContent, NewContent, OldHash, RecordJson, Err, RecordedHmac: string;
+  OldSize: Int64;
+  StampJson: TJSONObject;
+  Key2: TBytes;
+  ForeignRecordedAt: string;
+begin
+  CacheDir := TPath.Combine(ARoot, 'recordauth-root');
+  ForceDirectories(TPath.Combine(CacheDir, 'Cache'));
+  LauncherExe := TPath.Combine(CacheDir, 'Launcher.exe');
+  OldLauncherExe := TPath.Combine(CacheDir, 'Launcher.exe.old');
+  RecordFile := TPath.Combine(TPath.Combine(CacheDir, 'Cache'), 'old_launcher.json');
+  OldContent := 'recordauth-v1-original';
+  NewContent := 'recordauth-v2-current';
+  TFile.WriteAllText(LauncherExe, NewContent, TEncoding.ASCII);
+  TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
+  OldHash := Sha256File(OldLauncherExe).ToLower;
+  OldSize := TFile.GetSize(OldLauncherExe);
+
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth1', 'rollback_key.bin');
+  {$ENDIF}
+  Manager := TPortappixUpdateManager.Create(CacheDir);
+  try
+    // 1. A schema-1 record (no HMAC) is the migration input: it verifies and
+    //    is re-stamped to an authenticated schema-2 record.
+    WriteTextFile(RecordFile, Format('{"schema":1,"sha256":"%s","size":%d,"version":"0.0.0"}',
+      [OldHash, OldSize]));
+    Check(Manager.VerifyOldLauncher(Err),
+      'RecordAuth: schema-1 record verifies as the migration input');
+    RecordJson := TFile.ReadAllText(RecordFile, TEncoding.UTF8);
+    StampJson := TJSONObject.ParseJSONValue(RecordJson) as TJSONObject;
+    try
+      Check((StampJson.FindValue('schema') as TJSONNumber).AsInt = 2,
+        'RecordAuth: verified schema-1 record re-stamped to schema 2');
+      Check((StampJson.FindValue('hmac') <> nil) and
+        (Length(StampJson.FindValue('hmac').Value) = 64),
+        'RecordAuth: re-stamped record carries an HMAC');
+      RecordedHmac := StampJson.FindValue('hmac').Value;
+    finally
+      StampJson.Free;
+    end;
+
+    // 2. Tampering any protected field while keeping the HMAC is refused.
+    WriteTextFile(RecordFile, Format('{"schema":2,"sha256":"%s","size":%d,"version":"0.0.0","hmac":"%s"}',
+      [Sha256Text('tampered').ToLower, OldSize, RecordedHmac]));
+    Check(not Manager.VerifyOldLauncher(Err),
+      'RecordAuth: tampered sha256 field is refused');
+    Check(ContainsText(Err, 'HMAC mismatch'),
+      'RecordAuth: tampered field reports HMAC mismatch');
+
+    WriteTextFile(RecordFile, Format('{"schema":2,"sha256":"%s","size":%d,"version":"0.0.0","hmac":"%s"}',
+      [OldHash, OldSize + 1, RecordedHmac]));
+    Check(not Manager.VerifyOldLauncher(Err),
+      'RecordAuth: tampered size field is refused');
+
+    // 3. A schema-2 record without an HMAC is refused.
+    WriteTextFile(RecordFile, Format('{"schema":2,"sha256":"%s","size":%d,"version":"0.0.0"}',
+      [OldHash, OldSize]));
+    Check(not Manager.VerifyOldLauncher(Err),
+      'RecordAuth: schema-2 record without HMAC is refused');
+    Check(ContainsText(Err, 'no HMAC'),
+      'RecordAuth: missing HMAC is reported');
+
+    // 4. An HMAC computed with a different key is refused.
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth2', 'rollback_key.bin');
+    Key2 := GetRollbackKey;
+    PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth1', 'rollback_key.bin');
+    {$ELSE}
+    Key2 := nil;
+    {$ENDIF}
+    ForeignRecordedAt := DateToISO8601(Now);
+    WriteTextFile(RecordFile, Format('{"schema":2,"sha256":"%s","size":%d,"version":"0.0.0","recordedAt":"%s","hmac":"%s"}',
+      [OldHash, OldSize, ForeignRecordedAt,
+       ComputeRecordHmac(Key2, OldHash, OldSize, '0.0.0', ForeignRecordedAt)]));
+    Check(not Manager.VerifyOldLauncher(Err),
+      'RecordAuth: HMAC from a different key is refused');
+    Check(ContainsText(Err, 'HMAC mismatch'),
+      'RecordAuth: foreign-key HMAC reports mismatch');
+
+    // 5. The valid re-stamped record verifies and rollback succeeds.
+    WriteTextFile(RecordFile, RecordJson);
+    Check(Manager.VerifyOldLauncher(Err),
+      'RecordAuth: authenticated schema-2 record verifies');
+    Check(Manager.RollbackToOldLauncher(False),
+      'RecordAuth: rollback with an authenticated record succeeds');
+    Check(TFile.ReadAllText(LauncherExe) = OldContent,
+      'RecordAuth: rollback restores the previous launcher');
+    Check(not TFile.Exists(RecordFile),
+      'RecordAuth: rollback consumes the record');
+  finally
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+
+procedure TestReviewFailClosed(const ARoot: string);
+var
+  Journal: TPortappixJournal;
+  TxDir, ReviewFile: string;
+  Items: TArray<TPortappixReviewItem>;
+  Err: string;
+begin
+  TxDir := TPath.Combine(ARoot, 'review-failclosed');
+  ForceDirectories(TxDir);
+  Journal := TPortappixJournal.Create(TxDir);
+  try
+    Journal.OnLog := procedure(AMsg: string) begin end;
+
+    // A missing review file is the normal empty state.
+    Items := Journal.ListReviewItems;
+    Check(Length(Items) = 0,
+      'Review fail-closed: a missing review file is an empty list');
+
+    // Malformed JSON must never be interpreted as an empty review list.
+    WriteTextFile(TPath.Combine(TxDir, 'Transactions', 'needs_review.json'), '{ invalid');
+    ExpectException(
+      procedure
+      begin
+        Journal.ListReviewItems;
+      end,
+      'Review fail-closed: malformed JSON raises instead of an empty list');
+
+    // Wrong root type.
+    WriteTextFile(TPath.Combine(TxDir, 'Transactions', 'needs_review.json'), '{"appId":"x"}');
+    ExpectException(
+      procedure
+      begin
+        Journal.ListReviewItems;
+      end,
+      'Review fail-closed: a non-array root raises instead of an empty list');
+
+    // Non-object entry.
+    WriteTextFile(TPath.Combine(TxDir, 'Transactions', 'needs_review.json'), '"just a string"');
+    ExpectException(
+      procedure
+      begin
+        Journal.ListReviewItems;
+      end,
+      'Review fail-closed: a scalar root raises');
+
+    WriteTextFile(TPath.Combine(TxDir, 'Transactions', 'needs_review.json'),
+      '[{"appId":"a","junctionPath":"j","target":"t"},{"nope":1}]');
+    ExpectException(
+      procedure
+      begin
+        Journal.ListReviewItems;
+      end,
+      'Review fail-closed: a non-object entry raises');
+
+    // Missing required field.
+    WriteTextFile(TPath.Combine(TxDir, 'Transactions', 'needs_review.json'),
+      '[{"appId":"a","junctionPath":"j"}]');
+    ExpectException(
+      procedure
+      begin
+        Journal.ListReviewItems;
+      end,
+      'Review fail-closed: a missing required field raises');
+
+    // Empty required field.
+    WriteTextFile(TPath.Combine(TxDir, 'Transactions', 'needs_review.json'),
+      '[{"appId":"","junctionPath":"j","target":"t"}]');
+    ExpectException(
+      procedure
+      begin
+        Journal.ListReviewItems;
+      end,
+      'Review fail-closed: an empty required field raises');
+
+    // Invalid optional field type.
+    WriteTextFile(TPath.Combine(TxDir, 'Transactions', 'needs_review.json'),
+      '[{"appId":"a","junctionPath":"j","target":"t","time":123}]');
+    ExpectException(
+      procedure
+      begin
+        Journal.ListReviewItems;
+      end,
+      'Review fail-closed: a non-string optional field raises');
+
+    // BeginTransaction refuses to run while the review state is unreadable.
+    ExpectException(
+      procedure
+      begin
+        Journal.BeginTransaction('demo');
+      end,
+      'Review fail-closed: BeginTransaction refuses while review state is unreadable');
+
+    // ClearReview reports the unreadable state instead of clearing blindly.
+    Check(not Journal.ClearReview('demo', False, False, Err),
+      'Review fail-closed: ClearReview fails on unreadable review state');
+    Check(ContainsText(Err, 'review state'),
+      'Review fail-closed: ClearReview reports the review-state error');
+
+    // A valid file still loads.
+    ReviewFile := TPath.Combine(TxDir, 'Transactions', 'needs_review.json');
+    WriteTextFile(ReviewFile,
+      '[{"appId":"a","junctionPath":"j","target":"t","time":"t0","reason":"r"}]');
+    Items := Journal.ListReviewItems;
+    Check((Length(Items) = 1) and (Items[0].AppId = 'a'),
+      'Review fail-closed: a valid review file still loads');
+  finally
+    Journal.Free;
+  end;
+end;
+
+procedure TestRollbackConcurrentReplacement(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, LauncherExe, OldLauncherExe, RecordFile: string;
+  OldContent, NewContent, OldHash, Err, RecordedAt: string;
+  OldSize: Int64;
+  VerifyHandle, DenyHandle, WriterHandle: THandle;
+  FailedBefore, FailedAfter: TArray<string>;
+begin
+  RootDir := TPath.Combine(ARoot, 'concurrent-root');
+  ForceDirectories(TPath.Combine(RootDir, 'Cache'));
+  LauncherExe := TPath.Combine(RootDir, 'Launcher.exe');
+  OldLauncherExe := TPath.Combine(RootDir, 'Launcher.exe.old');
+  RecordFile := TPath.Combine(TPath.Combine(RootDir, 'Cache'), 'old_launcher.json');
+  OldContent := 'concurrent-v1-original';
+  NewContent := 'concurrent-v2-current';
+  TFile.WriteAllText(LauncherExe, NewContent, TEncoding.ASCII);
+  TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
+  OldHash := Sha256File(OldLauncherExe).ToLower;
+  OldSize := TFile.GetSize(OldLauncherExe);
+
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth1', 'rollback_key.bin');
+  {$ENDIF}
+  Manager := TPortappixUpdateManager.Create(RootDir);
+  try
+    // Build an authenticated schema-2 record the same way the launcher does;
+    // recordedAt must be captured ONCE so the HMAC covers exactly what is
+    // written.
+    RecordedAt := DateToISO8601(Now);
+    WriteTextFile(RecordFile, Format(
+      '{"schema":2,"sha256":"%s","size":%d,"version":"0.0.0","recordedAt":"%s","hmac":"%s"}',
+      [OldHash, OldSize, RecordedAt,
+       ComputeRecordHmac(GetRollbackKey, OldHash, OldSize, '0.0.0', RecordedAt)]));
+    Check(Manager.VerifyOldLauncher(Err),
+      'Concurrent: authenticated baseline record verifies');
+
+    // 1. The verify window holds a write-denying handle: a replacement
+    //    attempt from another "process" (share mode) fails for the whole
+    //    window. Verify the sharing semantics directly.
+    VerifyHandle := CreateFile(PChar(OldLauncherExe), GENERIC_READ,
+      FILE_SHARE_READ or FILE_SHARE_DELETE, nil, OPEN_EXISTING, 0, 0);
+    try
+      Check(VerifyHandle <> INVALID_HANDLE_VALUE,
+        'Concurrent: verify-style handle opened (read + delete share, no write share)');
+      WriterHandle := CreateFile(PChar(OldLauncherExe), GENERIC_WRITE, 0, nil,
+        OPEN_EXISTING, 0, 0);
+      if WriterHandle = INVALID_HANDLE_VALUE then
+        Check(GetLastError = ERROR_SHARING_VIOLATION,
+          'Concurrent: a writer cannot replace the file while the verify handle is open')
+      else
+      begin
+        Check(False,
+          'Concurrent: a writer cannot replace the file while the verify handle is open');
+        CloseHandle(WriterHandle);
+      end;
+    finally
+      CloseHandle(VerifyHandle);
+    end;
+
+    // 2. Rollback is refused (fail closed) while the file is held with no
+    //    sharing at all, and refuses without touching either executable.
+    FailedBefore := TDirectory.GetFiles(RootDir, 'Launcher.exe.failed_*');
+    DenyHandle := CreateFile(PChar(OldLauncherExe), GENERIC_READ, 0, nil,
+      OPEN_EXISTING, 0, 0);
+    Check(DenyHandle <> INVALID_HANDLE_VALUE,
+      'Concurrent: exclusive holder opened Launcher.exe.old');
+    try
+      ExpectException(
+        procedure
+        begin
+          Manager.RollbackToOldLauncher(False);
+        end,
+        'Concurrent: rollback is refused while Launcher.exe.old is exclusively held');
+      Check(TFile.ReadAllText(LauncherExe) = NewContent,
+        'Concurrent: refused rollback leaves Launcher.exe untouched');
+      // .old cannot be re-opened while the exclusive holder is open; verify
+      // it is untouched through the held handle itself.
+      Check(Sha256Handle(DenyHandle).ToLower = OldHash,
+        'Concurrent: refused rollback leaves Launcher.exe.old untouched');
+      FailedAfter := TDirectory.GetFiles(RootDir, 'Launcher.exe.failed_*');
+      Check(Length(FailedBefore) = Length(FailedAfter),
+        'Concurrent: refused rollback creates no .failed_* executable');
+    finally
+      CloseHandle(DenyHandle);
+    end;
+
+    // 3. Once the holder releases the file, the rollback succeeds.
+    Check(Manager.RollbackToOldLauncher(False),
+      'Concurrent: rollback succeeds after the external holder releases the file');
+    Check(TFile.ReadAllText(LauncherExe) = OldContent,
+      'Concurrent: rollback restores the previous launcher');
+  finally
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+
+{$IFDEF PORTAPPIX_TESTINJECT}
+procedure TestReviewPersistenceFailures(const ARoot: string);
+var
+  Journal: TPortappixJournal;
+  TxDir, ReviewFile, Seeded: string;
+  Err: string;
+begin
+  TxDir := TPath.Combine(ARoot, 'review-persist-failure');
+  ForceDirectories(TxDir);
+  Journal := TPortappixJournal.Create(TxDir);
+  try
+    Journal.OnLog := procedure(AMsg: string) begin end;
+    ReviewFile := TPath.Combine(TxDir, 'Transactions', 'needs_review.json');
+    // Two seeded entries: clearing one keeps the other, which forces the
+    // rewrite path (the delete path is not covered by the write hook).
+    Seeded := '[{"appId":"keep","junctionPath":"J:\\keep","target":"T:\\t","time":"t0","reason":"r"},' +
+      '{"appId":"keep2","junctionPath":"J:\\keep2","target":"T:\\t2","time":"t0","reason":"r"}]';
+    WriteTextFile(ReviewFile, Seeded);
+
+    // Access denied during the review persistence write.
+    PortappixWriteHook :=
+      function(const AFileName, AContent: string): TPortappixWriteHookResult
+      begin
+        if SameText(AFileName, ReviewFile) then
+          Result := whRaiseAccessDenied
+        else
+          Result := whPass;
+      end;
+    ExpectException(
+      procedure
+      begin
+        Journal.RecordReviewItem('demo', 'J:\demo', 'T:\demo', 'unowned');
+      end,
+      'Review persistence: RecordReviewItem raises on access denied');
+    Check(TFile.ReadAllText(ReviewFile) = Seeded,
+      'Review persistence: needs_review.json is untouched after a failed record');
+
+    // Silent write failure (disk-full semantics: temp written and lost).
+    PortappixWriteHook :=
+      function(const AFileName, AContent: string): TPortappixWriteHookResult
+      begin
+        if SameText(AFileName, ReviewFile) then
+          Result := whFailAfterTemp
+        else
+          Result := whPass;
+      end;
+    ExpectException(
+      procedure
+      begin
+        Journal.RecordReviewItem('demo2', 'J:\demo2', 'T:\demo2', 'unowned');
+      end,
+      'Review persistence: RecordReviewItem raises on disk-full');
+    Check(TFile.ReadAllText(ReviewFile) = Seeded,
+      'Review persistence: needs_review.json is untouched after disk-full');
+
+    // Clearing persistence failure keeps the review entries.
+    PortappixWriteHook :=
+      function(const AFileName, AContent: string): TPortappixWriteHookResult
+      begin
+        if SameText(AFileName, ReviewFile) then
+          Result := whFail
+        else
+          Result := whPass;
+      end;
+    Check(not Journal.ClearReview('keep', True, False, Err),
+      'Review clearing: ClearReview fails when the rewrite cannot be persisted');
+    Check(ContainsText(Err, 'persist'),
+      'Review clearing: ClearReview reports the persistence error');
+    Check(TFile.ReadAllText(ReviewFile) = Seeded,
+      'Review clearing: the review entries survive a failed clear');
+
+    // Once the hook is removed the same operations succeed.
+    PortappixWriteHook := nil;
+    Check(Journal.ClearReview('keep', True, False, Err),
+      'Review clearing: ClearReview succeeds after the failure is removed');
+    Check(ContainsText(TFile.ReadAllText(ReviewFile), 'keep2') and
+      (not ContainsText(TFile.ReadAllText(ReviewFile), '"keep"')),
+      'Review clearing: only the cleared entry is removed once persistence works');
+  finally
+    PortappixWriteHook := nil;
+    Journal.Free;
+  end;
+end;
+
+procedure TestUpdateFailureInjection(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, CacheDir, LauncherExe, OldLauncherExe, RecordFile, OkFile,
+  PendingFile, ZipPath, ReadmeFile, Err: string;
+  OldContent, NewContent, PreSwapHash: string;
+  Release: TPortappixRelease;
+begin
+  RootDir := TPath.Combine(ARoot, 'update-inject');
+  CacheDir := TPath.Combine(RootDir, 'Cache');
+  ForceDirectories(CacheDir);
+  LauncherExe := TPath.Combine(RootDir, 'Launcher.exe');
+  OldLauncherExe := TPath.Combine(RootDir, 'Launcher.exe.old');
+  RecordFile := TPath.Combine(CacheDir, 'old_launcher.json');
+  OkFile := TPath.Combine(CacheDir, 'update_ok');
+  PendingFile := TPath.Combine(CacheDir, 'update_pending.json');
+  ReadmeFile := TPath.Combine(RootDir, 'readme.txt');
+  OldContent := 'inject-v1-original';
+  NewContent := 'inject-v2-updated';
+
+  ZipPath := TPath.Combine(CacheDir, 'update_inject.zip');
+  BuildLauncherZip(ZipPath, NewContent);
+  Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+    Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth1', 'rollback_key.bin');
+  {$ENDIF}
+  Manager := TPortappixUpdateManager.Create(RootDir);
+  try
+    TFile.WriteAllText(LauncherExe, OldContent, TEncoding.ASCII);
+    PreSwapHash := Sha256File(LauncherExe).ToLower;
+
+    // Scenario 1: metadata write failure aborts before ANY rename.
+    PortappixWriteHook :=
+      function(const AFileName, AContent: string): TPortappixWriteHookResult
+      begin
+        if SameText(AFileName, RecordFile) then
+          Result := whFail
+        else
+          Result := whPass;
+      end;
+    ExpectException(
+      procedure
+      begin
+        Manager.PrepareUpdate(ZipPath, Release, False);
+      end,
+      'Update injection: a metadata write failure aborts PrepareUpdate');
+    Check(TFile.ReadAllText(LauncherExe) = OldContent,
+      'Update injection: metadata write failure leaves the launcher untouched');
+    Check(not TFile.Exists(OldLauncherExe),
+      'Update injection: metadata write failure creates no .old');
+    Check(not TFile.Exists(RecordFile),
+      'Update injection: metadata write failure leaves no stale record');
+    Check(not TFile.Exists(PendingFile),
+      'Update injection: metadata write failure leaves no pending marker');
+
+    // Scenario 2: disk-full simulation (temp file written, then lost).
+    PortappixWriteHook :=
+      function(const AFileName, AContent: string): TPortappixWriteHookResult
+      begin
+        if SameText(AFileName, RecordFile) then
+          Result := whFailAfterTemp
+        else
+          Result := whPass;
+      end;
+    ExpectException(
+      procedure
+      begin
+        Manager.PrepareUpdate(ZipPath, Release, False);
+      end,
+      'Update injection: a disk-full simulation aborts PrepareUpdate');
+    Check(TFile.ReadAllText(LauncherExe) = OldContent,
+      'Update injection: disk-full leaves the launcher untouched');
+    Check(Sha256File(LauncherExe) = PreSwapHash,
+      'Update injection: disk-full launcher hash matches the pre-swap hash');
+    PortappixWriteHook := nil;
+
+    // Scenario 3: the running-launcher rename fails; the original
+    // executable and previous metadata must be restored.
+    PortappixRenameHook :=
+      function(const AFrom, ATo: string): Integer
+      begin
+        if SameText(ATo, OldLauncherExe) then
+          Result := ERROR_ACCESS_DENIED
+        else
+          Result := 0;
+      end;
+    ExpectException(
+      procedure
+      begin
+        Manager.PrepareUpdate(ZipPath, Release, False);
+      end,
+      'Update injection: a launcher rename failure aborts PrepareUpdate');
+    Check(TFile.ReadAllText(LauncherExe) = OldContent,
+      'Update injection: rename failure restores the original launcher');
+    Check(Sha256File(LauncherExe) = PreSwapHash,
+      'Update injection: restored launcher is byte-identical to the pre-swap state');
+    Check(not TFile.Exists(OldLauncherExe),
+      'Update injection: rename failure leaves no .old');
+    Check(not TFile.Exists(RecordFile),
+      'Update injection: rename failure leaves no rollback record (no backup existed)');
+    Check(not TFile.Exists(PendingFile),
+      'Update injection: rename failure leaves no pending marker');
+    Check(Length(TDirectory.GetFiles(CacheDir, 'launcher_rollback_*')) = 0,
+      'Update injection: the rollback backup directory is cleaned after a verified restore');
+    PortappixRenameHook := nil;
+
+    // Scenario 4: the new-launcher installation rename fails after the old
+    // launcher was moved away; everything must be restored, including a
+    // replaced root file and a pre-existing update_ok marker.
+    TFile.WriteAllText(OkFile, '{"toVersion":"0.9.0","confirmedAt":"t"}');
+    TFile.WriteAllText(ReadmeFile, 'old-readme-content');
+    PortappixRenameHook :=
+      function(const AFrom, ATo: string): Integer
+      begin
+        if SameText(AFrom, TPath.Combine(TPath.Combine(RootDir, 'Cache'),
+          'launcher_new\Launcher.exe')) then
+          Result := ERROR_WRITE_FAULT
+        else
+          Result := 0;
+      end;
+    ExpectException(
+      procedure
+      begin
+        Manager.PrepareUpdate(ZipPath, Release, False);
+      end,
+      'Update injection: a new-launcher installation failure aborts PrepareUpdate');
+    Check(Sha256File(LauncherExe) = PreSwapHash,
+      'Update injection: installation failure restores the launcher byte-identically');
+    Check(TFile.ReadAllText(OkFile).Contains('0.9.0'),
+      'Update injection: the previous update_ok marker is restored');
+    Check(TFile.ReadAllText(ReadmeFile) = 'old-readme-content',
+      'Update injection: the replaced root file is restored');
+    Check(not TFile.Exists(OldLauncherExe),
+      'Update injection: installation failure leaves no .old');
+    Check(not TFile.Exists(RecordFile),
+      'Update injection: installation failure leaves no rollback record');
+    Check(not TFile.Exists(PendingFile),
+      'Update injection: installation failure leaves no pending marker');
+    Check(Length(TDirectory.GetFiles(CacheDir, 'launcher_rollback_*')) = 0,
+      'Update injection: the rollback directory is cleaned after the verified restore');
+    PortappixRenameHook := nil;
+
+    // Scenario 5: a pre-existing pending marker is restored on failure.
+    WriteTextFile(PendingFile, '{"fromVersion":"0.8.0","toVersion":"0.9.0"}');
+    PortappixRenameHook :=
+      function(const AFrom, ATo: string): Integer
+      begin
+        if SameText(AFrom, TPath.Combine(TPath.Combine(RootDir, 'Cache'),
+          'launcher_new\Launcher.exe')) then
+          Result := ERROR_WRITE_FAULT
+        else
+          Result := 0;
+      end;
+    ExpectException(
+      procedure
+      begin
+        Manager.PrepareUpdate(ZipPath, Release, False);
+      end,
+      'Update injection: installation failure with a pre-existing pending marker aborts');
+    Check(ContainsText(TFile.ReadAllText(PendingFile), '0.8.0'),
+      'Update injection: the pre-existing pending marker is restored');
+    Check(Sha256File(LauncherExe) = PreSwapHash,
+      'Update injection: launcher is still byte-identical after the second failure');
+    PortappixRenameHook := nil;
+  finally
+    PortappixWriteHook := nil;
+    PortappixRenameHook := nil;
+    PortappixSpawnErrorCode := 0;
+    Release.Free;
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+{$ENDIF}
+
 procedure TestUpdateManager(const ARoot: string);
 var
   Manager: TPortappixUpdateManager;
@@ -5213,7 +5905,11 @@ begin
       JsonObj := TJSONObject.ParseJSONValue(JsonText) as TJSONObject;
       try
         Check(JsonObj <> nil, 'old_launcher.json is valid JSON');
-        Check((JsonObj.FindValue('schema') as TJSONNumber).AsInt = 1, 'old_launcher.json schema is 1');
+        Check((JsonObj.FindValue('schema') as TJSONNumber).AsInt = 2,
+          'old_launcher.json schema is 2 (authenticated record)');
+        Check((JsonObj.FindValue('hmac') <> nil) and
+          (Length(JsonObj.FindValue('hmac').Value) = 64),
+          'old_launcher.json carries an HMAC');
         Check(SameText(JsonObj.FindValue('sha256').Value, OldHash), 'old_launcher.json records correct SHA-256');
         Check((JsonObj.FindValue('size') as TJSONNumber).AsInt64 = OldSize, 'old_launcher.json records correct size');
         Check(JsonObj.FindValue('version').Value = '0.0.0', 'old_launcher.json records previous version');
@@ -5838,6 +6534,13 @@ begin
   Writeln('Portappix engine tests');
   Writeln('----------------------');
   Root := MakeTempRoot;
+  // Isolate the rollback-record key under the test root in every test build
+  // (unit tests must never touch the real %LOCALAPPDATA%).
+{$IFDEF PORTAPPIX_TESTCRASH}
+  ForceDirectories(TPath.Combine(Root, 'recordauth1'));
+  RecordKeyBasePath := TPath.Combine(Root, 'recordauth1', 'rollback_key.bin');
+  PortappixRecordKeyPathOverride := RecordKeyBasePath;
+{$ENDIF}
   try
     TestTokenExpansion;
     TestManifestParsing(Root);
@@ -5885,6 +6588,22 @@ begin
     TestSettings(Root);
     TestUpdateManager(Root);
     TestOldLauncherVerification(Root);
+    TestIsValidSha256Hex;
+    TestRecordAuth(Root);
+    TestOldLauncherRecordAuth(Root);
+    TestReviewFailClosed(Root);
+    TestRollbackConcurrentReplacement(Root);
+{$IFDEF PORTAPPIX_TESTINJECT}
+    TestReviewPersistenceFailures(Root);
+    TestUpdateFailureInjection(Root);
+    // Materialize the marker constant into the test-mode binary (byte-scanned
+    // by the isolation tests); production binaries contain no reference and
+    // therefore no marker bytes.
+    InjectMarkerProbe := PortappixTestInjectMarker;
+    Check((InjectMarkerProbe <> '') and
+      (Pos('TESTINJECT', InjectMarkerProbe) > 0),
+      'the failure-injection marker constant is present in test builds');
+{$ENDIF}
     TestReleaseUrlSecurity;
     TestConsent(Root);
 {$IFDEF PORTAPPIX_TESTCRASH}
