@@ -42,6 +42,28 @@ try {
     Write-Host "Gate 3 encountered error: $_" -ForegroundColor Red
 }
 
+# Gate 4: Production Rollback Validation
+Write-Host "`n============================================================" -ForegroundColor Cyan
+Write-Host "GATE 4: PRODUCTION ROLLBACK VALIDATION" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
+$gate4Log = Join-Path $ResultsDir "gate4_rollback.log"
+try {
+    powershell -ExecutionPolicy Bypass -File .\tests\suite\run_rollback_validation.ps1 -IConfirmThisIsAVM -Launcher .\bin\Launcher.exe -FixtureDir .\tests\suite\fixtures\selfupdate *>&1 | Tee-Object -FilePath $gate4Log
+} catch {
+    Write-Host "Gate 4 encountered error: $_" -ForegroundColor Red
+}
+
+# Gate 5: Standard User Elevation Check
+Write-Host "`n============================================================" -ForegroundColor Cyan
+Write-Host "GATE 5: STANDARD USER ELEVATION CHECK" -ForegroundColor Cyan
+Write-Host "============================================================" -ForegroundColor Cyan
+$gate5Log = Join-Path $ResultsDir "gate5_standard_user.log"
+try {
+    powershell -ExecutionPolicy Bypass -File .\tests\suite\run_standard_user_validation.ps1 -IConfirmThisIsAVM -Launcher .\bin\Launcher.exe *>&1 | Tee-Object -FilePath $gate5Log
+} catch {
+    Write-Host "Gate 5 encountered error: $_" -ForegroundColor Red
+}
+
 # Mark completion
 $doneFile = Join-Path $ResultsDir "all_gates_complete.txt"
 Set-Content -Path $doneFile -Value "COMPLETED $(Get-Date -Format 'o')" -Encoding utf8

@@ -473,6 +473,50 @@ function Run-CrashCase {
         Check ($after2.Files -eq $after1.Files) "recovery pass 2 changed nothing (idempotent)"
         if ($Checkpoint -eq 'op:2:created') {
             Check ($after2.JunctionTarget -eq $after1.JunctionTarget) "recovery pass 2 left the unowned junction untouched"
+
+            # Assertions for unowned junction UX:
+            $reviewPath = Join-Path $caseRoot 'Transactions\needs_review.json'
+            Check (Test-Path $reviewPath) "needs_review.json exists under Transactions"
+            if (Test-Path $reviewPath) {
+                $reviewItems = Get-Content -Raw $reviewPath | ConvertFrom-Json
+                $appReview = @($reviewItems) | Where-Object { $_.appId -eq $caseId }
+                Check ($null -ne $appReview) "needs_review.json contains entry for '$caseId'"
+                if ($null -ne $appReview) {
+                    Check ($appReview[0].junctionPath -eq $fixture.HostPath) "review item recorded the unowned junction path"
+                }
+            }
+
+            # Next --run for this app is refused with exit code 6
+            $nextRun = Invoke-TestLauncher -CaseId $caseId -CaseRoot $caseRoot -Arguments @('--run', $caseId)
+            Check ($nextRun.ExitCode -eq 6) "next --run for $caseId exited with 6 (CliExitNeedsReview, got $($nextRun.ExitCode))"
+            Check ($nextRun.Output -match 'manual review' -or $nextRun.Output -match '--clear-review') "next --run mentions manual review / clear-review"
+
+            # Other apps are NOT blocked: set up appdatawriter and verify it runs cleanly
+            $otherAppDir = Join-Path $caseRoot 'Apps\appdatawriter'
+            if (-not (Test-Path $otherAppDir)) {
+                New-Item -ItemType Directory -Force -Path $otherAppDir | Out-Null
+                $adwExe = Join-Path $RepoDir 'tests\fakeapps\out\AppDataWriter\AppDataWriter.exe'
+                $adwManifest = Join-Path $RepoDir 'tests\fakeapps\src\AppDataWriter\app.json'
+                if ((Test-Path $adwExe) -and (Test-Path $adwManifest)) {
+                    Copy-Item -LiteralPath $adwExe (Join-Path $otherAppDir 'AppDataWriter.exe') -Force
+                    Copy-Item -LiteralPath $adwManifest (Join-Path $otherAppDir 'app.json') -Force
+                }
+            }
+            if (Test-Path (Join-Path $otherAppDir 'app.json')) {
+                $otherRun = Invoke-TestLauncher -CaseId $caseId -CaseRoot $caseRoot -Arguments @('--run', 'appdatawriter')
+                Check ($otherRun.ExitCode -eq 0) "other app 'appdatawriter' is NOT blocked and exited 0 (got $($otherRun.ExitCode))"
+            }
+
+            # Verify --clear-review requires --force or --delete-unowned-junction while junction exists
+            $clearNoFlags = Invoke-TestLauncher -CaseId $caseId -CaseRoot $caseRoot -Arguments @('--clear-review', $caseId)
+            Check ($clearNoFlags.ExitCode -ne 0) "--clear-review without flags failed while junction exists (got $($clearNoFlags.ExitCode))"
+
+            # Verify --clear-review --delete-unowned-junction clears the item and removes junction
+            $clearWithDel = Invoke-TestLauncher -CaseId $caseId -CaseRoot $caseRoot -Arguments @('--clear-review', $caseId, '--delete-unowned-junction')
+            Check ($clearWithDel.ExitCode -eq 0) "--clear-review --delete-unowned-junction succeeded (got $($clearWithDel.ExitCode))"
+            Check (-not (Test-Path $fixture.HostPath)) "unowned junction was removed by --clear-review --delete-unowned-junction"
+            $afterClear = Invoke-TestLauncher -CaseId $caseId -CaseRoot $caseRoot -Arguments @('--run', $caseId)
+            Check ($afterClear.ExitCode -ne 6) "after clearing review, app is no longer blocked with exit code 6"
         } else {
             Check ($after2.JunctionTarget -eq $fixture.OriginalTarget) "recovery pass 2 left the junction restored"
         }

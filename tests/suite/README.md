@@ -78,6 +78,27 @@ powershell -ExecutionPolicy Bypass -File .\tests\suite\run_selfupdate_validation
     -FixtureDir .\tests\suite\fixtures\selfupdate
 ```
 
+### Gate 4: Production Rollback Validation
+```powershell
+Set-Location C:\users\WDAGUtilityAccount\Desktop\portappix
+powershell -ExecutionPolicy Bypass -File .\tests\suite\run_rollback_validation.ps1 `
+    -IConfirmThisIsAVM `
+    -Launcher .\bin\Launcher.exe `
+    -FixtureDir .\tests\suite\fixtures\selfupdate
+```
+Validates the non-interactive production rollback path using the release binary (`bin\Launcher.exe --accept-rollback`):
+- Case 1: Update 1.0.0 -> 1.1.0, simulate missing `Cache\update_ok`, verify rollback restores 1.0.0 and consumes `Launcher.exe.old`.
+- Case 2: Update 1.1.0 -> 1.3.0-fail (startup crash), verify rollback restores working 1.1.0.
+
+### Gate 5: Standard User Elevation Validation
+```powershell
+Set-Location C:\users\WDAGUtilityAccount\Desktop\portappix
+powershell -ExecutionPolicy Bypass -File .\tests\suite\run_standard_user_validation.ps1 `
+    -IConfirmThisIsAVM `
+    -Launcher .\bin\Launcher.exe
+```
+In a full VM with secondary logon (`seclogon`) enabled, creates a temporary standard user and validates that `ElevationRequired.exe` fails closed with `ERROR_ELEVATION_REQUIRED` (740) without leaving orphaned junctions or registry keys. Inside Windows Sandbox containers (where secondary logon is restricted by hypervisor container policy), cleanly detects and reports this environment limitation.
+
 ## 3. Run in Hyper-V VM / any clean Windows machine
 
 ```powershell
