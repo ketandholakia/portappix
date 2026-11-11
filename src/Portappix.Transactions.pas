@@ -1787,7 +1787,16 @@ begin
   end;
 
   if AOp.Status = opAbsent then
-    Exit(uoRestored); // the key did not exist when the export ran; no file expected
+  begin
+    // The key did not exist before the run: restore that state if it was created.
+    if FRegistryOps.KeyExists(AOp.RegistryKey) then
+    begin
+      if not FRegistryOps.DeleteKey(AOp.RegistryKey) then
+        Exit(Retry(Format('unable to delete the key "%s" that did not exist before the run.',
+          [AOp.RegistryKey])));
+    end;
+    Exit(uoRestored);
+  end;
 
   if AOp.Status in [opPending, opFailed] then
   begin
@@ -1891,7 +1900,9 @@ begin
     Op := ATx.OperationAt(Index);
     Log(Format('Reconciling op %d (%s/%s)...',
       [Index, TPortappixTransaction.OpKindToString(Op.Kind), TPortappixTransaction.OpStatusToString(Op.Status)]));
-    if Op.Status in [opRestored, opAbsent] then
+    if Op.Status = opRestored then
+      Continue;
+    if (Op.Status = opAbsent) and (Op.Kind <> okRegistryBackup) then
       Continue;
     case Op.Kind of
       okJunctionRemoveOld: Outcome := UndoJunctionRemoveOld(ATx, Op);

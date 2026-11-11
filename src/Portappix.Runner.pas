@@ -125,6 +125,10 @@ type
     property HostPathOps: IPortappixHostPathOps read FHostPathOps write FHostPathOps;
   end;
 
+function ExportKeysToRegistryFile(const AOps: IPortappixRegistryOps;
+  const AKeys: TArray<string>; const ADataDir: string;
+  const ALog: TProc<string> = nil): Boolean;
+
 implementation
 
 const

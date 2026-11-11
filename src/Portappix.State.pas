@@ -790,11 +790,32 @@ function TPortappixJournal.ReconcileOneTransaction(
   const ATx: TPortappixTransaction): Boolean;
 var
   Reconciler: TPortappixTransactionReconciler;
+  KeysList: TList<string>;
+  Index: Integer;
+  Op: TPortappixTxOperation;
 begin
   Reconciler := TPortappixTransactionReconciler.Create(FRegistryOps, FHostPathOps, FOnLog);
   try
     if ATx.Legacy then
       Exit(RecoverLegacyTransaction(ATx));
+
+    if (ATx.State in [txRunning, txCleaning]) and (ATx.DataDir <> '') and TDirectory.Exists(ATx.DataDir) then
+    begin
+      KeysList := TList<string>.Create;
+      try
+        for Index := 0 to ATx.GetOperationCount - 1 do
+        begin
+          Op := ATx.OperationAt(Index);
+          if (Op.Kind in [okRegistryBackup, okRegistryDelete]) and (Op.RegistryKey <> '') then
+            if not KeysList.Contains(Op.RegistryKey) then
+              KeysList.Add(Op.RegistryKey);
+        end;
+        if KeysList.Count > 0 then
+          ExportKeysToRegistryFile(FRegistryOps, KeysList.ToArray, ATx.DataDir, FOnLog);
+      finally
+        KeysList.Free;
+      end;
+    end;
 
     if not Reconciler.ReconcileTransaction(ATx) then
     begin
