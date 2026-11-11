@@ -27,6 +27,9 @@ if ([string]::IsNullOrWhiteSpace($WorkDir)) {
     $WorkDir = Join-Path $env:TEMP "portappix_selfupdate_sandbox_test"
 }
 $WorkDir = [System.IO.Path]::GetFullPath($WorkDir)
+if (-not (Test-Path $WorkDir)) {
+    New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
+}
 
 Write-Host "============================================================"
 Write-Host "PORTAPPIX GATE 3: SELF-UPDATE SANDBOX VALIDATION"
@@ -45,7 +48,7 @@ if (-not (Test-Path $FeedDir)) {
 }
 
 # 1. Start background HTTP server using HttpListener
-$ActiveFeedFile = Join-Path $FeedDir "active_feed.txt"
+$ActiveFeedFile = Join-Path $env:TEMP "portappix_active_feed.txt"
 Set-Content -Path $ActiveFeedFile -Value "releases-1.1.0.json" -NoNewline -Encoding utf8
 
 $ServerScript = {
@@ -124,9 +127,20 @@ function Get-ExeVersion {
 }
 
 try {
-    # Verify HTTP listener is serving
-    $PingTest = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/releases.json" -UseBasicParsing -TimeoutSec 3
-    Assert-Condition ($PingTest.StatusCode -eq 200) "HTTP loopback server is serving releases.json"
+    # Verify HTTP listener is serving (poll with retry to allow background job startup)
+    $ready = $false
+    for ($i = 0; $i -lt 15; $i++) {
+        try {
+            $PingTest = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/releases.json" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+            if ($PingTest.StatusCode -eq 200) {
+                $ready = $true
+                break
+            }
+        } catch {
+            Start-Sleep -Seconds 1
+        }
+    }
+    Assert-Condition $ready "HTTP loopback server is serving releases.json"
 
     # Step 1: Initialize working directory with 1.0.0
     Write-Host "`nStep 1: Setting up initial working directory with Launcher 1.0.0..."

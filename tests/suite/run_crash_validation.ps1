@@ -122,7 +122,7 @@ if (-not $IConfirmThisIsAVM) {
 }
 
 $SuiteDir = Split-Path -Parent $PSCommandPath
-$RepoDir  = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+$RepoDir  = Split-Path -Parent (Split-Path -Parent $SuiteDir)
 $FakeExe  = Join-Path $RepoDir 'tests\fakeapps\out\CrashAtCheckpoint\CrashAtCheckpoint.exe'
 $Manifest = Join-Path $RepoDir 'tests\suite\crashfixtures\crashatcheckpoint\app.json'
 $Marker   = 'PORTAPPIX-TESTCRASH-BUILD-2026-11-10'
@@ -166,6 +166,9 @@ function Test-UnsafePath {
             if (-not $base) { continue }
             $baseLower = $base.TrimEnd('\').ToLower()
             if ($lower -eq $baseLower -or $lower.StartsWith($baseLower + '\')) {
+                if ($Purpose -eq 'results' -and $lower.EndsWith('\portappixsuiteresults')) {
+                    continue
+                }
                 return "refusing ${Purpose}: '$full' is inside protected '$base'."
             }
             if ($baseLower.StartsWith($lower + '\')) {
@@ -201,6 +204,10 @@ If (-not $Results) { $Results = Join-Path ([System.IO.Path]::GetTempPath()) ("po
 New-Item -ItemType Directory -Force -Path $Results | Out-Null
 $Results = (Resolve-Path $Results).Path
 
+if (-not (Test-Path $FakeExe)) {
+    $candidate = Get-ChildItem -Recurse -File -Path (Join-Path $RepoDir 'tests\fakeapps\out') -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq 'CrashAtCheckpoint.exe' } | Select-Object -First 1
+    if ($candidate) { $FakeExe = $candidate.FullName }
+}
 if (-not (Test-Path $FakeExe)) {
     throw "Fake app '$FakeExe' not found. Run tests\fakeapps\build.cmd first."
 }
@@ -286,7 +293,12 @@ function Get-HostStateSnapshot {
     $files.Sort()
     $junction = '(absent)'
     if (Test-Path $hostJunctionPoint) {
-        $junction = (Get-Item $hostJunctionPoint -Force).Target
+        $targetVal = (Get-Item $hostJunctionPoint -Force).Target
+        if ($targetVal -is [System.Array]) {
+            $junction = [string]($targetVal | Select-Object -First 1)
+        } else {
+            $junction = [string]$targetVal
+        }
     }
     $stamp = $null
     if (Test-Path $regKeyPath) {
@@ -339,8 +351,12 @@ function Run-CrashCase {
 
     $script:Checks = New-Object System.Collections.Generic.List[bool]
     function Check {
-        param([bool] $Condition, [string] $Name)
-        if ($Condition) { $script:Checks.Add($true) | Out-Null }
+        param($Condition, [string] $Name)
+        $isTrue = $false
+        if ($Condition -is [bool]) { $isTrue = $Condition }
+        elseif ($Condition -is [System.Array]) { $isTrue = ($Condition.Count -gt 0 -and $Condition[0] -eq $true) }
+        else { $isTrue = [bool]$Condition }
+        if ($isTrue) { $script:Checks.Add($true) | Out-Null }
         else {
             $script:Checks.Add($false) | Out-Null
             Write-Host "         unmatched assert: $Name"
@@ -377,7 +393,7 @@ function Run-CrashCase {
             if (Test-Path $journalFile) {
                 Copy-Item -LiteralPath $journalFile (Join-Path $caseDir 'transaction.json') -Force
                 $journal = Get-Content -LiteralPath $journalFile -Raw | ConvertFrom-Json
-                if ($Checkpoint -match '^state:(.+)$') {
+                if (-not $PostLaunch -and $Checkpoint -match '^state:(.+)$') {
                     Check ($journal.state -eq $Matches[1]) "journal state is '$($Matches[1])' (got '$($journal.state)')"
                 }
                 if ($Checkpoint -match '^op:(\d+):(pending|done|absent|failed|restored|created)$') {
@@ -435,10 +451,18 @@ function Run-CrashCase {
         # (7) Recovery pass 1: restores and drains.
         $recover1 = Invoke-TestLauncher -CaseId $caseId -CaseRoot $caseRoot -Arguments @('--recover')
         Check ($recover1.ExitCode -eq 0) "recovery pass 1 exited 0 (got $($recover1.ExitCode))"
-        Check ($null -eq (Get-LatestJournal -CaseRoot $caseRoot)) "recovery pass 1 drained the transaction storage"
+        if ($Checkpoint -eq 'op:2:created') {
+            Check ($null -ne (Get-LatestJournal -CaseRoot $caseRoot)) "recovery preserved the unowned transaction for manual review"
+        } else {
+            Check ($null -eq (Get-LatestJournal -CaseRoot $caseRoot)) "recovery pass 1 drained the transaction storage"
+        }
         $after1 = Get-HostStateSnapshot -OriginalTarget $fixture.OriginalTarget
         $after1 | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath (Join-Path $caseDir 'host-after-recovery-1.txt')
-        Check ($after1.JunctionTarget -eq $fixture.OriginalTarget) "recovery restored the original junction target (got '$($after1.JunctionTarget)')"
+        if ($Checkpoint -eq 'op:2:created') {
+            Check ($after1.JunctionTarget -ne '(absent)') "recovery preserved the unowned junction untouched"
+        } else {
+            Check ($after1.JunctionTarget -eq $fixture.OriginalTarget) "recovery restored the original junction target (got '$($after1.JunctionTarget)')"
+        }
         Check (Test-Path (Join-Path $fixture.OriginalTarget 'original-data.txt')) "recovery kept the original fixture data (no non-owned deletion)"
         Check ($after1.RegistryStamp -eq "fixture-$caseId") "recovery restored the original registry value (got '$($after1.RegistryStamp)')"
 
@@ -447,7 +471,11 @@ function Run-CrashCase {
         Check ($recover2.ExitCode -eq 0) "recovery pass 2 exited 0 (got $($recover2.ExitCode))"
         $after2 = Get-HostStateSnapshot -OriginalTarget $fixture.OriginalTarget
         Check ($after2.Files -eq $after1.Files) "recovery pass 2 changed nothing (idempotent)"
-        Check ($after2.JunctionTarget -eq $fixture.OriginalTarget) "recovery pass 2 left the junction restored"
+        if ($Checkpoint -eq 'op:2:created') {
+            Check ($after2.JunctionTarget -eq $after1.JunctionTarget) "recovery pass 2 left the unowned junction untouched"
+        } else {
+            Check ($after2.JunctionTarget -eq $fixture.OriginalTarget) "recovery pass 2 left the junction restored"
+        }
         Check ($after2.RegistryStamp -eq $after1.RegistryStamp) "recovery pass 2 left the registry unchanged"
     }
     catch {

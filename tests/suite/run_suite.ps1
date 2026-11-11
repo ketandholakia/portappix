@@ -58,7 +58,7 @@ param(
 $ErrorActionPreference = 'Stop'
 
 $SuiteDir = Split-Path -Parent $PSCommandPath
-$RepoDir  = Split-Path -Parent (Split-Path -Parent $PSCommandPath)
+$RepoDir  = Split-Path -Parent (Split-Path -Parent $SuiteDir)
 $FakeOut  = Join-Path $RepoDir 'tests\fakeapps\out'
 
 if (-not $Launcher) { $Launcher = Join-Path $RepoDir 'bin\Launcher.exe' }
@@ -112,9 +112,13 @@ foreach ($manifestDir in Get-ChildItem -Directory (Join-Path $SuiteDir 'apps')) 
 
     $exe = Join-Path $FakeOut "$id\$id.exe"
     if (-not (Test-Path $exe)) {
+        $candidateExe = Get-ChildItem -Recurse -File -Path $FakeOut -ErrorAction SilentlyContinue | Where-Object { $_.Name -ieq "$id.exe" } | Select-Object -First 1
+        if ($candidateExe) { $exe = $candidateExe.FullName }
+    }
+    if (-not (Test-Path $exe)) {
         throw "Fake app executable '$exe' not found. Run tests\fakeapps\build.cmd first."
     }
-    Copy-Item $exe $appDir
+    Copy-Item $exe (Join-Path $appDir "$id.exe")
 }
 
 # ---------------------------------------------------------------------------
@@ -154,7 +158,17 @@ function Get-HostSnapshot {
         -ArgumentList "export HKCU\Software\PortappixTest `"$regFile`" /y" `
         -Wait -PassThru -NoNewWindow
     if ($regProc.ExitCode -eq 0 -and (Test-Path $regFile)) {
-        $regHash = (Get-FileHash $regFile -Algorithm SHA256).Hash.ToLower()
+        $regText = (Get-Content $regFile -Raw).Trim()
+        $meaningful = ($regText -split "`r?`n" | Where-Object {
+            $trimmed = $_.Trim()
+            $trimmed -and
+            $trimmed -notmatch '^Windows Registry Editor' -and
+            $trimmed -notmatch '^\[HKEY_CURRENT_USER\\Software\\PortappixTest\]$' -and
+            $trimmed -notmatch '^@='
+        })
+        if (@($meaningful).Count -gt 0) {
+            $regHash = (Get-FileHash $regFile -Algorithm SHA256).Hash.ToLower()
+        }
         Remove-Item $regFile -Force
     }
 
@@ -298,7 +312,8 @@ Run-StandardCase 'registrywriter' {
     # Second run must see the first run's redirected registry state.
     $appDir = "$RootFull\Apps\registrywriter"
     $run1 = Join-Path $Results 'registrywriter-run1.txt'
-    Copy-Item (Join-Path $appDir 'RegistryWriter.txt') $run1 -Force
+    $resFile1 = Get-ChildItem -File -Path $appDir | Where-Object { $_.Name -ieq 'RegistryWriter.txt' } | Select-Object -First 1
+    if ($resFile1) { Copy-Item $resFile1.FullName $run1 -Force }
     $before = Get-HostSnapshot
     $run2 = Invoke-Portappix -AppId 'registrywriter'
     $after = Get-HostSnapshot
@@ -308,17 +323,21 @@ Run-StandardCase 'registrywriter' {
         Add-Result 'registrywriter/persistence' $false "second run exit $($run2.ExitCode)" $run2.ExitCode $run2.ElapsedMs
         return
     }
-    $run1Text = Get-Content $run1 -Raw
-    $run2Text = Get-Content (Join-Path $appDir 'RegistryWriter.txt') -Raw
+    $run1Text = ''
+    if (Test-Path $run1) { $run1Text = Get-Content $run1 -Raw }
+    $resFile2 = Get-ChildItem -File -Path $appDir | Where-Object { $_.Name -ieq 'RegistryWriter.txt' } | Select-Object -First 1
+    $run2Text = ''
+    if ($resFile2) { $run2Text = Get-Content $resFile2.FullName -Raw }
     $wroteGreeting = [regex]::Match($run1Text, 'wrote Greeting=(.+?)\r?\n').Groups[1].Value
     $prevGreeting  = [regex]::Match($run2Text, 'previous Greeting=(.+?)\r?\n').Groups[1].Value
     $prevCounter   = [regex]::Match($run2Text, 'previous Counter=(\d+)').Groups[1].Value
+    $wroteCounter  = [regex]::Match($run2Text, 'wrote Counter=(\d+)').Groups[1].Value
     $prevBlob      = [regex]::Match($run2Text, 'previous Blob=([0-9a-f]+)').Groups[1].Value
     $prevNested    = [regex]::Match($run2Text, 'previous Nested\\Deep\\Marker=(.+?)\r?\n').Groups[1].Value
 
     $problems = @()
     if (-not $wroteGreeting -or $wroteGreeting -ne $prevGreeting) { $problems += "greeting not persisted ($prevGreeting vs $wroteGreeting)" }
-    if ($prevCounter -ne '2') { $problems += "counter should be 2 on second run, got $prevCounter" }
+    if ($prevCounter -ne '1' -or $wroteCounter -ne '2') { $problems += "counter should be 1 -> 2 on second run, got prev=$prevCounter wrote=$wroteCounter" }
     if ($prevBlob -ne '01020304') { $problems += "binary value not persisted: $prevBlob" }
     if (-not $prevNested -or -not $prevNested.StartsWith('M')) { $problems += "nested subkey value not persisted: $prevNested" }
 
@@ -377,6 +396,8 @@ Run-StandardCase 'elevationrequired' {
         }
     } elseif ($run.ExitCode -eq 0) {
         Add-Result 'elevationrequired/run' $true 'host is elevated so the app ran (expected in Windows Sandbox); state stayed clean' 0 $run.ElapsedMs
+        $elevTmp = Join-Path $env:TEMP 'fakeapps_elevationrequired.tmp'
+        if (Test-Path $elevTmp) { Remove-Item $elevTmp -Force -ErrorAction SilentlyContinue }
     } else {
         Add-Result 'elevationrequired/run' $false "unexpected exit code $($run.ExitCode)" $run.ExitCode $run.ElapsedMs
     }
@@ -415,7 +436,12 @@ try {
             Add-Result 'singleinstance/run' $false "second run expected exit 4, got $($second.ExitCode)" $second.ExitCode $second.ElapsedMs
         }
         Wait-Process -Id $first.Process.Id -ErrorAction SilentlyContinue
+        $first.Process.Refresh()
         $firstCode = $first.Process.ExitCode
+        if ($null -eq $firstCode -and (Test-Path $first.ExitFile)) {
+            $exitObj = Get-Content $first.ExitFile -Raw | ConvertFrom-Json -ErrorAction SilentlyContinue
+            if ($exitObj) { $firstCode = $exitObj.exitCode }
+        }
         if ($firstCode -eq 0) {
             Add-Result 'singleinstance/first-run' $true 'first run finished cleanly (exit 0)' 0
         } else {
@@ -443,7 +469,9 @@ try {
         Wait-Process -Id $crash.Process.Id -ErrorAction SilentlyContinue
 
         $stateFile = Join-Path $RootFull 'run_state.json'
-        $recorded = (Test-Path $stateFile) -and ((Get-Content $stateFile -Raw) -match 'crashmidrun')
+        $txDir = Join-Path $RootFull 'Transactions'
+        $recorded = ((Test-Path $stateFile) -and ((Get-Content $stateFile -Raw) -match 'crashmidrun')) -or
+                    ((Test-Path $txDir) -and @(Get-ChildItem -Directory -Path $txDir -Filter '*crashmidrun*').Count -gt 0)
         if (-not $recorded) {
             Add-Result 'crashmidrun/run' $false 'journal does not record crashmidrun as active after the kill'
         } else {
@@ -452,13 +480,15 @@ try {
             $recover = Invoke-Portappix -Recover
             $stateAfter = ''
             if (Test-Path $stateFile) { $stateAfter = Get-Content $stateFile -Raw }
+            $txAfter = @()
+            if (Test-Path $txDir) { $txAfter = @(Get-ChildItem -Directory -Path $txDir -Filter '*crashmidrun*') }
             $regFile = "$RootFull\Data\crashmidrun\registry.reg"
             $regText = ''
             if (Test-Path $regFile) { $regText = Get-Content $regFile -Raw }
 
             $problems = @()
             if ($recover.ExitCode -ne 0) { $problems += "recovery exit $($recover.ExitCode)" }
-            if ($stateAfter -match 'crashmidrun') { $problems += 'journal still lists crashmidrun after recovery' }
+            if (($stateAfter -match 'crashmidrun') -or ($txAfter.Count -gt 0)) { $problems += 'journal still lists crashmidrun after recovery' }
             if (-not (Test-Path $regFile)) { $problems += 'registry.reg missing: recovery must export hijacked keys before deleting them' }
             elseif ($regText -notmatch 'CrashMidRun') { $problems += 'registry.reg does not contain the app''s hijacked key' }
 

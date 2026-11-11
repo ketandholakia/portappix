@@ -24,6 +24,6 @@
     </MappedFolder>
   </MappedFolders>
   <LogonCommand>
-    <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command "Set-Location C:\users\WDAGUtilityAccount\Desktop\portappix; Write-Host 'Portappix Windows Sandbox Validation Ready.' -ForegroundColor Green; Write-Host 'Available gates:'; Write-Host '  Gate 1 (Crash Harness)     : .\tests\suite\run_crash_validation.ps1 -Results C:\users\WDAGUtilityAccount\Desktop\PortappixSuiteResults'; Write-Host '  Gate 2 (Compatibility)    : .\tests\suite\run_suite.ps1 -Results C:\users\WDAGUtilityAccount\Desktop\PortappixSuiteResults -Launcher .\bin\Launcher.exe'; Write-Host '  Gate 3 (Self-Update)       : .\tests\suite\run_selfupdate_validation.ps1 -FixtureDir .\tests\suite\fixtures\selfupdate'; Write-Host ''; Write-Host 'Executing Gate 2 (Compatibility Suite)...' -ForegroundColor Cyan; .\tests\suite\run_suite.ps1 -Results C:\users\WDAGUtilityAccount\Desktop\PortappixSuiteResults -Launcher .\bin\Launcher.exe"</Command>
+    <Command>powershell.exe -NoExit -ExecutionPolicy Bypass -Command "while (-not (Test-Path 'C:\users\WDAGUtilityAccount\Desktop\portappix\tests\suite\run_all_gates_in_sandbox.ps1')) { Start-Sleep -Milliseconds 500 }; while (-not (Test-Path 'C:\users\WDAGUtilityAccount\Desktop\PortappixSuiteResults')) { Start-Sleep -Milliseconds 500 }; Set-Location 'C:\users\WDAGUtilityAccount\Desktop\portappix'; powershell.exe -ExecutionPolicy Bypass -File 'C:\users\WDAGUtilityAccount\Desktop\portappix\tests\suite\run_all_gates_in_sandbox.ps1'"</Command>
   </LogonCommand>
 </Configuration>
