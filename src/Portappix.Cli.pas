@@ -346,15 +346,14 @@ begin
 
   Result := (FCommand = 'run') or (FCommand = 'trace') or
     (FCommand = 'check-manifest') or (FCommand = 'recover') or
+    (FCommand = 'status') or (FCommand = 'clear-review') or
     (FCommand = 'apply-updates') or (FCommand = 'check-updates') or
-    (FCommand = 'self-update') or (FCommand = 'post-update')
-{$IFDEF PORTAPPIX_TESTUPDATE}
-    or (FCommand = 'rollback')
-{$ENDIF}
-    ;
+    (FCommand = 'self-update') or (FCommand = 'post-update') or
+    (FCommand = 'rollback');
   if not Result then
     Log('No command switch found (--run, --trace, --check-manifest, --recover, ' +
-      '--apply-updates, --check-updates, --self-update or --post-update).');
+      '--status, --clear-review, --apply-updates, --check-updates, --self-update, ' +
+      '--post-update, --rollback or --accept-rollback).');
 end;
 
 function TPortappixCli.ResolveManifestPath(const AReference: string;
