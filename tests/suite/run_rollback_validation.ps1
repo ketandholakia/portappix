@@ -8,7 +8,7 @@ param(
     [string]$Launcher = "",
     [string]$FixtureDir = "",
     [string]$WorkDir = "",
-    [int]$Port = 8086
+    [int]$Port = 8080
 )
 
 $ErrorActionPreference = "Stop"

@@ -42,6 +42,8 @@ try {
     Write-Host "Gate 3 encountered error: $_" -ForegroundColor Red
 }
 
+Start-Sleep -Seconds 2
+
 # Gate 4: Production Rollback Validation
 Write-Host "`n============================================================" -ForegroundColor Cyan
 Write-Host "GATE 4: PRODUCTION ROLLBACK VALIDATION" -ForegroundColor Cyan
