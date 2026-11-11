@@ -352,11 +352,12 @@ function Run-CrashCase {
     $script:Checks = New-Object System.Collections.Generic.List[bool]
     function Check {
         param($Condition, [string] $Name)
-        $isTrue = $false
-        if ($Condition -is [bool]) { $isTrue = $Condition }
-        elseif ($Condition -is [System.Array]) { $isTrue = ($Condition.Count -gt 0 -and $Condition[0] -eq $true) }
-        else { $isTrue = [bool]$Condition }
-        if ($isTrue) { $script:Checks.Add($true) | Out-Null }
+        if ($Condition -isnot [bool]) {
+            $script:Checks.Add($false) | Out-Null
+            Write-Host "         unmatched assert (non-boolean condition): $Name"
+            return
+        }
+        if ($Condition) { $script:Checks.Add($true) | Out-Null }
         else {
             $script:Checks.Add($false) | Out-Null
             Write-Host "         unmatched assert: $Name"
@@ -480,8 +481,8 @@ function Run-CrashCase {
             if (Test-Path $reviewPath) {
                 $reviewItems = Get-Content -Raw $reviewPath | ConvertFrom-Json
                 $appReview = @($reviewItems) | Where-Object { $_.appId -eq $AppId }
-                Check ($null -ne $appReview) "needs_review.json contains entry for '$AppId'"
-                if ($null -ne $appReview) {
+                Check (@($appReview).Count -gt 0) "needs_review.json contains entry for '$AppId'"
+                if (@($appReview).Count -gt 0) {
                     Check ($appReview[0].junctionPath -eq $fixture.HostPath) "review item recorded the unowned junction path"
                 }
             }
@@ -493,7 +494,7 @@ function Run-CrashCase {
             if ($nextRun.LogFile -and (Test-Path $nextRun.LogFile)) {
                 $nextRunLog = Get-Content -Raw $nextRun.LogFile
             }
-            Check ($nextRunLog -match 'manual review' -or $nextRunLog -match '--clear-review') "next --run mentions manual review / clear-review"
+            Check ([bool]($nextRunLog -match 'manual review' -or $nextRunLog -match '--clear-review')) "next --run mentions manual review / clear-review"
 
             # Other apps are NOT blocked: set up appdatawriter and verify it runs cleanly
             $otherAppDir = Join-Path $caseRoot 'Apps\appdatawriter'
