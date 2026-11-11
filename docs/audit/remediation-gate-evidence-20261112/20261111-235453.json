@@ -1,0 +1,228 @@
+﻿{
+    "timestamp":  "2026-11-11T23:56:08.6511092+05:30",
+    "launcher":  ".\\bin\\Launcher.exe",
+    "launcherSha256":  "790129e1ab9e045cc9fc8e3659c63d4f6b3954c7ed59b9aa2376d8abec7017c2",
+    "root":  "C:\\users\\WDAGUtilityAccount\\Desktop\\PortappixSuiteResults\\root",
+    "hostName":  "F6D80772-252A-4",
+    "passed":  31,
+    "failed":  0,
+    "cases":  [
+                  {
+                      "id":  "appdatawriter/run",
+                      "passed":  true,
+                      "exitCode":  0,
+                      "elapsedMs":  2410,
+                      "detail":  "exit 0, markers under Data\\appdatawriter"
+                  },
+                  {
+                      "id":  "appdatawriter/host-clean",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "host snapshot after == before"
+                  },
+                  {
+                      "id":  "registrywriter/run",
+                      "passed":  true,
+                      "exitCode":  0,
+                      "elapsedMs":  2180,
+                      "detail":  "first run exit 0"
+                  },
+                  {
+                      "id":  "registrywriter/run2/host-clean",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "host snapshot after == before"
+                  },
+                  {
+                      "id":  "registrywriter/persistence",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "second run saw the first run\u0027s string/dword/binary/nested values"
+                  },
+                  {
+                      "id":  "registrywriter/host-clean",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "host snapshot after == before"
+                  },
+                  {
+                      "id":  "programdatawriter/run",
+                      "passed":  true,
+                      "exitCode":  0,
+                      "elapsedMs":  1160,
+                      "detail":  "junction redirect worked; nothing left on the host"
+                  },
+                  {
+                      "id":  "programdatawriter/host-clean",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "host snapshot after == before"
+                  },
+                  {
+                      "id":  "stublauncher/run",
+                      "passed":  true,
+                      "exitCode":  0,
+                      "elapsedMs":  7794,
+                      "detail":  "launcher waited for the detached child (exit 0, marker present)"
+                  },
+                  {
+                      "id":  "stublauncher/host-clean",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "host snapshot after == before"
+                  },
+                  {
+                      "id":  "elevationrequired/run",
+                      "passed":  true,
+                      "exitCode":  0,
+                      "elapsedMs":  1222,
+                      "detail":  "host is elevated so the app ran (expected in Windows Sandbox); state stayed clean"
+                  },
+                  {
+                      "id":  "elevationrequired/host-clean",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "host snapshot after == before"
+                  },
+                  {
+                      "id":  "slowexit/run",
+                      "passed":  true,
+                      "exitCode":  0,
+                      "elapsedMs":  9313,
+                      "detail":  "launcher waited out the 8 s ignore window (exit 0)"
+                  },
+                  {
+                      "id":  "slowexit/host-clean",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "host snapshot after == before"
+                  },
+                  {
+                      "id":  "singleinstance/run",
+                      "passed":  true,
+                      "exitCode":  4,
+                      "elapsedMs":  1133,
+                      "detail":  "second run refused cleanly (exit 4, already running)"
+                  },
+                  {
+                      "id":  "singleinstance/first-run",
+                      "passed":  true,
+                      "exitCode":  0,
+                      "elapsedMs":  null,
+                      "detail":  "first run finished cleanly (exit 0)"
+                  },
+                  {
+                      "id":  "singleinstance/host-clean/host-clean",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "host snapshot after == before"
+                  },
+                  {
+                      "id":  "crashmidrun/journal",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "journal recorded the crashed app"
+                  },
+                  {
+                      "id":  "crashmidrun/run",
+                      "passed":  true,
+                      "exitCode":  0,
+                      "elapsedMs":  1291,
+                      "detail":  "crash recovery exported keys, cleaned the host and cleared the journal"
+                  },
+                  {
+                      "id":  "crashmidrun/host-clean/host-clean",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "host snapshot after == before"
+                  },
+                  {
+                      "id":  "policy/bad-env-path-hijack",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "rejected by Portappix.Policy with a message"
+                  },
+                  {
+                      "id":  "policy/bad-junction-documents",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "rejected by Portappix.Policy with a message"
+                  },
+                  {
+                      "id":  "policy/bad-registry-outside-allowlist",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "rejected by Portappix.Policy with a message"
+                  },
+                  {
+                      "id":  "policy/appdatawriter",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "manifest passes policy"
+                  },
+                  {
+                      "id":  "policy/crashmidrun",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "manifest passes policy"
+                  },
+                  {
+                      "id":  "policy/elevationrequired",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "manifest passes policy"
+                  },
+                  {
+                      "id":  "policy/programdatawriter",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "manifest passes policy"
+                  },
+                  {
+                      "id":  "policy/registrywriter",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "manifest passes policy"
+                  },
+                  {
+                      "id":  "policy/singleinstance",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "manifest passes policy"
+                  },
+                  {
+                      "id":  "policy/slowexit",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "manifest passes policy"
+                  },
+                  {
+                      "id":  "policy/stublauncher",
+                      "passed":  true,
+                      "exitCode":  null,
+                      "elapsedMs":  null,
+                      "detail":  "manifest passes policy"
+                  }
+              ]
+}
