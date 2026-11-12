@@ -1,0 +1,71 @@
+PASS: production Win32 build artifact exists (C:\Users\Admin\AppData\Local\Temp\p4a-prod-w32-20261111\Launcher.exe)
+PASS: production Win32 build artifact is non-empty
+PASS: production Win64 build artifact exists (C:\Users\Admin\AppData\Local\Temp\p4a-prod-w64-20261111\Launcher.exe)
+PASS: production Win64 build artifact is non-empty
+PASS: test-mode Win32 build artifact exists (C:\Users\Admin\AppData\Local\Temp\p4a-test-w32-20261111\Launcher.exe)
+PASS: test-mode Win32 build artifact is non-empty
+PASS: test-mode Win64 build artifact exists (C:\Users\Admin\AppData\Local\Temp\p4a-test-w64-20261111\Launcher.exe)
+PASS: test-mode Win64 build artifact is non-empty
+PASS: production Win32 launcher does not contain the marker PORTAPPIX-TESTCRASH-BUILD-2026-11-10
+PASS: production Win32 launcher does not contain the marker PORTAPPIX-TESTUPDATE-BUILD-2026-11-10
+PASS: production Win32 launcher contains neither PORTAPPIX_CRASH_AT nor the test marker
+PASS: production Win32 launcher does not contain the marker allow-insecure-release-urls
+PASS: production Win32 launcher does not contain the marker AllowUnsignedCatalogs
+PASS: production Win64 launcher does not contain the marker PORTAPPIX-TESTCRASH-BUILD-2026-11-10
+PASS: production Win64 launcher does not contain the marker PORTAPPIX-TESTUPDATE-BUILD-2026-11-10
+PASS: production Win64 launcher contains neither PORTAPPIX_CRASH_AT nor the test marker
+PASS: production Win64 launcher does not contain the marker allow-insecure-release-urls
+PASS: production Win64 launcher does not contain the marker AllowUnsignedCatalogs
+PASS: test-mode Win32 launcher contains PORTAPPIX-TESTCRASH-BUILD-2026-11-10
+PASS: test-mode Win32 launcher contains PORTAPPIX_CRASH_AT
+PASS: test-mode Win64 launcher contains PORTAPPIX-TESTCRASH-BUILD-2026-11-10
+PASS: test-mode Win64 launcher contains PORTAPPIX_CRASH_AT
+PASS: src/Portappix.Transactions.pas exists
+PASS: src/Portappix.Transactions.pas: PORTAPPIX_CRASH_AT appears only inside active $IFDEF PORTAPPIX_TESTCRASH regions (0 exposed code references)
+PASS: src/Portappix.Transactions.pas: the source scan did find documented raw references (guarding against a vacuous scan)
+PASS: src/Launcher.dpr exists
+PASS: src/Launcher.dpr: PORTAPPIX_CRASH_AT appears only inside active $IFDEF PORTAPPIX_TESTCRASH regions (0 exposed code references)
+PASS: src/Launcher.dpr: the source scan did find documented raw references (guarding against a vacuous scan)
+PASS: production launcher exit code unchanged with PORTAPPIX_CRASH_AT (0 / 0 / 0)
+PASS: production launcher stdout unchanged with PORTAPPIX_CRASH_AT
+PASS: production launcher stderr unchanged with PORTAPPIX_CRASH_AT
+PASS: guard accepts a production-like synthetic launcher
+PASS: guard rejects a launcher carrying the test-crash marker
+PASS: guard rejects a launcher carrying the test-update marker
+PASS: guard rejects a launcher carrying PORTAPPIX_CRASH_AT
+PASS: guard rejects a launcher carrying allow-insecure-release-urls
+PASS: guard rejects a launcher carrying allow-insecure-release-urls (utf-16-le)
+PASS: guard rejects a launcher carrying AllowUnsignedCatalogs
+PASS: guard rejects a launcher carrying AllowUnsignedCatalogs (utf-16-le)
+PASS: guard rejects a launcher carrying BOTH strings with two findings
+PASS: guard rejects an empty launcher
+PASS: guard rejects an unreadable launcher (directory path)
+PASS: make_release accepts a production-like staging launcher (exit 0)
+PASS: make_release produced the release zip for a valid launcher
+PASS: make_release produced signed releases.json for a valid launcher
+PASS: make_release rejects a marker-carrying staged launcher (exit 1)
+PASS: the refusal explains the detected marker
+PASS: the refusal packaged no zip
+PASS: the refusal wrote no releases.json
+PASS: make_release rejects a staging folder without Launcher.exe
+PASS: test_signing_workflow.py passes (exit 0)
+S: guard: public-named file containing private marker is rejected
+PASS: guard: public-named file without public key marker is rejected
+PASS: guard: *.pem file at root is rejected
+PASS: guard: *.pem file anywhere else is rejected
+PASS: live archive: git archive succeeds
+PASS: live archive: package_guard reports clean (findings: [])
+PASS: live archive: contains keys/catalog_public.pem
+PASS: live archive: contains no .git metadata
+PASS: live archive: contains no .dcu files
+PASS: live archive: contains no __history
+PASS: live archive: contains tests/suite
+PASS: live archive: contains tests/fakeapps
+PASS: guard: CLI exits non-zero when a forbidden file is found
+PASS: guard: CLI reports the offending path and rule name
+PASS: guard: CLI exits zero for a clean archive
+
+Result: 46 passed, 0 failed
+
+
+Result: 51 passed, 0 failed

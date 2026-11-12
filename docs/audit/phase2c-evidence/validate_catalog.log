@@ -1,0 +1,38 @@
+Verifying catalog signature (catalog.json.sig, SHA-256: 6a11325a9f434f9ef432cfe0befd217977f758a3bb27428e13f632e43e52123d)...
+Signature verification: OK (catalog.json.sig)
+Loading catalog: catalog.json
+Loading schema: catalog.schema.json
+Schema validation: OK (catalog.schema.json)
+Recipe provenance: OK
+Verifying 6 app package(s)...
+Validating Everything (everything)...
+  URL: https://www.voidtools.com/Everything-1.4.1.1032.x64.zip
+  Hash Match: OK (698df475ec44e638f66f1b6a32d28fea613cec78d3b6310e6abe53431eeb940c)
+  Size Match: OK (1906504 bytes)
+  Manifest/Policy: OK
+Validating Fastfetch (fastfetch)...
+  URL: https://github.com/ketandholakia/portappix/releases/download/store-seed-v1/fastfetch.package.zip
+  Hash Match: OK (7633fff87cc0a22a21378d1d9f97ed08423f2eb7b1f0fb50720cf0df89145bab)
+  Size Match: OK (1569541 bytes)
+  Manifest/Policy: OK
+Validating Notepad++ (notepadpp)...
+  URL: https://github.com/ketandholakia/portappix/releases/download/store-seed-v1/notepadpp.package.zip
+  Hash Match: OK (8535543e92c58844af21da5f7c495c136cb6136afbd6d9cd0af87b2f3bc21f31)
+  Size Match: OK (8524850 bytes)
+  Manifest/Policy: OK
+Validating SumatraPDF (sumatrapdf)...
+  URL: https://github.com/ketandholakia/portappix/releases/download/store-seed-v1/sumatrapdf.package.zip
+  Hash Match: OK (7389ce459476994967b623895a0d07248ffc92c6a67455df3fdf5e56d8538ce8)
+  Size Match: OK (10485691 bytes)
+  Manifest/Policy: OK
+Validating TCPView (tcpview)...
+  URL: https://download.sysinternals.com/files/TCPView.zip
+  Hash Match: OK (4fc5ceba3e1b27ad95a24df35d094b454ec5f9478e12a8ca2b1b222705b9683b)
+  Size Match: OK (1604604 bytes)
+  Manifest/Policy: OK
+Validating WinSCP (winscp)...
+  URL: https://github.com/ketandholakia/portappix/releases/download/store-seed-v1/winscp.package.zip
+  Hash Match: OK (725f874c8bcebd438b045753f94550e481edc9d78678ea60f14c7a0dd67b4ad2)
+  Size Match: OK (9099866 bytes)
+  Manifest/Policy: OK
+Validation: OK

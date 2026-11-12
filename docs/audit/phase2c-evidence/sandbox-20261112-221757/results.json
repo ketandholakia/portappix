@@ -1,0 +1,132 @@
+﻿{
+    "tool":  "portappix-run-crash-validation",
+    "mode":  "real process termination (TerminateProcess / fake-app KillParent); NOT hard power loss",
+    "runnerEnvironment":  "must be an isolated VM/Windows Sandbox (enforced by -IConfirmThisIsAVM)",
+    "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+    "testModeMarkerVerified":  true,
+    "envVarBytesVerified":  true,
+    "fakeAppSurvivalProven":  null,
+    "checkpointCount":  13,
+    "passed":  13,
+    "failed":  0,
+    "cases":  [
+                  {
+                      "checkpoint":  "state:prepared",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  14,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "state:hostBackupComplete",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  14,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "state:hostStateChanging",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  14,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "state:hostStateChanged",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  14,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "state:running",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  14,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "op:0:pending",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  15,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "op:0:done",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  15,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "op:1:pending",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  15,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "op:1:done",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  15,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "op:2:pending",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  15,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "op:2:created",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  25,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "op:2:done",
+                      "postLaunch":  false,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  16,
+                      "detail":  ""
+                  },
+                  {
+                      "checkpoint":  "state:cleaning",
+                      "postLaunch":  true,
+                      "launcher":  "C:\\users\\WDAGUtilityAccount\\Desktop\\portappix\\bin\\LauncherTestCrash.exe",
+                      "markerVerified":  true,
+                      "passed":  true,
+                      "assertCount":  16,
+                      "detail":  ""
+                  }
+              ],
+    "generatedAt":  "2026-11-12T22:20:09.9201452+05:30"
+}

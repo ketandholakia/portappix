@@ -330,24 +330,40 @@ try {
 
     # =========================================================================
     # Case 6: Verified rollback succeeds with valid record
+    #
+    # R9 (81e61aa): schema-1 records are the migration input ONLY before
+    # authenticated schema-2 operation is established (key blob or migration
+    # flag present). The WorkDir installation had its authentication
+    # established by the real updates in Cases 1-3, so a schema-1 record
+    # there is refused (asserted by Case 5). The legitimate schema-1
+    # migration success path is therefore exercised on a FRESH
+    # sub-installation that never wrote a schema-2 record.
     # =========================================================================
-    Write-Host "`nCase 6: Testing verified rollback success with matching authentic record..."
+    Write-Host "`nCase 6: Testing verified rollback success with matching authentic record (fresh, un-established installation)..."
+    $MigrationDir = Join-Path $WorkDir "migration_install"
+    New-Item -ItemType Directory -Path $MigrationDir -Force | Out-Null
+    Copy-Item (Join-Path $FixtureDir "1.2.0\Launcher.exe") (Join-Path $MigrationDir "Launcher.exe")
+    Copy-Item (Join-Path $FixtureDir "1.1.0\Launcher.exe") (Join-Path $MigrationDir "Launcher.exe.old")
+    New-Item -ItemType Directory -Path (Join-Path $MigrationDir "Cache") -Force | Out-Null
+    $MigrationRecordFile = Join-Path $MigrationDir "Cache\old_launcher.json"
+    $migrationOldHash = (Get-FileHash -Path (Join-Path $MigrationDir "Launcher.exe.old") -Algorithm SHA256).Hash.ToLower()
+    $migrationOldSize = (Get-Item (Join-Path $MigrationDir "Launcher.exe.old")).Length
     $validRecord = @{
         schema = 1
-        sha256 = $expectedOldHash
-        size = $expectedOldSize
+        sha256 = $migrationOldHash
+        size = $migrationOldSize
         version = "1.1.0"
         time = (Get-Date -Format "o")
         recordedAt = (Get-Date -Format "o")
     } | ConvertTo-Json
-    Set-Content -Path $RecordFile -Value $validRecord -Encoding utf8
+    Set-Content -Path $MigrationRecordFile -Value $validRecord -Encoding utf8
     $p = Start-Process -FilePath $Launcher `
-        -ArgumentList "--accept-rollback --root `"$WorkDir`"" `
+        -ArgumentList "--accept-rollback --root `"$MigrationDir`"" `
         -NoNewWindow -Wait -PassThru
     Assert-Condition ($p.ExitCode -eq 0) "Production launcher --accept-rollback succeeded with matching record"
-    Assert-Condition ((Get-ExeVersion (Join-Path $WorkDir "Launcher.exe")) -eq "1.1.0.0") "Rollback restored authentic 1.1.0.0 launcher"
-    Assert-Condition (-not (Test-Path (Join-Path $WorkDir "Launcher.exe.old"))) "Launcher.exe.old was consumed"
-    Assert-Condition (-not (Test-Path $RecordFile)) "old_launcher.json was consumed on rollback"
+    Assert-Condition ((Get-ExeVersion (Join-Path $MigrationDir "Launcher.exe")) -eq "1.1.0.0") "Rollback restored authentic 1.1.0.0 launcher"
+    Assert-Condition (-not (Test-Path (Join-Path $MigrationDir "Launcher.exe.old"))) "Launcher.exe.old was consumed"
+    Assert-Condition (-not (Test-Path $MigrationRecordFile)) "old_launcher.json was consumed on rollback"
 
     Write-Host "`n============================================================"
     Write-Host "ALL PRODUCTION ROLLBACK VALIDATION CHECKS PASSED: $Passed passed, 0 failed." -ForegroundColor Green

@@ -29,7 +29,7 @@ Adversary classes considered:
    decryption of the key blob fails).
 4. **Same-user arbitrary code (residual risk, NOT defended):** code running as
    the launcher's user that can read
-   `%LOCALAPPDATA%\Portappix\keys\<installation-id>\rollback_key.bin`
+   `<user-profile>\Portappix\keys\<installation-id>\rollback_key.bin`
    and call `CryptUnprotectData` can recover the HMAC key and forge a fully
    authenticated record. **No locally-stored secret can defend against this
    class**; the launcher deliberately does not pretend otherwise. The defense
@@ -71,8 +71,10 @@ Adversary classes considered:
 - The HMAC key is 32 random bytes (`BCryptGenRandom`) generated per
   **installation** on first use, wrapped with DPAPI (`CryptProtectData`, user
   scope, `CRYPTPROTECT_UI_FORBIDDEN`) and stored at
-  `%LOCALAPPDATA%\Portappix\keys\<installation-id>\rollback_key.bin`, where
-  `<installation-id>` is the SHA-256 of the canonical installation root path
+  `<user-profile>\Portappix\keys\<installation-id>\rollback_key.bin`, where
+  `<user-profile>` is `TPath.GetHomePath` (the user profile root, e.g.
+  `C:\Users\<user>` — not `%LOCALAPPDATA%`), and `<installation-id>` is the
+  SHA-256 of the canonical installation root path
   (R19). The user-profile ACL (user-only by default on NTFS) plus DPAPI user
   scoping mean the key blob is bound to the user account that created it; the
   per-installation subdirectory additionally binds it to one installation, so
@@ -83,7 +85,7 @@ Adversary classes considered:
   installations get different keys. The key file is created without wide
   sharing.
 - **Legacy key migration (bounded):** launchers before R19 stored one unscoped
-  key at `%LOCALAPPDATA%\Portappix\rollback_key.bin` shared by every
+  key at `<user-profile>\Portappix\rollback_key.bin` shared by every
   installation under the account. On first use, an installation without a
   scoped key adopts (copies) that blob into its scoped location; the legacy
   file is left in place because other installations may still need to migrate
@@ -101,11 +103,18 @@ Adversary classes considered:
 
 Records written by earlier launchers (schema 1, no HMAC) are accepted at
 verification time **only** after passing every other check (hex sha256, size,
-version consistency, hash match). A verified schema-1 record is then
-**re-stamped** as schema 2 with a computed HMAC. Re-stamping is best-effort: if
-the key or the write fails, the still-valid schema-1 record remains and the
-verification is no weaker than before the migration existed. The migration is
-no weaker than the pre-remediation state, where every record was unauthenticated.
+version consistency, hash match) **and only while authenticated schema-2
+operation is not yet established** for the installation (no key blob and no
+`Cache\rollback_migration.flag`). Once established, schema-1 records are
+refused unconditionally (R9): accepting them would let an attacker launder a
+new record through the migration path and downgrade around the HMAC. If the
+establishment flag is present without the key blob (inconsistent state),
+rollback is refused entirely and manual inspection is required. A verified
+schema-1 record is then **re-stamped** as schema 2 with a computed HMAC.
+Re-stamping is best-effort: if the key or the write fails, the still-valid
+schema-1 record remains and the verification is no weaker than before the
+migration existed. The migration is no weaker than the pre-remediation state,
+where every record was unauthenticated.
 
 ### 2.2 Record-field validation
 
@@ -318,7 +327,7 @@ refuses a staged launcher carrying the marker in either encoding. The
 rollback-record key path overrides (`PortappixRecordKeyPathOverride`,
 `PortappixKeyRootOverride`) are similarly gated behind
 `{$IFDEF PORTAPPIX_TESTCRASH}` so unit tests never touch the real
-`%LOCALAPPDATA%`.
+user-profile key location.
 
 ## 7. Limitations
 

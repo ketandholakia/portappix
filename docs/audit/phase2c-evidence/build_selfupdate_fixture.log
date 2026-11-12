@@ -1,0 +1,21 @@
+WARNING: PSReadLine configuration failed: The predictive suggestion feature cannot be enabled 
+because the console output doesn't support virtual terminal processing or it's redirected.
+Self-update fixture builder
+  Repo root   : C:\Users\Admin\Documents\github\portappix
+  Staging dir : C:\Users\Admin\Documents\github\portappix\tests\suite\fixtures\selfupdate
+Generating throwaway signing key in C:\Users\Admin\AppData\Local\Temp\portappix_selfupdate_key_7659e1b604ce4bc6abc028878e69dad2...
+  CNG public key blob hex: 4543533120000000AE28C256581655676510A91DBDA639BA7E2D36C674E9AA02C3D19F237C8054AFF1427FA859CA0A0A46F55D061DF6013992D9E8F332FF05FFDA8B68C92E8A31E9
+  Building Launcher 1.0.0 (defines: -DPORTAPPIX_TESTUPDATE -DPORTAPPIX_VERSION_RES)...
+  Building Launcher 1.1.0 (defines: -DPORTAPPIX_TESTUPDATE -DPORTAPPIX_VERSION_RES)...
+  Building Launcher 1.2.0 (defines: -DPORTAPPIX_TESTUPDATE -DPORTAPPIX_VERSION_RES)...
+  Building Launcher 1.3.0 (defines: -DPORTAPPIX_TESTUPDATE -DPORTAPPIX_VERSION_RES -DPORTAPPIX_CRASH_STARTUP)...
+SHA-256 of signed bytes: b102b8dff640e0e753efb2e45c95a9816f6e66d94b4e64ed0c1b1270d499e167
+Signature written and verified: C:\Users\Admin\Documents\github\portappix\tests\suite\fixtures\selfupdate\feed\releases-1.1.0.json.sig (64 bytes)
+  Packaged portappix-1.1.0.zip and signed releases-1.1.0.json
+SHA-256 of signed bytes: 5b97a5ab01d8b017fc52116a9b94414d31f79ca38e50c72858d44a568ec2801d
+Signature written and verified: C:\Users\Admin\Documents\github\portappix\tests\suite\fixtures\selfupdate\feed\releases-1.2.0.json.sig (64 bytes)
+  Packaged portappix-1.2.0.zip and signed releases-1.2.0.json
+SHA-256 of signed bytes: b90191f6a5ace11c2c8f4ed8ba6a0f170cd33e995eaf51543b7aff70302eb107
+Signature written and verified: C:\Users\Admin\Documents\github\portappix\tests\suite\fixtures\selfupdate\feed\releases-1.3.0-fail.json.sig (64 bytes)
+  Packaged portappix-1.3.0-fail.zip and signed releases-1.3.0-fail.json
+Self-update fixture successfully built in C:\Users\Admin\Documents\github\portappix\tests\suite\fixtures\selfupdate

@@ -1,0 +1,22 @@
+Embarcadero Delphi for Win32 compiler version 36.0
+Copyright (c) 1983,2025 Embarcadero Technologies, Inc.
+src\Portappix.RecordAuth.pas(418) Hint: H2077 Value assigned to 'AcquireKeyCreateLock' never used
+src\Portappix.Junction.pas(124) Warning: W1002 Symbol 'FILE_FLAG_OPEN_REPARSE_POINT' is specific to a platform
+src\Portappix.Junction.pas(141) Warning: W1002 Symbol 'FILE_FLAG_OPEN_REPARSE_POINT' is specific to a platform
+src\Portappix.Transactions.pas(542) Hint: H2077 Value assigned to 'TPortappixJournalStore.Persist' never used
+src\Portappix.Runner.pas(103) Hint: H2219 Private symbol 'RegistryKeyExists' declared but never used
+src\Portappix.State.pas(219) Hint: H2077 Value assigned to 'Handle' never used
+src\Portappix.State.pas(284) Hint: H2077 Value assigned to 'TPortappixJournal.AcquireReviewLock' never used
+src\Portappix.State.pas(801) Hint: H2164 Variable 'TxIds' is declared but never used in 'TPortappixJournal.ReconcileAllTransactions'
+src\Portappix.State.pas(1158) Hint: H2077 Value assigned to 'TPortappixJournal.ClearReview' never used
+src\Portappix.State.pas(71) Hint: H2219 Private symbol 'AssessExistingTransactions' declared but never used
+src\Portappix.Update.pas(1339) Warning: W1002 Symbol 'FILE_FLAG_OPEN_REPARSE_POINT' is specific to a platform
+src\Portappix.Update.pas(1766) Hint: H2077 Value assigned to 'RestoreVerified' never used
+src\Portappix.Update.pas(1684) Hint: H2077 Value assigned to 'RestoreVerified' never used
+src\Portappix.Update.pas(2356) Hint: H2077 Value assigned to 'SwapSucceeded' never used
+src\Portappix.Update.pas(2271) Hint: H2077 Value assigned to 'Replaced' never used
+src\Portappix.Update.pas(2250) Hint: H2077 Value assigned to 'SwapSucceeded' never used
+tests\PortappixTests.dpr(3587) Warning: W1012 Constant expression violates subrange bounds
+tests\tests\PortappixTests.dpr(5723) Hint: H2164 Variable 'Err' is declared but never used in 'TestUpdateFailureInjection'
+tests\tests\PortappixTests.dpr(7604) Warning: W1036 Variable 'Release2' might not have been initialized
+23549 lines, 6.62 seconds, 2924164 bytes code, 150364 bytes data.
