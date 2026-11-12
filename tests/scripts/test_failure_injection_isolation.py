@@ -209,17 +209,20 @@ def main(argv: list[str] | None = None) -> int:
         check(needle in raw_all,
               f"source scan guard: {needle} does occur in the scanned sources")
 
-    # 1b. The rollback-record key override sits behind TESTCRASH.
+    # 1b. The rollback-record key overrides sit behind TESTCRASH.
     key_path = REPO / KEY_OVERRIDE_FILE
     if check(key_path.is_file(), f"{KEY_OVERRIDE_FILE} exists"):
-        exposure = scan_source_for_needle(key_path, KEY_OVERRIDE_NEEDLE,
-                                          TESTCRASH_DEFINE)
-        check(exposure == 0,
-              f"{KEY_OVERRIDE_FILE}: {KEY_OVERRIDE_NEEDLE} appears only inside "
-              f"active $IFDEF {TESTCRASH_DEFINE} regions ({exposure} exposed)")
-        check(KEY_OVERRIDE_NEEDLE in key_path.read_text(encoding="utf-8",
-                                                        errors="replace"),
-              f"{KEY_OVERRIDE_FILE}: the key-override scan guard is not vacuous")
+        key_text = key_path.read_text(encoding="utf-8", errors="replace")
+        for needle in (KEY_OVERRIDE_NEEDLE, "PortappixKeyRootOverride"):
+            if needle not in key_text:
+                continue
+            exposure = scan_source_for_needle(key_path, needle,
+                                              TESTCRASH_DEFINE)
+            check(exposure == 0,
+                  f"{KEY_OVERRIDE_FILE}: {needle} appears only inside "
+                  f"active $IFDEF {TESTCRASH_DEFINE} regions ({exposure} exposed)")
+            check(needle in key_text,
+                  f"{KEY_OVERRIDE_FILE}: the {needle} scan guard is not vacuous")
 
     # 2. Binary scans.
     for label, path in [

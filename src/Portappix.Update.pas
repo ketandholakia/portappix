@@ -892,7 +892,7 @@ begin
   Result := False;
   AHmac := '';
   AKeyError := '';
-  if not TryGetRollbackKey(Key) then
+  if not TryGetInstallationRollbackKey(FRootPath, Key) then
   begin
     AKeyError := 'the rollback record key is not available on this ' +
       'installation (verification never creates it)';
@@ -949,7 +949,7 @@ function TPortappixUpdateManager.RecordHmac(const ASha256: string;
 var
   Key: TBytes;
 begin
-  Key := GetRollbackKey;
+  Key := GetInstallationRollbackKey(FRootPath);
   Result := ComputeRecordHmac(Key, ASha256, ASize, AVersion, ARecordedAt);
 end;
 
@@ -975,7 +975,8 @@ begin
   // schema-1 records are rejected unconditionally — an attacker must not be
   // able to launder a new record through the migration path. The fail-closed
   // combination (flag present, key blob missing) refuses rollback entirely.
-  if TFile.Exists(MigrationFlagFile) and (not KeyBlobExists) then
+  if TFile.Exists(MigrationFlagFile) and
+     (not InstallationKeyBlobExists(FRootPath)) then
   begin
     AError := 'Refusing rollback: the rollback authentication state is ' +
       'inconsistent (establishment flag present without the key blob); ' +
@@ -1011,7 +1012,7 @@ begin
     // accepting them would let an attacker downgrade around the HMAC.
     if ASchema = 1 then
     begin
-      if KeyBlobExists or TFile.Exists(MigrationFlagFile) then
+      if InstallationKeyBlobExists(FRootPath) or TFile.Exists(MigrationFlagFile) then
       begin
         AError := 'Refusing rollback: legacy (schema-1) rollback records are ' +
           'not accepted once authenticated rollback records are established.';

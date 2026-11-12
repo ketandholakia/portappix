@@ -5154,8 +5154,103 @@ begin
     'RecordAuth: a different key produces a different HMAC');
 end;
 
-procedure TestOldLauncherRecordAuth(const ARoot: string);
+procedure TestInstallationKeyIsolation(const ARoot: string);
 var
+  RootA, RootB, RootSame, RootC, RootD, KeyBase: string;
+  KeyA1, KeyA2, KeyB, KeySame: TBytes;
+  PathA, PathB, PathSame, LegacyPath: string;
+  OldBase: string;
+  Migrated: TBytes;
+begin
+  RootA := TPath.Combine(ARoot, 'r19-install-a');
+  RootB := TPath.Combine(ARoot, 'r19-install-b');
+  RootSame := TPath.Combine(ARoot, 'r19-install-a');
+  KeyBase := TPath.Combine(ARoot, 'r19-keys');
+  ForceDirectories(RootA);
+  ForceDirectories(RootB);
+  ForceDirectories(KeyBase);
+
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  OldBase := PortappixRecordKeyPathOverride;
+  PortappixRecordKeyPathOverride := ''; // use the scoped base override
+  PortappixKeyRootOverride := KeyBase;
+  try
+    // Path scoping: distinct roots give distinct key files.
+    PathA := InstallationKeyFilePath(RootA);
+    PathB := InstallationKeyFilePath(RootB);
+    Check(not SameText(PathA, PathB),
+      'R19: two installations resolve to different key files');
+    Check(Pos(KeyBase, PathA) = 1,
+      'R19: the key file lives under the per-user key root');
+
+    // The SAME installation reached differently resolves to ONE key file:
+    // a trailing delimiter must not create a second key (and thus silently
+    // invalidate an existing record).
+    PathSame := InstallationKeyFilePath(RootSame + '\');
+    Check(SameText(PathA, PathSame),
+      'R19: spelling variants of one installation share one key file');
+
+    // Two installations under the same account get INDEPENDENT keys.
+    KeyA1 := GetInstallationRollbackKey(RootA);
+    KeyA2 := GetInstallationRollbackKey(RootA);
+    KeyB := GetInstallationRollbackKey(RootB);
+    Check(Length(KeyA1) = 32, 'R19: the per-installation key is 32 bytes');
+    Check(BytesEqual(KeyA1, KeyA2),
+      'R19: the installation key round-trips through DPAPI protection');
+    Check(not BytesEqual(KeyA1, KeyB),
+      'R19: two installations under one account have independent keys (the R19 defect)');
+    Check(TFile.Exists(PathA) and TFile.Exists(PathB),
+      'R19: both installation key blobs are persisted');
+
+    // The same installation via a spelling variant yields the same KEY, not
+    // just the same path.
+    KeySame := GetInstallationRollbackKey(RootSame.ToUpper + '\');
+    Check(BytesEqual(KeyA1, KeySame),
+      'R19: a spelling variant of the installation root resolves to the same key');
+
+    // Cross-installation record forgery is refused: a record authenticated
+    // with installation B's key must not verify at installation A.
+    var HmacB := ComputeRecordHmac(KeyB, Sha256Text('x').ToLower, 1, '1.0.0',
+      '2026-11-12T00:00:00.000Z');
+    var HmacA := ComputeRecordHmac(KeyA1, Sha256Text('x').ToLower, 1, '1.0.0',
+      '2026-11-12T00:00:00.000Z');
+    Check(not RecordHmacMatches(HmacA, HmacB),
+      'R19: a record HMAC from another installation does not match');
+
+    // Bounded migration: a pre-R19 unscoped key is adopted exactly once, and
+    // only when no scoped key exists.
+    LegacyPath := TPath.Combine(TPath.Combine(KeyBase, 'Portappix'),
+      'rollback_key.bin');
+    ForceDirectories(TPath.GetDirectoryName(LegacyPath));
+    TFile.WriteAllBytes(LegacyPath, TFile.ReadAllBytes(PathB));
+    RootC := TPath.Combine(ARoot, 'r19-install-c');
+    ForceDirectories(RootC);
+    Migrated := GetInstallationRollbackKey(RootC);
+    Check(BytesEqual(Migrated, KeyB),
+      'R19: the legacy unscoped key is adopted for an installation without one');
+    Check(TFile.Exists(InstallationKeyFilePath(RootC)),
+      'R19: the adopted key is persisted at the per-installation location');
+    // Migration must not override an existing scoped key.
+    var StillA := GetInstallationRollbackKey(RootA);
+    Check(BytesEqual(StillA, KeyA1),
+      'R19: migration never overrides an existing per-installation key');
+    // Verification of a pre-existing installation also adopts the legacy key
+    // without creating new material for installations that have none.
+    RootD := TPath.Combine(ARoot, 'r19-install-d');
+    ForceDirectories(RootD);
+    var DKey: TBytes;
+    Check(TryGetInstallationRollbackKey(RootD, DKey),
+      'R19: verification adopts the legacy key for a not-yet-scoped installation');
+    Check(BytesEqual(DKey, KeyB),
+      'R19: the adopted verification key is the legacy key');
+  finally
+    PortappixKeyRootOverride := '';
+    PortappixRecordKeyPathOverride := OldBase;
+  end;
+  {$ENDIF}
+end;
+
+procedure TestOldLauncherRecordAuth(const ARoot: string);var
   Manager: TPortappixUpdateManager;
   LauncherExe, OldLauncherExe, RecordFile, CacheDir: string;
   OldContent, NewContent, OldHash, RecordJson, Err, RecordedHmac: string;
@@ -7788,6 +7883,7 @@ begin
     TestOldLauncherVerification(Root);
     TestIsValidSha256Hex;
     TestRecordAuth(Root);
+    TestInstallationKeyIsolation(Root);
     TestOldLauncherRecordAuth(Root);
     TestReviewFailClosed(Root);
     TestRollbackConcurrentReplacement(Root);

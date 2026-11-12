@@ -12,8 +12,12 @@ unit Portappix.RecordAuth;
     the key and forge a matching HMAC. No locally-stored secret can do better;
     this residual risk is documented, not hidden.
 
-  Mechanism: a 32-byte random per-installation key, DPAPI-protected
-  (CryptProtectData, user scope) and stored under %LOCALAPPDATA%\Portappix.
+  Mechanism: a 32-byte random key PER INSTALLATION, DPAPI-protected
+  (CryptProtectData, user scope) and stored under
+  %LOCALAPPDATA%\Portappix\keys\<identity-hash>\rollback_key.bin, where the
+  identity hash is derived from the canonical installation root path (R19).
+  Two installations under the same user account therefore never share key
+  material: a record forged in one does not verify in the other.
   The HMAC-SHA256 covers a canonical, length-prefixed serialization of the
   record's security-relevant fields (sha256, size, version, recordedAt) in a
   fixed documented order, so any modification of those fields is detected.
@@ -28,18 +32,38 @@ uses
 type
   EPortappixRecordAuthError = class(Exception);
 
-/// Returns the per-installation rollback key (32 bytes), creating and
-/// DPAPI-protecting it on first use. Raises EPortappixRecordAuthError when
-/// the key cannot be created or decrypted (callers must fail closed).
+/// Returns the rollback key for the installation rooted at AInstallationRoot
+/// (32 bytes), creating and DPAPI-protecting it on first use. The key is
+/// scoped to that installation: two installations under the same account
+/// have independent keys (R19). Raises EPortappixRecordAuthError when the
+/// key cannot be created or decrypted (callers must fail closed).
 /// First-time creation is serialized across processes (R13).
+function GetInstallationRollbackKey(
+  const AInstallationRoot: string): TBytes;
+
+/// Reads the installation's stored key WITHOUT creating it (R9):
+/// verification paths use this and fail closed when the blob does not exist.
+function TryGetInstallationRollbackKey(const AInstallationRoot: string;
+  out AKey: TBytes): Boolean;
+
+/// True when this installation's DPAPI-protected key blob exists on disk.
+/// Blob existence is the authenticated "schema-2 operation established"
+/// marker (R9).
+function InstallationKeyBlobExists(const AInstallationRoot: string): Boolean;
+
+/// The on-disk key path for an installation root (exposed for diagnostics
+/// and for the migration/scope tests).
+function InstallationKeyFilePath(const AInstallationRoot: string): string;
+
+/// Returns the per-installation rollback key using the process-wide default
+/// installation root. Prefer the explicit-root overloads; this exists for
+/// compatibility and is resolved from the loaded module path.
 function GetRollbackKey: TBytes;
 
-/// Reads the stored key WITHOUT creating it (R9): verification paths use
-/// this and fail closed when the key blob does not exist.
+/// Reads the default installation's key WITHOUT creating it (R9).
 function TryGetRollbackKey(out AKey: TBytes): Boolean;
 
-/// True when the DPAPI-protected key blob exists on disk. Blob existence is
-/// the authenticated "schema-2 operation established" marker (R9).
+/// True when the default installation's key blob exists on disk (R9).
 function KeyBlobExists: Boolean;
 
 /// Computes the record HMAC (lowercase hex) over the canonical field
@@ -58,6 +82,14 @@ var
   /// exists only in test builds (PORTAPPIX_TESTCRASH is never defined for
   /// production artifacts, which is enforced by byte scan).
   PortappixRecordKeyPathOverride: string = '';
+  /// Test override for the per-installation key BASE directory (R19). When
+  /// set, key paths are resolved under this directory using the same
+  /// canonical-installation-identity scoping as production, so tests can
+  /// exercise two installations under one account without touching the real
+  /// %LOCALAPPDATA%. Empty string = default location. Takes precedence over
+  /// PortappixRecordKeyPathOverride being empty only (the full-path override
+  /// wins when both are set).
+  PortappixKeyRootOverride: string = '';
 {$ENDIF}
 {$IFDEF PORTAPPIX_TESTINJECT}
 var
@@ -77,7 +109,12 @@ uses
 
 const
   KeyFileDirectory = 'Portappix';
+  /// R19: per-installation key subdirectory under %LOCALAPPDATA%\Portappix.
+  KeySubDirectory = 'keys';
   KeyFileName = 'rollback_key.bin';
+  /// R19: previous (unscoped) key location, migrated on first authenticated
+  /// use and then removed. Bounded migration: only read, never invented.
+  LegacyKeyFileName = 'rollback_key.bin';
   KeySizeBytes = 32;
   KeyBlobMagic: array[0..7] of Byte = (Ord('P'), Ord('X'), Ord('P'), Ord('X'),
     Ord('R'), Ord('K'), Ord('E'), Ord('Y'));
@@ -110,14 +147,58 @@ const
 var
   GDurableTempCounter: Integer = 0;
 
-function KeyFilePath: string;
+/// R19: canonical installation identity. The key scope must not depend on
+/// spelling variants of the same installation (case, separators, trailing
+/// delimiter, accessors): the resolved full path is normalized to lowercase
+/// with backslashes only, then hashed. Two DIFFERENT installations produce
+/// different identities; the SAME installation reached via different
+/// spellings produces one identity (and therefore one key).
+function CanonicalInstallationIdentity(const AInstallationRoot: string): string;
+var
+  Root: string;
+begin
+  Root := AInstallationRoot.Trim;
+  if Root = '' then
+    Root := LauncherDirectory
+  else if IsRelativePath(Root) then
+    Root := TPath.Combine(LauncherDirectory, Root);
+  // GetFullPath normalizes separators, dot segments and case of the volume
+  // and collapses a trailing delimiter. The \\?\ prefix is stripped and
+  // re-added by the caller never (key paths stay ordinary paths).
+  Root := TPath.GetFullPath(Root);
+  if TextStartsWith(Root, '\\?\') then
+    Delete(Root, 1, 4);
+  Root := TrimTrailingPathDelimiter(Root).Replace('/', '\').ToLower;
+  Result := Sha256Text(Root).ToLower;
+end;
+
+function InstallationKeyFilePath(const AInstallationRoot: string): string;
+var
+  BaseDir: string;
 begin
   {$IFDEF PORTAPPIX_TESTCRASH}
   if PortappixRecordKeyPathOverride <> '' then
     Exit(PortappixRecordKeyPathOverride);
   {$ENDIF}
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  if PortappixKeyRootOverride <> '' then
+    BaseDir := PortappixKeyRootOverride
+  else
+  {$ENDIF}
+    BaseDir := TPath.GetHomePath;
   Result := TPath.Combine(
-    TPath.Combine(TPath.GetHomePath, KeyFileDirectory), KeyFileName);
+    TPath.Combine(
+      TPath.Combine(BaseDir, KeyFileDirectory), KeySubDirectory),
+    CanonicalInstallationIdentity(AInstallationRoot));
+  Result := TPath.Combine(Result, KeyFileName);
+end;
+
+/// The process-wide default installation root: the directory of the module
+/// that loaded this unit (the launcher executable), so every caller that does
+/// not pass an explicit root still gets a per-installation key.
+function DefaultInstallationRoot: string;
+begin
+  Result := LauncherDirectory;
 end;
 
 function RandomBytes(ACount: Integer): TBytes;
@@ -139,9 +220,35 @@ begin
   end;
 end;
 
+/// The pre-R19 key location: a single key shared by every installation under
+/// the account. Read only for bounded migration; never created here.
+function LegacyKeyFilePath: string;
+var
+  BaseDir: string;
+begin
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  if PortappixRecordKeyPathOverride <> '' then
+    Exit(PortappixRecordKeyPathOverride);
+  {$ENDIF}
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  if PortappixKeyRootOverride <> '' then
+    BaseDir := PortappixKeyRootOverride
+  else
+  {$ENDIF}
+    BaseDir := TPath.GetHomePath;
+  Result := TPath.Combine(
+    TPath.Combine(BaseDir, KeyFileDirectory), LegacyKeyFileName);
+end;
+
+function InstallationKeyBlobExists(const AInstallationRoot: string): Boolean;
+begin
+  Result := TFile.Exists(InstallationKeyFilePath(AInstallationRoot)) or
+    TFile.Exists(LegacyKeyFilePath);
+end;
+
 function KeyBlobExists: Boolean;
 begin
-  Result := TFile.Exists(KeyFilePath);
+  Result := InstallationKeyBlobExists(DefaultInstallationRoot);
 end;
 
 /// Unwraps a decrypted blob into the 32-byte key. Accepts the versioned
@@ -194,7 +301,7 @@ begin
     Result[16 + I] := AKey[I];
 end;
 
-function ReadKeyFile: TBytes;
+function ReadKeyFileAt(const AKeyFile: string): TBytes;
 var
   BlobBytes: TBytes;
   InputBlob, OutputBlob: TDataBlob;
@@ -203,7 +310,7 @@ var
   Legacy: Boolean;
 begin
   SetLength(Result, 0);
-  BlobBytes := TFile.ReadAllBytes(KeyFilePath);
+  BlobBytes := TFile.ReadAllBytes(AKeyFile);
   if Length(BlobBytes) = 0 then
     raise EPortappixRecordAuthError.Create(
       'The rollback record key file is empty.');
@@ -245,14 +352,14 @@ end;
 /// flushed, verified, then atomically replaces the target with
 /// WRITE_THROUGH and a directory flush. Any failure removes the temp file
 /// and leaves the previous key file untouched.
-procedure WriteKeyFile(const AProtected: TBytes);
+procedure WriteKeyFileAt(const AKeyFile: string; const AProtected: TBytes);
 var
   TemporaryFile: string;
   Handle: THandle;
   Written: DWORD;
 begin
-  ForceDirectories(TPath.GetDirectoryName(TPath.GetFullPath(KeyFilePath)));
-  TemporaryFile := Format('%s.%d.%d.tmp', [KeyFilePath, GetCurrentProcessId,
+  ForceDirectories(TPath.GetDirectoryName(TPath.GetFullPath(AKeyFile)));
+  TemporaryFile := Format('%s.%d.%d.tmp', [AKeyFile, GetCurrentProcessId,
     InterlockedIncrement(GDurableTempCounter)]);
   // CREATE_NEW: a concurrent creator (outside our mutex) loses the race
   // here instead of overwriting the winner's blob.
@@ -273,7 +380,7 @@ begin
   finally
     CloseHandle(Handle);
   end;
-  if not MoveFileEx(PChar(TemporaryFile), PChar(KeyFilePath),
+  if not MoveFileEx(PChar(TemporaryFile), PChar(AKeyFile),
     MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
   begin
     try
@@ -285,17 +392,17 @@ begin
       'Unable to store the rollback record key (replace failed): %s',
       [SysErrorMessage(Integer(GetLastError))]);
   end;
-  FlushDirectoryWindows(TPath.GetDirectoryName(TPath.GetFullPath(KeyFilePath)));
+  FlushDirectoryWindows(TPath.GetDirectoryName(TPath.GetFullPath(AKeyFile)));
 end;
 
-function AcquireKeyCreateLock: THandle;
+function AcquireKeyCreateLock(const AKeyFile: string): THandle;
 var
   WaitResult: DWORD;
 begin
   // Serialize first-time creation across processes (R13). Thread-recursive:
   // safe to nest where callers already hold it.
   Result := CreateMutex(nil, False,
-    PChar(MutexNameFor('RecordKey', KeyFilePath.ToLower)));
+    PChar(MutexNameFor('RecordKey', AKeyFile.ToLower)));
   if Result = 0 then
     raise EPortappixRecordAuthError.Create(
       'Unable to create the rollback-key mutex.');
@@ -324,24 +431,83 @@ begin
   end;
 end;
 
-function TryGetRollbackKey(out AKey: TBytes): Boolean;
-begin
-  SetLength(AKey, 0);
-  if not KeyBlobExists then
-    Exit(False);
-  AKey := ReadKeyFile;
-  Result := True;
+function TryGetRollbackKeyFor(const AInstallationRoot: string;
+  out AKey: TBytes): Boolean;
+var
+  ScopedKeyFile: string;
+begin  SetLength(AKey, 0);
+  ScopedKeyFile := InstallationKeyFilePath(AInstallationRoot);
+  if TFile.Exists(ScopedKeyFile) then
+  begin
+    AKey := ReadKeyFileAt(ScopedKeyFile);
+    Exit(True);
+  end;
+  // R19 bounded migration: a pre-R19 installation has exactly one unscoped
+  // key. It is adopted ONLY when the scoped key does not exist yet, and only
+  // for verification (this path never creates key material). Adoption copies
+  // the blob to the scoped location so the two never diverge; the legacy
+  // file is left in place because other installations under the same account
+  // may still need to migrate from it.
+  if TFile.Exists(LegacyKeyFilePath) then
+  begin
+    AKey := ReadKeyFileAt(LegacyKeyFilePath);
+    try
+      ForceDirectories(TPath.GetDirectoryName(TPath.GetFullPath(ScopedKeyFile)));
+      if not TFile.Exists(ScopedKeyFile) then
+        TFile.Copy(LegacyKeyFilePath, ScopedKeyFile, False);
+    except
+      // Adopting is an optimization; verification still has the loaded key.
+    end;
+    Exit(True);
+  end;
+  Result := False;
 end;
 
-function GetRollbackKey: TBytes;
+function TryGetInstallationRollbackKey(const AInstallationRoot: string;
+  out AKey: TBytes): Boolean;
+begin
+  Result := TryGetRollbackKeyFor(AInstallationRoot, AKey);
+end;
+
+function TryGetRollbackKey(out AKey: TBytes): Boolean;
+begin
+  Result := TryGetRollbackKeyFor(DefaultInstallationRoot, AKey);
+end;
+
+function GetRollbackKeyFor(const AInstallationRoot: string): TBytes;
 var
   PlainBlob: TDataBlob;
   ProtectedBlob: TDataBlob;
   KeyLock: THandle;
   Plain, ProtectedBytes: TBytes;
+  ScopedKeyFile: string;
 begin
-  if TFile.Exists(KeyFilePath) then
-    Exit(ReadKeyFile);
+  ScopedKeyFile := InstallationKeyFilePath(AInstallationRoot);
+  if TFile.Exists(ScopedKeyFile) then
+    Exit(ReadKeyFileAt(ScopedKeyFile));
+
+  // R19 bounded migration: adopt the pre-R19 unscoped key on first use so an
+  // existing installation keeps verifying its records after the upgrade.
+  // Only the FIRST installation to run adopts it; the copy is per scope.
+  if TFile.Exists(LegacyKeyFilePath) then
+  begin
+    Plain := ReadKeyFileAt(LegacyKeyFilePath);
+    try
+      ForceDirectories(TPath.GetDirectoryName(TPath.GetFullPath(ScopedKeyFile)));
+      try
+        TFile.Copy(LegacyKeyFilePath, ScopedKeyFile, False);
+      except
+        on E: Exception do
+          raise EPortappixRecordAuthError.CreateFmt(
+            'Unable to migrate the rollback record key to the per-installation ' +
+            'scope: %s', [E.Message]);
+      end;
+    except
+      on E: EPortappixRecordAuthError do
+        raise;
+    end;
+    Exit(Plain);
+  end;
 
   {$IFDEF PORTAPPIX_TESTINJECT}
   if PortappixKeyCreateDelayMs > 0 then
@@ -350,12 +516,12 @@ begin
 
   // First use on this installation: serialize creation across processes,
   // re-check, then generate, protect and store atomically (R13).
-  KeyLock := AcquireKeyCreateLock;
+  KeyLock := AcquireKeyCreateLock(ScopedKeyFile);
   try
     // Double-check: another process may have created the key while we
     // waited for the mutex — the loser reads the winner's key.
-    if TFile.Exists(KeyFilePath) then
-      Exit(ReadKeyFile);
+    if TFile.Exists(ScopedKeyFile) then
+      Exit(ReadKeyFileAt(ScopedKeyFile));
 
     Result := RandomBytes(KeySizeBytes);
     Plain := EncodeKeyBlob(Result);
@@ -375,7 +541,7 @@ begin
       SetLength(ProtectedBytes, ProtectedBlob.cbData);
       Move(ProtectedBlob.pbData^, ProtectedBytes[0], ProtectedBlob.cbData);
       try
-        WriteKeyFile(ProtectedBytes);
+        WriteKeyFileAt(ScopedKeyFile, ProtectedBytes);
       except
         on E: Exception do
           raise EPortappixRecordAuthError.CreateFmt(
@@ -387,6 +553,17 @@ begin
   finally
     ReleaseKeyCreateLock(KeyLock);
   end;
+end;
+
+function GetInstallationRollbackKey(
+  const AInstallationRoot: string): TBytes;
+begin
+  Result := GetRollbackKeyFor(AInstallationRoot);
+end;
+
+function GetRollbackKey: TBytes;
+begin
+  Result := GetRollbackKeyFor(DefaultInstallationRoot);
 end;
 
 function ComputeRecordHmac(const AKey: TBytes; const ASha256: string;
