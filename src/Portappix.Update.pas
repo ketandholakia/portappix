@@ -98,6 +98,22 @@ var
   /// restore (RestoreFailedSwap) — simulating abrupt process death where the
   /// exception handler never runs. Test builds only.
   PortappixUpdateCrashKill: Boolean = False;
+type
+  /// Deterministic failure injection for the companion-file backup transfer,
+  /// companion restore moves, companion/introduced-file deletes and the
+  /// companion/staging directory deletes (R15/R16 repros). Return 0 to
+  /// proceed with the real operation, or a Win32 error code to fail it with.
+  /// Test builds only; production binaries contain no reference to these.
+  TPortappixFileMoveHook = reference to function(const AFrom,
+    ATo: string): Integer;
+  TPortappixFileDeleteHook = reference to function(
+    const APath: string): Integer;
+  TPortappixDirectoryDeleteHook = reference to function(
+    const APath: string): Integer;
+var
+  PortappixFileMoveHook: TPortappixFileMoveHook = nil;
+  PortappixFileDeleteHook: TPortappixFileDeleteHook = nil;
+  PortappixDirectoryDeleteHook: TPortappixDirectoryDeleteHook = nil;
 const
   UpdateSwapCrashAfterRenameOld = 'swap:after-rename-old';
   UpdateFinalizeCrashAfterSwap = 'finalize:after-swap';
@@ -190,6 +206,10 @@ type
     function MigrationFlagFile: string;
     /// Persistent companion-file backup directory (R14).
     function CompanionBackupDir: string;
+    /// R16: Cache\companion_rollback_staging — the fresh transfer directory.
+    function CompanionTransferDir: string;
+    /// R15/R16: the authoritative companion manifest inside the backup dir.
+    function CompanionManifestFile: string;
     /// Checked all-or-nothing restore after a failed in-swap update; raises
     /// when any restore step fails so the failure is never silent.
     procedure RestoreFailedSwap(const ARollbackDir: string;
@@ -215,9 +235,17 @@ type
     /// R11: spawns launcher_new\Launcher.exe --finalize-update for this root.
     procedure SpawnUpdateHelper;
     function ReadPendingStagingDir: string;
-    /// R14: moves the surviving root-file backups from the staging dir into
-    /// the persistent companion backup directory.
+    /// R14/R16: moves the surviving root-file backups from the staging dir
+    /// into the persistent companion backup directory — only after every
+    /// backup has been transferred AND verified, and only after the durable
+    /// companion manifest (replaced vs introduced files) has been written.
+    /// The previous companion directory and the staging directory are never
+    /// destroyed on a failed transfer.
     procedure PreserveCompanionBackups(const AStagingDir: string);
+    /// R15/R16: the file names the staged update INTRODUCED (shipped in the
+    /// package without a previous version), read from the companion manifest.
+    function ReadCompanionManifestIntroduced(
+      const AManifestFile: string): TArray<string>;
     procedure SpawnProcess(const AExePath, AArguments: string);
     procedure PrepareUpdate(const AZipFile: string; const ARelease: TPortappixRelease;
       const ALaunchNewExe: Boolean = True);
@@ -242,6 +270,20 @@ const
   /// Persistent companion-file backup directory (R14): survives the swap and
   /// is consumed by ConfirmUpdate or RollbackToOldLauncher.
   CompanionBackupDirName = 'companion_rollback';
+  /// R16: the fresh companion transfer directory. The new backups are moved
+  /// here and verified FIRST; the previous companion directory is only
+  /// replaced once every file is verified and the manifest is written.
+  CompanionTransferDirName = 'companion_rollback_staging';
+  /// R15/R16 manifest inside the companion backup directory: names the files
+  /// the update REPLACED (with their verified sha256) and the files the
+  /// update INTRODUCED (no previous version — rollback must delete them).
+  CompanionManifestName = 'companion_manifest.json';
+  /// Bookkeeping file inside launcher_rollback_<timestamp> (R15/R16): the
+  /// non-launcher root files the package ships. Introduced files are the
+  /// staged files without a backup; recorded before finalize so the
+  /// manifest is correct even when finalize resumes after a crash.
+  StagedFilesName = 'staged_files.json';
+  CompanionManifestSchema = 1;
   /// Unauthenticated advisory marker written when authenticated schema-2
   /// operation is established (R9): if it exists without the key blob,
   /// rollback is refused entirely (fail closed, no downgrade).
@@ -341,6 +383,101 @@ end;
 function UpdateRenameFile(const AFrom, ATo: string): Boolean;
 begin
   Result := RenameFile(AFrom, ATo);
+end;
+{$ENDIF}
+
+/// Moves AFrom to ATo for the companion backup transfer and restore paths
+/// (R15/R16). Test builds dispatch PortappixFileMoveHook first.
+function CompanionMoveFile(const AFrom, ATo: string): Boolean;
+{$IFDEF PORTAPPIX_TESTINJECT}
+var
+  ErrorCode: Integer;
+begin
+  if Assigned(PortappixFileMoveHook) then
+  begin
+    ErrorCode := PortappixFileMoveHook(AFrom, ATo);
+    if ErrorCode <> 0 then
+    begin
+      SetLastError(DWORD(ErrorCode));
+      Exit(False);
+    end;
+  end;
+  Result := MoveFileEx(PChar(AFrom), PChar(ATo),
+    MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH);
+end;
+{$ELSE}
+begin
+  Result := MoveFileEx(PChar(AFrom), PChar(ATo),
+    MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH);
+end;
+{$ENDIF}
+
+/// Deletes a single file for the companion restore paths (R15). Test builds
+/// dispatch PortappixFileDeleteHook first.
+function CompanionDeleteFile(const AFileName: string): Boolean;
+{$IFDEF PORTAPPIX_TESTINJECT}
+var
+  ErrorCode: Integer;
+begin
+  if Assigned(PortappixFileDeleteHook) then
+  begin
+    ErrorCode := PortappixFileDeleteHook(AFileName);
+    if ErrorCode <> 0 then
+    begin
+      SetLastError(DWORD(ErrorCode));
+      Exit(False);
+    end;
+  end;
+  try
+    TFile.Delete(AFileName);
+    Result := True;
+  except
+    Exit(False);
+  end;
+end;
+{$ELSE}
+begin
+  try
+    TFile.Delete(AFileName);
+    Result := True;
+  except
+    Result := False;
+  end;
+end;
+{$ENDIF}
+
+/// Deletes a directory for the companion/staging cleanup paths (R15/R16).
+/// Test builds dispatch PortappixDirectoryDeleteHook first.
+function CompanionDeleteDirectory(const APath: string;
+  const ARecursive: Boolean): Boolean;
+{$IFDEF PORTAPPIX_TESTINJECT}
+var
+  ErrorCode: Integer;
+begin
+  if Assigned(PortappixDirectoryDeleteHook) then
+  begin
+    ErrorCode := PortappixDirectoryDeleteHook(APath);
+    if ErrorCode <> 0 then
+    begin
+      SetLastError(DWORD(ErrorCode));
+      Exit(False);
+    end;
+  end;
+  try
+    TDirectory.Delete(APath, ARecursive);
+    Result := True;
+  except
+    Exit(False);
+  end;
+end;
+{$ELSE}
+begin
+  try
+    TDirectory.Delete(APath, ARecursive);
+    Result := True;
+  except
+    Result := False;
+  end;
 end;
 {$ENDIF}
 
@@ -623,6 +760,82 @@ function TPortappixUpdateManager.CompanionBackupDir: string;
 begin
   Result := TPath.Combine(TPath.Combine(FRootPath, 'Cache'),
     CompanionBackupDirName);
+end;
+
+function TPortappixUpdateManager.CompanionTransferDir: string;
+begin
+  // R16 fresh transfer directory: never authoritative until renamed over
+  // the previous companion directory (which requires the removal below).
+  Result := TPath.Combine(TPath.Combine(FRootPath, 'Cache'),
+    CompanionTransferDirName);
+end;
+
+function TPortappixUpdateManager.CompanionManifestFile: string;
+begin
+  Result := TPath.Combine(CompanionBackupDir, CompanionManifestName);
+end;
+
+/// R15/R16: reads the "introduced" file list from the companion manifest.
+/// A missing manifest (pre-R15 companion directory) yields an empty list.
+/// A malformed manifest yields an empty list with a logged warning — the
+/// rollback of the launcher itself is never blocked by companion metadata;
+/// the replacement files are still restored from their backups.
+function TPortappixUpdateManager.ReadCompanionManifestIntroduced(
+  const AManifestFile: string): TArray<string>;
+var
+  JsonValue: TJSONValue;
+  Root: TJSONObject;
+  Arr: TJSONArray;
+  I: Integer;
+  Name: string;
+begin
+  SetLength(Result, 0);
+  if not TFile.Exists(AManifestFile) then
+    Exit;
+  try
+    JsonValue := TJSONObject.ParseJSONValue(
+      TFile.ReadAllText(AManifestFile, TEncoding.UTF8));
+    if JsonValue = nil then
+      Exit;
+    try
+      if not (JsonValue is TJSONObject) then
+        Exit;
+      Root := TJSONObject(JsonValue);
+      if (Root.FindValue('schema') = nil) or
+         (not (Root.FindValue('schema') is TJSONNumber)) or
+         (TJSONNumber(Root.FindValue('schema')).AsInt <>
+           CompanionManifestSchema) then
+        Exit;
+      Arr := Root.FindValue('introduced') as TJSONArray;
+      if Arr = nil then
+        Exit;
+      SetLength(Result, Arr.Count);
+      for I := 0 to Arr.Count - 1 do
+      begin
+        Name := Arr.Items[I].Value;
+        if (Name = '') or (not IsSafeFileComponent(Name)) then
+        begin
+          // Fail closed for this list: a manifest entry that is not a safe
+          // file component cannot be interpreted — drop the whole list so a
+          // tampered manifest can never make rollback delete arbitrary paths.
+          SetLength(Result, 0);
+          Log('The companion manifest contains an unsafe file name; the ' +
+            'introduced-file list is ignored.');
+          Exit;
+        end;
+        Result[I] := Name;
+      end;
+    finally
+      JsonValue.Free;
+    end;
+  except
+    on E: Exception do
+    begin
+      SetLength(Result, 0);
+      Log(Format('Unable to read the companion manifest "%s": %s',
+        [AManifestFile, E.Message]));
+    end;
+  end;
 end;
 
 procedure TPortappixUpdateManager.WriteMigrationFlag;
@@ -1460,6 +1673,22 @@ begin
         TFile.Copy(ExistingTarget, TPath.Combine(RollbackDir, BaseName), True);
     end;
 
+    // R15/R16: record the package's non-launcher root-file names BEFORE the
+    // finalize step runs. The companion manifest's introduced-file list is
+    // derived from this (staged files without a backup), which stays correct
+    // even when a resumed finalize no longer has the staged files to list.
+    var StagedFiles := TJSONArray.Create;
+    try
+      for var StagedFile in TDirectory.GetFiles(NewDir) do
+        if not SameText(TPath.GetFileName(StagedFile), LauncherFileName) then
+          StagedFiles.Add(TPath.GetFileName(StagedFile));
+      if not WriteTextFileDurable(TPath.Combine(RollbackDir, StagedFilesName),
+        StagedFiles.Format(2)) then
+        raise EPortappixUpdateError.Create('Unable to write staged_files.json.');
+    finally
+      StagedFiles.Free;
+    end;
+
     RecordBackupExisted := TFile.Exists(OldLauncherRecordFile);
     if RecordBackupExisted then
       TFile.Copy(OldLauncherRecordFile,
@@ -1591,51 +1820,247 @@ begin
     StagingDir));
 end;
 
-procedure TPortappixUpdateManager.PreserveCompanionBackups(const AStagingDir: string);
-const
-  ObsoleteBackups: array[0..3] of string = (RecordBackupName, OkBackupName,
-    PendingBackupName, PreSwapBackupName);
+procedure TPortappixUpdateManager.PreserveCompanionBackups(
+  const AStagingDir: string);
 var
-  Name: string;
-  BackupFile, Target: string;
-begin
-  // R14: keep the replaced root-file backups alive until the new launcher
-  // confirms startup; only the swap-time bookkeeping backups are dropped.
-  for Name in ObsoleteBackups do
-    RemoveFileQuiet(TPath.Combine(AStagingDir, Name));
-  try
-    if TDirectory.Exists(CompanionBackupDir) then
-      TDirectory.Delete(CompanionBackupDir, True);
-  except
-    on E: Exception do
-      Log(Format('Unable to clear the previous companion backup directory: %s',
-        [E.Message]));
-  end;
-  var Remaining := TDirectory.GetFiles(AStagingDir, '*', TSearchOption.soTopDirectoryOnly);
-  if Length(Remaining) = 0 then
+  Name, BackupFile, Target, TransferDir, Hash, StagedFilesJson: string;
+  Introduced: TArray<string>;
+  Remaining: TArray<string>;
+  Failures, RecoverFailures: Integer;
+  Manifest: TJSONObject;
+  Entry: TJSONObject;
+
+  function TransferFailureMessage(const ASource, ADest: string): string;
   begin
-    try
-      TDirectory.Delete(AStagingDir, True);
-    except
-    end;
+    Result := Format('Unable to preserve companion backup "%s" as "%s": %s',
+      [ASource, ADest, SysErrorMessage(Integer(GetLastError))]);
+  end;
+
+  /// Swap-time bookkeeping is not a backed-up root file: it stays in the
+  /// staging dir until the staging dir is consumed, because a failed or
+  /// interrupted finalize needs it intact (SwapDone inference, marker
+  /// restore, introduced-list computation on resume).
+  function IsBookkeepingName(const AName: string): Boolean;
+  begin
+    Result := SameText(AName, RecordBackupName) or
+      SameText(AName, OkBackupName) or SameText(AName, PendingBackupName) or
+      SameText(AName, PreSwapBackupName) or SameText(AName, StagedFilesName);
+  end;
+
+  /// Adds one "replaced" manifest entry for a backup file that exists at
+  /// AFile, hashing the copy that will actually ship in the companion dir.
+  procedure AddReplacedEntry(const AManifest: TJSONObject; const AFile: string);
+  begin
+    Entry := TJSONObject.Create;
+    Entry.AddPair('name', TPath.GetFileName(AFile));
+    Entry.AddPair('sha256', Sha256File(AFile).ToLower);
+    (AManifest.FindValue('replaced') as TJSONArray).AddElement(Entry);
+  end;
+
+begin
+  // R15/R16: which files did this update INTRODUCE? Staged package root
+  // files that have no backup in the staging dir had no previous version —
+  // rollback must delete them, and the manifest must say so. Computed BEFORE
+  // any transfer so a resumed finalize (which no longer has the staged
+  // files) still derives the same list from the durable staged_files.json.
+  Introduced := nil;
+  StagedFilesJson := TPath.Combine(AStagingDir, StagedFilesName);
+  if TFile.Exists(StagedFilesJson) then
+  begin
+    var StagedVal := TJSONObject.ParseJSONValue(
+      TFile.ReadAllText(StagedFilesJson, TEncoding.UTF8));
+    if StagedVal is TJSONArray then
+      try
+        SetLength(Introduced, 0);
+        for var I := 0 to TJSONArray(StagedVal).Count - 1 do
+        begin
+          Name := TJSONArray(StagedVal).Items[I].Value;
+          if (Name = '') or (not IsSafeFileComponent(Name)) then
+            Continue;
+          if not TFile.Exists(TPath.Combine(AStagingDir, Name)) then
+          begin
+            SetLength(Introduced, Length(Introduced) + 1);
+            Introduced[High(Introduced)] := Name;
+          end;
+        end;
+      finally
+        StagedVal.Free;
+      end
+    else if StagedVal <> nil then
+      StagedVal.Free;
+  end;
+
+  // The transfer list: backed-up root files only (bookkeeping excluded and
+  // retained in the staging dir).
+  Remaining := TDirectory.GetFiles(AStagingDir, '*', TSearchOption.soTopDirectoryOnly);
+  for var I := High(Remaining) downto 0 do
+    if IsBookkeepingName(TPath.GetFileName(Remaining[I])) then
+      Delete(Remaining, I, 1);
+  var TransferCount := Length(Remaining);
+
+  if (TransferCount = 0) and (Length(Introduced) = 0) then
+  begin
+    // Nothing to preserve at all: consume the staging dir (including its
+    // bookkeeping — the swap has completed at this point).
+    CompanionDeleteDirectory(AStagingDir, True);
     Exit;
   end;
-  ForceDirectories(CompanionBackupDir);
-  for BackupFile in Remaining do
+
+  if TransferCount = 0 then
   begin
-    Target := TPath.Combine(CompanionBackupDir, TPath.GetFileName(BackupFile));
-    if not MoveFileEx(PChar(BackupFile), PChar(Target),
-      MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
-      Log(Format('Unable to preserve companion backup "%s": %s',
-        [BackupFile, SysErrorMessage(Integer(GetLastError))]));
+    // R16 (resume path): a retried finalize whose replaced-file backups were
+    // already consumed by the failure restore still records the introduced
+    // files. The previous companion directory and every backup in it are
+    // NEVER touched here — only the manifest is updated in place, listing
+    // the backups that still exist (verified by hash) plus the introduced
+    // list of the current update.
+    ForceDirectories(CompanionBackupDir);
+    Manifest := TJSONObject.Create;
+    try
+      Manifest.AddPair('schema', TJSONNumber.Create(CompanionManifestSchema));
+      Manifest.AddPair('replaced', TJSONArray.Create);
+      for BackupFile in TDirectory.GetFiles(CompanionBackupDir, '*',
+        TSearchOption.soTopDirectoryOnly) do
+        if not SameText(TPath.GetFileName(BackupFile), CompanionManifestName) then
+          AddReplacedEntry(Manifest, BackupFile);
+      var IntroducedArr := TJSONArray.Create;
+      for Name in Introduced do
+        IntroducedArr.AddElement(TJSONString.Create(Name));
+      Manifest.AddPair('introduced', IntroducedArr);
+      if not WriteTextFileDurable(CompanionManifestFile, Manifest.Format(2)) then
+        raise EPortappixUpdateError.Create(
+          'Unable to write the companion manifest.');
+    finally
+      Manifest.Free;
+    end;
+    CompanionDeleteDirectory(AStagingDir, True);
+    Exit;
   end;
+
+  // R16: the replacement is transferred into a FRESH directory and verified
+  // in full BEFORE the previous companion directory is touched. Any failure
+  // leaves the staging dir (the authoritative source) and any previous
+  // companion dir (the authoritative old backups) untouched and raises —
+  // the finalize failure path then restores everything from the staging dir.
+  TransferDir := CompanionTransferDir;
+  CompanionDeleteDirectory(TransferDir, True); // stale leftovers only
+  ForceDirectories(TransferDir);
+  Failures := 0;
   try
-    TDirectory.Delete(AStagingDir, True);
+    for var I := 0 to TransferCount - 1 do
+    begin
+      BackupFile := Remaining[I];
+      Hash := Sha256File(BackupFile).ToLower;
+      Target := TPath.Combine(TransferDir, TPath.GetFileName(BackupFile));
+      if not CompanionMoveFile(BackupFile, Target) then
+      begin
+        Log(TransferFailureMessage(BackupFile, Target));
+        Inc(Failures);
+        Continue;
+      end;
+      // Verified transfer: the moved bytes must be exactly the source bytes.
+      if (not TFile.Exists(Target)) or
+         (not SameText(Sha256File(Target).ToLower, Hash)) then
+      begin
+        Log(Format('Companion backup "%s" did not transfer intact.', [Target]));
+        Inc(Failures);
+        Continue;
+      end;
+    end;
+
+    if Failures > 0 then
+      raise EPortappixUpdateError.Create(Format(
+        'Unable to preserve the companion backups (%d of %d failed); the ' +
+        'staging directory was kept and nothing was deleted.',
+        [Failures, TransferCount]));
+
+    // Union merge (R16): backups in the previous companion dir that the new
+    // set does not carry (root files replaced by an EARLIER update that this
+    // package does not ship, or backups already consumed by a failure
+    // restore) are copied in so the activated directory is never a subset of
+    // the old one. New backups shadow old ones with the same name — the
+    // newer backup is the correct pre-this-update state.
+    if TDirectory.Exists(CompanionBackupDir) then
+      for BackupFile in TDirectory.GetFiles(CompanionBackupDir, '*',
+        TSearchOption.soTopDirectoryOnly) do
+      begin
+        Name := TPath.GetFileName(BackupFile);
+        if SameText(Name, CompanionManifestName) then
+          Continue;
+        Target := TPath.Combine(TransferDir, Name);
+        if TFile.Exists(Target) then
+          Continue;
+        TFile.Copy(BackupFile, Target, False);
+      end;
+
+    // The authoritative manifest: replaced files (with verified hashes) and
+    // introduced files. Written durably BEFORE the activation. The manifest
+    // object takes ownership of every sub-array added to it.
+    Manifest := TJSONObject.Create;
+    try
+      Manifest.AddPair('schema', TJSONNumber.Create(CompanionManifestSchema));
+      Manifest.AddPair('replaced', TJSONArray.Create);
+      for BackupFile in TDirectory.GetFiles(TransferDir, '*',
+        TSearchOption.soTopDirectoryOnly) do
+        if not SameText(TPath.GetFileName(BackupFile), CompanionManifestName) then
+          AddReplacedEntry(Manifest, BackupFile);
+      var IntroducedArr := TJSONArray.Create;
+      for Name in Introduced do
+        IntroducedArr.AddElement(TJSONString.Create(Name));
+      Manifest.AddPair('introduced', IntroducedArr);
+      if not WriteTextFileDurable(TPath.Combine(TransferDir,
+        CompanionManifestName), Manifest.Format(2)) then
+        raise EPortappixUpdateError.Create(
+          'Unable to write the companion manifest.');
+    finally
+      Manifest.Free;
+    end;
+
+    // Activation: the previous companion directory is only replaced once the
+    // replacement is completely transferred and verified (R16). The window
+    // between the delete and the rename is recoverable: every file lives in
+    // the transfer dir, and the handler below moves them all back to the
+    // staging dir if the rename fails — no backup copy is ever destroyed.
+    if TDirectory.Exists(CompanionBackupDir) then
+      if not CompanionDeleteDirectory(CompanionBackupDir, True) then
+        raise EPortappixUpdateError.CreateFmt(
+          'Unable to replace the previous companion backup directory "%s": %s',
+          [CompanionBackupDir, SysErrorMessage(Integer(GetLastError))]);
+    try
+      TDirectory.Move(TransferDir, CompanionBackupDir);
+    except
+      on E: Exception do
+        raise EPortappixUpdateError.CreateFmt(
+          'Unable to activate the companion backup directory "%s": %s',
+          [CompanionBackupDir, E.Message]);
+    end;
   except
-    on E: Exception do
-      Log(Format('Unable to remove the staging directory "%s": %s',
-        [AStagingDir, E.Message]));
+    // Never destroy the only copy of a backup: everything the fresh
+    // transfer dir holds is moved back to the staging dir (the authoritative
+    // source). If even that fails for a file, the transfer dir is KEPT —
+    // only a fully drained transfer dir is deleted. The caller restores
+    // everything from the staging dir and a retry starts over.
+    RecoverFailures := 0;
+    if TDirectory.Exists(TransferDir) then
+      for BackupFile in TDirectory.GetFiles(TransferDir, '*',
+        TSearchOption.soTopDirectoryOnly) do
+        if not CompanionMoveFile(BackupFile,
+          TPath.Combine(AStagingDir, TPath.GetFileName(BackupFile))) then
+          Inc(RecoverFailures);
+    if (RecoverFailures = 0) and TDirectory.Exists(TransferDir) then
+      CompanionDeleteDirectory(TransferDir, True)
+    else if RecoverFailures > 0 then
+      Log(Format('Unable to move %d transferred backup(s) back to "%s"; the ' +
+        'transfer directory "%s" was kept so no backup is lost.',
+        [RecoverFailures, AStagingDir, TransferDir]));
+    raise;
   end;
+
+  // Only now — after a verified, activated transfer — is the staging dir
+  // no longer needed.
+  if not CompanionDeleteDirectory(AStagingDir, True) then
+    Log(Format('Unable to remove the staging directory "%s": %s',
+      [AStagingDir, SysErrorMessage(Integer(GetLastError))]));
 end;
 
 procedure TPortappixUpdateManager.FinalizePendingUpdate;
@@ -1806,6 +2231,8 @@ begin
     BaseName := TPath.GetFileName(BackupFile);
     if SameText(BaseName, PreSwapBackupName) then
       Continue; // internal restore artifact, not a backed-up file
+    if SameText(BaseName, StagedFilesName) then
+      Continue; // R15/R16 bookkeeping: the staged package file list
     if SameText(BaseName, RecordBackupName) then
       Target := OldLauncherRecordFile
     else if SameText(BaseName, OkBackupName) then
@@ -1968,6 +2395,9 @@ function TPortappixUpdateManager.RollbackToOldLauncher(
   const ARestartLauncher: Boolean): Boolean;
 var
   StaleExe, ErrorMsg, Target: string;
+  Introduced: TArray<string>;
+  Failures: Integer;
+  BaseName: string;
   OldHandle: THandle;
 begin
   // TOCTOU-safe restore: the same handle that verified size and hash stays
@@ -2017,28 +2447,68 @@ begin
   RemoveFileQuiet(PendingFile);
   RemoveFileQuiet(OldLauncherRecordFile);
 
-  // R14: restore the companion files the update replaced. This runs for
+  // R14/R15/R16: restore the companion files the update replaced, delete the
+  // files it introduced (manifest-authoritative), and only remove the backup
+  // directory when EVERY restore and removal succeeded. This runs for
   // watchdog rollbacks (before the update was confirmed); after a confirmed
   // update the directory was already deleted by ConfirmUpdate.
   if TDirectory.Exists(CompanionBackupDir) then
   begin
+    Introduced := ReadCompanionManifestIntroduced(CompanionManifestFile);
+    Failures := 0;
     for var BackupFile in TDirectory.GetFiles(CompanionBackupDir, '*',
       TSearchOption.soTopDirectoryOnly) do
     begin
-      Target := TPath.Combine(FRootPath, TPath.GetFileName(BackupFile));
-      RemoveFileQuiet(Target);
-      if not RenameFile(BackupFile, Target) then
+      BaseName := TPath.GetFileName(BackupFile);
+      if SameText(BaseName, CompanionManifestName) then
+        Continue; // bookkeeping, consumed with the directory
+      Target := TPath.Combine(FRootPath, BaseName);
+      if not CompanionDeleteFile(Target) then
+      begin
+        // R15: a delete failure must not consume the backup — report it and
+        // keep the directory so a later rollback can retry the restore.
+        Log(Format('Unable to delete "%s" before restoring the companion file: %s',
+          [Target, SysErrorMessage(Integer(GetLastError))]));
+        Inc(Failures);
+        Continue;
+      end;
+      if not CompanionMoveFile(BackupFile, Target) then
+      begin
         Log(Format('Unable to restore companion file "%s": %s',
           [BackupFile, SysErrorMessage(Integer(GetLastError))]));
+        Inc(Failures);
+      end;
     end;
-    try
-      TDirectory.Delete(CompanionBackupDir, True);
-      Log('Companion files restored to their pre-update state.');
-    except
-      on E: Exception do
+
+    // Files the update introduced have no backup: the manifest is the only
+    // record that they are update artifacts, and rollback must remove them.
+    for var IntroducedName in Introduced do
+    begin
+      Target := TPath.Combine(FRootPath, IntroducedName);
+      if not TFile.Exists(Target) then
+        Continue; // already removed (idempotent re-rollback)
+      if not CompanionDeleteFile(Target) then
+      begin
+        Log(Format('Unable to delete the update file "%s" introduced by the ' +
+          'update: %s', [Target, SysErrorMessage(Integer(GetLastError))]));
+        Inc(Failures);
+      end;
+    end;
+
+    // R15: the backup directory is NEVER destroyed while any restore or
+    // removal failed — the surviving backups are the only copies of the
+    // pre-update state.
+    if Failures = 0 then
+    begin
+      if not CompanionDeleteDirectory(CompanionBackupDir, True) then
         Log(Format('Unable to remove the companion backup directory: %s',
-          [E.Message]));
-    end;
+          [SysErrorMessage(Integer(GetLastError))]))
+      else
+        Log('Companion files restored to their pre-update state.');
+    end
+    else
+      Log(Format('%d companion file(s) could not be restored; the backup ' +
+        'directory was kept so the rollback can be retried.', [Failures]));
   end;
 
   Log('Previous launcher restored. The failed build stays next to it as ' +

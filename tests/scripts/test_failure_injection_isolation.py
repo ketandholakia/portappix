@@ -68,6 +68,12 @@ INJECT_NEEDLES = [
     "EPortappixSimulatedUpdateCrash",
     "PortappixReviewLockGapMs",
     "PortappixTestRenameByHandle",
+    "PortappixFileMoveHook",
+    "PortappixFileDeleteHook",
+    "PortappixDirectoryDeleteHook",
+    "TPortappixFileMoveHook",
+    "TPortappixFileDeleteHook",
+    "TPortappixDirectoryDeleteHook",
 ]
 # src file that declares the test-only rollback key override.
 KEY_OVERRIDE_FILE = "src/Portappix.RecordAuth.pas"
@@ -197,7 +203,9 @@ def main(argv: list[str] | None = None) -> int:
     for needle in ("PortappixWriteHook", "PortappixRenameHook",
                    "PortappixSpawnErrorCode", "PortappixTestInjectMarker",
                    "PortappixWriteDelayMs", "PortappixUpdateCrashPoint",
-                   "PortappixRollbackAttackHook"):
+                   "PortappixRollbackAttackHook", "PortappixFileMoveHook",
+                   "PortappixFileDeleteHook",
+                   "PortappixDirectoryDeleteHook"):
         check(needle in raw_all,
               f"source scan guard: {needle} does occur in the scanned sources")
 

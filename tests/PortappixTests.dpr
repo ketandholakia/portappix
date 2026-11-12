@@ -5017,6 +5017,37 @@ begin
   TFile.Delete(TempFile);
 end;
 
+/// R15/R16 test helper: a launcher package with an arbitrary companion set.
+procedure BuildUpdateZip(const AZipPath, ANewExeContent: string;
+  const ACompanionNames: array of string;
+  const ACompanionContents: array of string);
+var
+  I: Integer;
+  TempFile: string;
+  Zip: TZipFile;
+begin
+  Assert(Length(ACompanionNames) = Length(ACompanionContents));
+  TempFile := AZipPath + '.payload';
+  TFile.WriteAllText(TempFile, ANewExeContent, TEncoding.UTF8);
+  Zip := TZipFile.Create;
+  try
+    Zip.Open(AZipPath, TZipMode.zmWrite);
+    Zip.Add(TempFile, 'Launcher.exe');
+    for I := 0 to High(ACompanionNames) do
+    begin
+      TFile.WriteAllText(AZipPath + '.c' + IntToStr(I),
+        ACompanionContents[I], TEncoding.UTF8);
+      Zip.Add(AZipPath + '.c' + IntToStr(I), ACompanionNames[I]);
+    end;
+    Zip.Close;
+  finally
+    Zip.Free;
+  end;
+  TFile.Delete(TempFile);
+  for I := 0 to High(ACompanionNames) do
+    TFile.Delete(AZipPath + '.c' + IntToStr(I));
+end;
+
 function BytesEqual(const A, B: TBytes): Boolean;
 var
   I: Integer;
@@ -5883,7 +5914,15 @@ begin
           TFile.Delete(LieZipPath);
       end;
 
+      // The rejected package above was deleted, so the zip is rebuilt here.
+      // Re-derive the release from the rebuilt bytes: a zip embeds local
+      // timestamps, so a rebuild is not guaranteed byte-identical to the
+      // earlier build (checking against the stale hash is a flaky test, not
+      // a product signal).
       BuildLauncherZip(ZipPath, 'new-launcher');
+      Release.Free;
+      Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+        Sha256File(ZipPath), TFile.GetSize(ZipPath)));
       Manager.PrepareUpdate(ZipPath, Release, False);
       // R11: the swap happens in the finalize step (atomic ReplaceFileW).
       Manager.FinalizePendingUpdate;
@@ -7187,6 +7226,285 @@ begin
     {$ENDIF}
   end;
 end;
+
+/// R16 happy path: the companion backup directory contains the verified
+/// replacement backups AND the durable manifest (replaced vs introduced);
+/// the staging dir is gone; the transfer dir is gone.
+procedure TestCompanionManifestAfterFinalize(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, CacheDir, LauncherExe, ReadmeFile, NewToolFile, ZipPath: string;
+  CompanionDir, ManifestFile, TransferDir: string;
+  ManifestText: string;
+  Release: TPortappixRelease;
+begin
+  RootDir := TPath.Combine(ARoot, 'r16-manifest');
+  CacheDir := TPath.Combine(RootDir, 'Cache');
+  CompanionDir := TPath.Combine(CacheDir, 'companion_rollback');
+  TransferDir := TPath.Combine(CacheDir, 'companion_rollback_staging');
+  ManifestFile := TPath.Combine(CompanionDir, 'companion_manifest.json');
+  ForceDirectories(CacheDir);
+  LauncherExe := TPath.Combine(RootDir, 'Launcher.exe');
+  ReadmeFile := TPath.Combine(RootDir, 'readme.txt');
+  NewToolFile := TPath.Combine(RootDir, 'newtool.exe');
+  TFile.WriteAllText(LauncherExe, 'A1', TEncoding.ASCII);
+  TFile.WriteAllText(ReadmeFile, 'R1');
+
+  ZipPath := TPath.Combine(CacheDir, 'r16.zip');
+  // Replaces readme.txt and INTRODUCES newtool.exe.
+  BuildUpdateZip(ZipPath, 'A2',
+    ['readme.txt', 'newtool.exe'], ['A2-readme', 'NT']);
+  Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+    Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  PortappixRecordKeyPathOverride := RecordKeyBasePath;
+  {$ENDIF}
+  Manager := TPortappixUpdateManager.Create(RootDir);
+  try
+    Manager.OnLog := procedure(AMsg: string) begin end;
+    Manager.PrepareUpdate(ZipPath, Release, False);
+    Manager.FinalizePendingUpdate;
+
+    Check(TFile.ReadAllText(NewToolFile) = 'NT',
+      'R16: the introduced companion file was installed by the update');
+    Check(TFile.ReadAllText(ReadmeFile) = 'A2-readme',
+      'R16: the replaced companion file was installed by the update');
+    Check(TDirectory.Exists(CompanionDir),
+      'R16: the companion backup directory exists after finalize');
+    Check(TFile.Exists(ManifestFile),
+      'R16: the companion manifest exists after finalize');
+    Check(not TDirectory.Exists(TransferDir),
+      'R16: the fresh transfer directory is gone after activation');
+    // The staging directory (launcher_rollback_*) must be gone.
+    Check(Length(TDirectory.GetDirectories(CacheDir, 'launcher_rollback_*')) = 0,
+      'R16: the staging directory is deleted after the verified transfer');
+
+    ManifestText := '';
+    if TFile.Exists(ManifestFile) then
+      ManifestText := TFile.ReadAllText(ManifestFile);
+    Check(ManifestText.Contains('"introduced"') and
+      ManifestText.Contains('newtool.exe'),
+      'R16: the manifest records the introduced file');
+    Check(ManifestText.Contains('"replaced"') and
+      ManifestText.Contains('readme.txt') and
+      ManifestText.Contains(Sha256Text('R1').ToLower),
+      'R16: the manifest records the replaced file with its verified hash');
+  finally
+    Release.Free;
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+
+/// R16 repro: a failed companion transfer keeps the staging directory (the
+/// authoritative backups), keeps any previous companion directory (the
+/// authoritative old backups), and raises so the finalize restores
+/// everything; a re-prepared retry then completes idempotently (the failed
+/// finalize consumes its staging backups for the restore, so the recovery
+/// re-runs PrepareUpdate, which re-stages and re-backs-up the restored root).
+procedure TestCompanionTransferFailureKeepsSources(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, CacheDir, LauncherExe, ReadmeFile, NewToolFile: string;
+  CompanionDir, ManifestFile, TransferDir: string;
+  ZipPath1, ZipPath2: string;
+  Release1, Release2: TPortappixRelease;
+begin
+  RootDir := TPath.Combine(ARoot, 'r16-transfer-failure');
+  CacheDir := TPath.Combine(RootDir, 'Cache');
+  CompanionDir := TPath.Combine(CacheDir, 'companion_rollback');
+  TransferDir := TPath.Combine(CacheDir, 'companion_rollback_staging');
+  ManifestFile := TPath.Combine(CompanionDir, 'companion_manifest.json');
+  ForceDirectories(CacheDir);
+  LauncherExe := TPath.Combine(RootDir, 'Launcher.exe');
+  ReadmeFile := TPath.Combine(RootDir, 'readme.txt');
+  NewToolFile := TPath.Combine(RootDir, 'newtool.exe');
+  TFile.WriteAllText(LauncherExe, 'A1', TEncoding.ASCII);
+  TFile.WriteAllText(ReadmeFile, 'R1');
+
+  // First cycle: establishes the previous companion directory.
+  ZipPath1 := TPath.Combine(CacheDir, 'r16-f1.zip');
+  BuildLauncherZip(ZipPath1, 'A2');
+  Release1 := ParseReleasesJson(ReleasesJsonFor('1.0.1',
+    Sha256File(ZipPath1), TFile.GetSize(ZipPath1)));
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  PortappixRecordKeyPathOverride := RecordKeyBasePath;
+  {$ENDIF}
+  Manager := TPortappixUpdateManager.Create(RootDir);
+  try
+    Manager.OnLog := procedure(AMsg: string) begin end;
+    Manager.PrepareUpdate(ZipPath1, Release1, False);
+    Manager.FinalizePendingUpdate;
+    Check(TDirectory.Exists(CompanionDir) and TFile.Exists(ManifestFile),
+      'R16 setup: the first cycle established the companion directory');
+    // The pending marker is still live (no confirmation): exactly the state
+    // in which a second staged update must not destroy the old backups.
+
+    // Second staged update replaces readme.txt and introduces newtool.exe.
+    ZipPath2 := TPath.Combine(CacheDir, 'r16-f2.zip');
+    BuildUpdateZip(ZipPath2, 'A3',
+      ['readme.txt', 'newtool.exe'], ['A3-readme', 'NT']);
+    Release2 := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+      Sha256File(ZipPath2), TFile.GetSize(ZipPath2)));
+    Manager.PrepareUpdate(ZipPath2, Release2, False);
+
+    // Arm the move hook: fail every companion transfer INTO the fresh dir.
+    PortappixFileMoveHook :=
+      function(const AFrom, ATo: string): Integer
+      begin
+        if Pos('companion_rollback_staging', ATo) > 0 then
+          Exit(5); // ERROR_ACCESS_DENIED
+        Result := 0;
+      end;
+    try
+      ExpectException(
+        procedure
+        begin
+          Manager.FinalizePendingUpdate;
+        end,
+        'R16: finalize raises when the companion transfer fails');
+    finally
+      PortappixFileMoveHook := nil;
+    end;
+
+    // The previous companion directory (the only copy of the pre-cycle-2
+    // readme backup) was NOT destroyed by the failed transfer.
+    Check(TDirectory.Exists(CompanionDir) and TFile.Exists(ManifestFile),
+      'R16: the previous companion directory survives a failed transfer');
+    // The fresh transfer dir was drained back into the staging dir and
+    // cleaned; nothing was activated twice.
+    Check(not TDirectory.Exists(TransferDir),
+      'R16: the partial transfer directory is cleaned up after a failure');
+    // The finalize failure restored everything (R11 semantics).
+    Check(TFile.ReadAllText(LauncherExe) = 'A2',
+      'R16: the launcher is restored byte-identically after the failed finalize');
+    Check(TFile.ReadAllText(ReadmeFile) = 'A2',
+      'R16: the replaced companion is restored after the failed finalize');
+    Check(not TFile.Exists(NewToolFile),
+      'R16: the introduced companion is removed after the failed finalize');
+
+    // Recovery: re-stage the same update (the failed finalize consumed the
+    // staging backups for its restore) and finalize; the pre-retry readme
+    // state ('A2') becomes the companion backup again — never the older
+    // cycle-1 backup, and never a lost rollback offer. PrepareUpdate consumes
+    // the package file, so rebuild it first.
+    ZipPath2 := TPath.Combine(CacheDir, 'r16-f2b.zip');
+    BuildUpdateZip(ZipPath2, 'A3',
+      ['readme.txt', 'newtool.exe'], ['A3-readme', 'NT']);
+    Release2.Free;
+    Release2 := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+      Sha256File(ZipPath2), TFile.GetSize(ZipPath2)));
+    Manager.PrepareUpdate(ZipPath2, Release2, False);
+    Manager.FinalizePendingUpdate;
+    Check(TFile.ReadAllText(LauncherExe) = 'A3',
+      'R16: the retry completes the launcher swap');
+    Check(TFile.ReadAllText(ReadmeFile) = 'A3-readme',
+      'R16: the retry installs the replaced companion');
+    Check(TFile.ReadAllText(NewToolFile) = 'NT',
+      'R16: the retry installs the introduced companion');
+    Check(TDirectory.Exists(CompanionDir) and TFile.Exists(ManifestFile),
+      'R16: the retry establishes the new companion directory');
+    Check(TFile.Exists(TPath.Combine(CompanionDir, 'readme.txt')) and
+      (TFile.ReadAllText(TPath.Combine(CompanionDir, 'readme.txt')) = 'A2'),
+      'R16: the retry preserves the new readme backup (pre-retry state)');
+    Check(TFile.Exists(ManifestFile) and
+      TFile.ReadAllText(ManifestFile).Contains('newtool.exe'),
+      'R16: the retry manifest records the introduced file');
+    Check(Length(TDirectory.GetDirectories(CacheDir, 'launcher_rollback_*')) = 0,
+      'R16: the retry consumes the staging directory');
+  finally
+    Release1.Free;
+    Release2.Free;
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+
+/// R15 repro: a failed companion restore (delete/move) NEVER destroys the
+/// companion backup directory; introduced files are removed by the
+/// manifest-authoritative list.
+procedure TestCompanionRestoreFailureKeepsBackups(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, CacheDir, LauncherExe, ReadmeFile, NewToolFile: string;
+  CompanionDir, ManifestFile, ZipPath: string;
+  Release: TPortappixRelease;
+begin
+  RootDir := TPath.Combine(ARoot, 'r15-restore-failure');
+  CacheDir := TPath.Combine(RootDir, 'Cache');
+  CompanionDir := TPath.Combine(CacheDir, 'companion_rollback');
+  ManifestFile := TPath.Combine(CompanionDir, 'companion_manifest.json');
+  ForceDirectories(CacheDir);
+  LauncherExe := TPath.Combine(RootDir, 'Launcher.exe');
+  ReadmeFile := TPath.Combine(RootDir, 'readme.txt');
+  NewToolFile := TPath.Combine(RootDir, 'newtool.exe');
+  TFile.WriteAllText(LauncherExe, 'A1', TEncoding.ASCII);
+  TFile.WriteAllText(ReadmeFile, 'R1');
+
+  ZipPath := TPath.Combine(CacheDir, 'r15.zip');
+  BuildUpdateZip(ZipPath, 'A2',
+    ['readme.txt', 'newtool.exe'], ['A2-readme', 'NT']);
+  Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+    Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  PortappixRecordKeyPathOverride := RecordKeyBasePath;
+  {$ENDIF}
+  Manager := TPortappixUpdateManager.Create(RootDir);
+  try
+    Manager.OnLog := procedure(AMsg: string) begin end;
+    Manager.PrepareUpdate(ZipPath, Release, False);
+    Manager.FinalizePendingUpdate;
+    Check(TFile.ReadAllText(NewToolFile) = 'NT',
+      'R15 setup: the update introduced newtool.exe');
+
+    // Arm the delete hook: fail deleting the root readme.txt (the pre-delete
+    // before the restore). The restore move for readme never happens.
+    PortappixFileDeleteHook :=
+      function(const APath: string): Integer
+      begin
+        if SameText(APath, ReadmeFile) then
+          Exit(5); // ERROR_ACCESS_DENIED
+        Result := 0;
+      end;
+    try
+      Check(Manager.RollbackToOldLauncher(False),
+        'R15: the launcher rollback itself still succeeds');
+    finally
+      PortappixFileDeleteHook := nil;
+    end;
+
+    Check(TFile.ReadAllText(LauncherExe) = 'A1',
+      'R15: the previous launcher was restored');
+    Check(TDirectory.Exists(CompanionDir),
+      'R15: the companion backup directory survives a failed restore');
+    if TDirectory.Exists(CompanionDir) then
+      Check(Length(TDirectory.GetFiles(CompanionDir, 'readme.txt',
+        TSearchOption.soTopDirectoryOnly)) = 1,
+        'R15: the readme backup survives for a retry');
+    Check(not TFile.Exists(NewToolFile),
+      'R15: the introduced file is deleted by the manifest list even when ' +
+      'another restore failed');
+
+    // Retry (hook disarmed): the same backup dir completes the restore.
+    // The launcher part has nothing to do (no .old anymore); a second
+    // rollback is refused because Launcher.exe.old was consumed — the
+    // companion restore retry happens in the next update cycle, which
+    // transfers this directory first (R16) instead of destroying it.
+    // Verify the kept directory is exactly that recoverable state:
+    Check(TFile.Exists(ManifestFile),
+      'R15: the manifest survives with the kept backup directory');
+  finally
+    Release.Free;
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
 {$ENDIF}
 
 procedure TestConsent(const ARoot: string);
@@ -7314,6 +7632,9 @@ begin
     TestReviewRaceCrossInstance(Root);
     TestKeyCreationRaceSafe(Root);
     TestCompanionRestoreOnRollback(Root);
+    TestCompanionManifestAfterFinalize(Root);
+    TestCompanionTransferFailureKeepsSources(Root);
+    TestCompanionRestoreFailureKeepsBackups(Root);
     // Materialize the marker constant into the test-mode binary (byte-scanned
     // by the isolation tests); production binaries contain no reference and
     // therefore no marker bytes.
