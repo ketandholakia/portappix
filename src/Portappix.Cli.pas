@@ -87,6 +87,7 @@ type
     FRootPath: string;
     FCommand: string;
     FArgument: string;
+    FParentPid: DWORD;
     FExitCodeFile: string;
     FLogFilePath: string;
     FAcceptPolicy: Boolean;
@@ -109,8 +110,10 @@ type
     function ExecuteApplyUpdates: Integer;
     function ExecuteCheckUpdates: Integer;
     function ExecuteSelfUpdate: Integer;
+    function ExecuteFinalizeUpdate: Integer;
     function ExecutePostUpdate: Integer;
     function ExecuteRollback: Integer;
+    procedure CheckStagedUpdateRecovery;
   public
     constructor Create;
     function Parse(const AArgs: TArray<string>): Boolean;
@@ -293,6 +296,21 @@ begin
       if not TakeValue(Arg, FArgument) then
         Exit;
       FCommand := 'self-update';
+      Inc(Index);
+    end
+    else if SameText(Arg, '--finalize-update') then
+    begin
+      // No value: run from the staged launcher as the R11 finalize helper.
+      FCommand := 'finalize-update';
+      Inc(Index);
+    end
+    else if SameText(Arg, '--parent') then
+    begin
+      // R11: PID of the staging launcher; the finalize helper waits for it
+      // to exit before replacing the running image.
+      if not TakeValue(Arg, FArgument) then
+        Exit;
+      FParentPid := DWORD(StrToIntDef(FArgument, 0));
       Inc(Index);
     end
     else if SameText(Arg, '--run') then
@@ -844,6 +862,86 @@ begin
   end;
 end;
 
+function TPortappixCli.ExecuteFinalizeUpdate: Integer;
+var
+  Manager: TPortappixUpdateManager;
+  ParentHandle: THandle;
+begin
+  // R11: wait for the staging launcher to exit before its image can be
+  // atomically replaced; a stuck parent defers cleanly (the pending marker
+  // stays and the recovery respawn retries on the next start).
+  if FParentPid <> 0 then
+  begin
+    ParentHandle := OpenProcess(SYNCHRONIZE, False, FParentPid);
+    if ParentHandle <> 0 then
+    try
+      if WaitForSingleObject(ParentHandle, 30000) = WAIT_TIMEOUT then
+      begin
+        Log('The staging launcher did not exit in time; finalization deferred.');
+        WriteExitCodeFile(CliExitGenericFailure, '',
+          'Finalize deferred: the staging launcher is still running.');
+        Exit(CliExitGenericFailure);
+      end;
+    finally
+      CloseHandle(ParentHandle);
+    end;
+  end;
+
+  Manager := TPortappixUpdateManager.Create(FRootPath);
+  try
+    Manager.OnLog :=
+      procedure(AMsg: string)
+      begin
+        Log(AMsg);
+      end;
+    try
+      Manager.FinalizePendingUpdate;
+      WriteExitCodeFile(CliExitOk, '', 'Update finalized; the launcher is restarting.');
+      Result := CliExitOk;
+    except
+      on E: Exception do
+      begin
+        Log('Update finalization failed: ' + E.Message);
+        WriteExitCodeFile(CliExitGenericFailure, '', E.Message);
+        Result := CliExitGenericFailure;
+      end;
+    end;
+  finally
+    Manager.Free;
+  end;
+end;
+
+procedure TPortappixCli.CheckStagedUpdateRecovery;
+var
+  Manager: TPortappixUpdateManager;
+begin
+  // R11 recovery bootstrapper: when an update was staged but the finalize
+  // step never completed (crash, killed helper), respawn it from the staged
+  // launcher. The staged installation is fully functional meanwhile.
+  if FCommand = 'finalize-update' then
+    Exit; // we ARE the finalize step
+  Manager := TPortappixUpdateManager.Create(FRootPath);
+  try
+    Manager.OnLog :=
+      procedure(AMsg: string)
+      begin
+        Log(AMsg);
+      end;
+    if Manager.UnfinalizedPendingUpdate then
+    begin
+      Log('A staged update was never finalized; respawning the finalize step.');
+      try
+        Manager.SpawnUpdateHelper;
+      except
+        on E: Exception do
+          Log(Format('Unable to respawn the finalize step: %s', [E.Message]));
+      end;
+    end;
+  finally
+    Manager.Free;
+  end;
+end;
+
 function TPortappixCli.ExecutePostUpdate: Integer;
 var
   Manager: TPortappixUpdateManager;
@@ -1089,6 +1187,9 @@ end;
 
 function TPortappixCli.Execute: Integer;
 begin
+  // R11: recover a staged-but-never-finalized update before any command.
+  CheckStagedUpdateRecovery;
+
   if FCommand = 'run' then
     Result := ExecuteRun
   else if FCommand = 'trace' then
@@ -1107,6 +1208,8 @@ begin
     Result := ExecuteCheckUpdates
   else if FCommand = 'self-update' then
     Result := ExecuteSelfUpdate
+  else if FCommand = 'finalize-update' then
+    Result := ExecuteFinalizeUpdate
   else if FCommand = 'post-update' then
     Result := ExecutePostUpdate
   else if FCommand = 'rollback' then

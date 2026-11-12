@@ -60,6 +60,9 @@ type
     AContent: string): TPortappixWriteHookResult;
 var
   PortappixWriteHook: TPortappixWriteHook = nil;
+  /// Milliseconds the write hook sleeps before returning its result. Used to
+  /// widen read-modify-write windows deterministically in race-repro tests.
+  PortappixWriteDelayMs: Integer = 0;
 const
   PortappixTestInjectMarker = 'PORTAPPIX-TESTINJECT-BUILD-2026-11-11';
 {$ENDIF}
@@ -383,27 +386,39 @@ begin
     CloseHandle(Handle);
 end;
 
+var
+  // Per-process temp-file counter shared by WriteTextFileDurable and the
+  // test-only disk-full simulation (same naming scheme, P3).
+  GDurableTempCounter: Integer = 0;
+
 {$IFDEF PORTAPPIX_TESTINJECT}
 /// Dispatches the test write hook (if armed). Returns True when the caller
 /// must stop (failure already produced); False when the real write proceeds.
 function DispatchWriteHook(const AFileName, AContent: string): Boolean;
 var
   HookResult: TPortappixWriteHookResult;
+  SimulatedTemp: string;
 begin
   Result := False;
   if not Assigned(PortappixWriteHook) then
     Exit;
+  if PortappixWriteDelayMs > 0 then
+    Sleep(PortappixWriteDelayMs);
   HookResult := PortappixWriteHook(AFileName, AContent);
   case HookResult of
     whFail:
       Result := True;
     whFailAfterTemp:
       begin
-        // Disk-full semantics: the temp file was written and then lost, the
-        // target was never replaced, the previous content is untouched.
+        // Disk-full semantics with the SAME per-process temp naming the
+        // durable writer uses (P3): the temp file was written and then
+        // lost, the target was never replaced, the previous content is
+        // untouched.
+        SimulatedTemp := Format('%s.%d.%d.tmp', [AFileName, GetCurrentProcessId,
+          InterlockedIncrement(GDurableTempCounter)]);
         try
-          TFile.WriteAllText(AFileName + '.tmp', AContent, TEncoding.UTF8);
-          TFile.Delete(AFileName + '.tmp');
+          TFile.WriteAllText(SimulatedTemp, AContent, TEncoding.UTF8);
+          TFile.Delete(SimulatedTemp);
         except
         end;
         Result := True;
@@ -460,9 +475,6 @@ begin
   end;
 end;
 
-var
-  GDurableTempCounter: Integer = 0;
-
 function WriteTextFileDurable(const AFileName, AContent: string): Boolean;
 var
   DirectoryName: string;
@@ -498,13 +510,23 @@ begin
         Stream.WriteBuffer(ContentBytes[0], Length(ContentBytes));
         // WriteBuffer already raised on a partial write; flush for durability.
         if not FlushFileBuffers(Stream.Handle) then
-          Exit(False);
+          raise EWriteError.Create('FlushFileBuffers failed for the durable write.');
       end;
       // Verify the write completed before replacing anything.
       if Stream.Size <> Length(ContentBytes) then
-        Exit(False);
+        raise EWriteError.Create('The durable write was incomplete.');
     except
-      Exit(False);
+      on E: Exception do
+      begin
+        // P3: remove the abandoned temp file so a failed durable write
+        // leaves no debris behind.
+        try
+          if TFile.Exists(TemporaryFile) then
+            TFile.Delete(TemporaryFile);
+        except
+        end;
+        Exit(False);
+      end;
     end;
   finally
     Stream.Free;

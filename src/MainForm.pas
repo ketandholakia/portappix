@@ -1012,6 +1012,19 @@ begin
       begin
         QueueStatus(AMsg);
       end;
+    // R11 recovery bootstrapper: a staged-but-never-finalized update is
+    // completed by respawning the finalize step from the staged launcher.
+    try
+      if Manager.UnfinalizedPendingUpdate then
+      begin
+        Manager.SpawnUpdateHelper;
+        QueueStatus('An update was staged but never finalized; the finalize ' +
+          'step was restarted.');
+      end;
+    except
+      on E: Exception do
+        QueueStatus('Unable to respawn the update finalize step: ' + E.Message);
+    end;
     if not Manager.NeedsRollbackOffer then
       Exit;
 

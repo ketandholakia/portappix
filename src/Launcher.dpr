@@ -81,7 +81,12 @@ var
   I: Integer;
 begin
   for I := 1 to ParamCount do
-    if SameText(ParamStr(I), '--rollback') or SameText(ParamStr(I), '--accept-rollback') then
+    // --finalize-update is exempt: the crash fixtures simulate a BROKEN NEW
+    // BUILD crashing when the user starts it (--post-update), while the
+    // finalize helper from the same binary must still be able to complete
+    // the atomic swap.
+    if SameText(ParamStr(I), '--rollback') or SameText(ParamStr(I), '--accept-rollback') or
+       SameText(ParamStr(I), '--finalize-update') then
       Exit(True);
   Result := False;
 end;

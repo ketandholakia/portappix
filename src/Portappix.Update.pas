@@ -81,10 +81,28 @@ type
   /// fail the rename with. Production binaries contain no reference to this.
   TPortappixRenameHook = reference to function(const AFrom,
     ATo: string): Integer;
+  EPortappixSimulatedUpdateCrash = class(Exception);
 var
   PortappixRenameHook: TPortappixRenameHook = nil;
   /// Non-zero Win32 error code injected into the next SpawnNewLauncher call.
   PortappixSpawnErrorCode: Integer = 0;
+  /// Armed update-swap crash checkpoint (e.g. 'swap:after-rename-old').
+  /// CheckUpdateCrashPoint raises when the armed point is reached. Test
+  /// builds only; production binaries contain no reference to any of these.
+  PortappixUpdateCrashPoint: string = '';
+  /// Invoked inside RollbackToOldLauncher while the verified handle is open
+  /// and before the restore rename — the deterministic window for concurrent
+  /// rename-and-replace attack repro tests. Test builds only.
+  PortappixRollbackAttackHook: TProc = nil;
+  /// When True, a fired update crash point also suppresses the failure
+  /// restore (RestoreFailedSwap) — simulating abrupt process death where the
+  /// exception handler never runs. Test builds only.
+  PortappixUpdateCrashKill: Boolean = False;
+const
+  UpdateSwapCrashAfterRenameOld = 'swap:after-rename-old';
+  UpdateFinalizeCrashAfterSwap = 'finalize:after-swap';
+  UpdateFinalizeCrashAfterRootFiles = 'finalize:after-root-files';
+procedure CheckUpdateCrashPoint(const APoint: string);
 {$ENDIF}
 
 type
@@ -139,6 +157,12 @@ type
     procedure RecordOldLauncher(const AOldExePath, AOldVersion: string);
     function RecordHmac(const ASha256: string; ASize: Int64;
       const AVersion, ARecordedAt: string): string;
+    /// Verification variant: never creates the key (fail closed when the
+    /// key blob is missing). Returns False instead of raising.
+    function TryRecordHmac(out AHmac, AKeyError: string; const ASha256: string;
+      ASize: Int64; const AVersion, ARecordedAt: string): Boolean;
+    /// Best-effort durable write of the R9 advisory establishment flag.
+    procedure WriteMigrationFlag;
     procedure ReStampRecordWithHmac(const AJsonText: string);
     /// TOCTOU-safe core of RollbackToOldLauncher: opens Launcher.exe.old with
     /// a write-denying handle, validates the authenticated record and the
@@ -153,6 +177,10 @@ type
     function ValidateOldLauncherRecordText(const AJsonText: string;
       out AError, ASha256: string; out ASize: Int64;
       out AVersion, ARecordedAt: string; out ASchema: Integer): Boolean;
+    /// Cache\rollback_migration.flag (R9 advisory establishment marker).
+    function MigrationFlagFile: string;
+    /// Persistent companion-file backup directory (R14).
+    function CompanionBackupDir: string;
     /// Checked all-or-nothing restore after a failed in-swap update; raises
     /// when any restore step fails so the failure is never silent.
     procedure RestoreFailedSwap(const ARollbackDir: string;
@@ -168,6 +196,20 @@ type
     function NeedsRollbackOffer: Boolean;
     function VerifyOldLauncher(out AError: string): Boolean;
     procedure VerifyOldLauncherForRollback;
+    /// R11: True when an update was staged but the atomic finalize has not
+    /// yet completed (recovery respawn condition).
+    function UnfinalizedPendingUpdate: Boolean;
+    /// R11: performs the atomic swap (ReplaceFileW with backup) and
+    /// companion installation in the finalize-helper process. Idempotent:
+    /// a completed swap is detected and only the remaining steps run.
+    procedure FinalizePendingUpdate;
+    /// R11: spawns launcher_new\Launcher.exe --finalize-update for this root.
+    procedure SpawnUpdateHelper;
+    function ReadPendingStagingDir: string;
+    /// R14: moves the surviving root-file backups from the staging dir into
+    /// the persistent companion backup directory.
+    procedure PreserveCompanionBackups(const AStagingDir: string);
+    procedure SpawnProcess(const AExePath, AArguments: string);
     procedure PrepareUpdate(const AZipFile: string; const ARelease: TPortappixRelease;
       const ALaunchNewExe: Boolean = True);
     procedure ApplyUpdateFromUrl(const AUrl: string);
@@ -188,6 +230,56 @@ const
   OkBackupName = 'rollback_update_ok';
   PendingBackupName = 'rollback_update_pending.json';
   PreSwapBackupName = 'rollback_pre_swap.json';
+  /// Persistent companion-file backup directory (R14): survives the swap and
+  /// is consumed by ConfirmUpdate or RollbackToOldLauncher.
+  CompanionBackupDirName = 'companion_rollback';
+  /// Unauthenticated advisory marker written when authenticated schema-2
+  /// operation is established (R9): if it exists without the key blob,
+  /// rollback is refused entirely (fail closed, no downgrade).
+  MigrationFlagFileName = 'rollback_migration.flag';
+  /// DELETE access right (winnt.h $10000). The bare identifier collides with
+  /// the built-in System.Delete procedure.
+  FILE_ACCESS_DELETE = $00010000;
+
+type
+  // FILE_RENAME_INFO (win32) for handle-based renames (R10): the verified
+  // file is moved through its write-denying handle, so an attacker cannot
+  // swap the pathname after verification.
+  TFileRenameInfoRec = record
+    Flags: DWORD;
+    RootDirectory: THandle;
+    FileNameLength: DWORD;
+    FileName: array[0..MAX_PATH] of WideChar;
+  end;
+
+const
+  FILE_INFO_CLASS_RENAME = 3;
+  FILE_RENAME_FLAG_POSIX_SEMANTICS = 2; // no replace-if-exists
+  /// ReplaceFileW option: overwrite the backup file if it exists (winnt.h
+  /// REPLACE_EXISTING; not declared in the Delphi RTL).
+  REPLACEFILE_REPLACE_EXISTING = $00000001;
+
+// Not declared by the Delphi RTL; kernel32 export used for handle-based
+// renames (requires DELETE access on the handle).
+function SetFileInformationByHandle(hFile: THandle; FileInformationClass: Integer;
+  lpFileInformation: Pointer; dwBufferSize: DWORD): BOOL; stdcall;
+  external 'kernel32.dll' name 'SetFileInformationByHandle';
+
+/// Renames the file behind AHandle to ANewName (no replace) through the
+/// handle itself. Requires DELETE access on the handle.
+function RenameByHandle(const AHandle: THandle; const ANewName: string): Boolean;
+var
+  Info: TFileRenameInfoRec;
+  NameLength: Integer;
+begin
+  FillChar(Info, SizeOf(Info), 0);
+  Info.Flags := FILE_RENAME_FLAG_POSIX_SEMANTICS;
+  NameLength := Length(ANewName);
+  Info.FileNameLength := DWORD(NameLength * SizeOf(WideChar));
+  Move(PChar(ANewName)^, Info.FileName[0], NameLength * SizeOf(WideChar));
+  Result := SetFileInformationByHandle(AHandle, FILE_INFO_CLASS_RENAME,
+    @Info, SizeOf(Info));
+end;
 
 {$IFDEF PORTAPPIX_TESTINJECT}
 function UpdateRenameFile(const AFrom, ATo: string): Boolean;
@@ -209,6 +301,28 @@ end;
 function UpdateRenameFile(const AFrom, ATo: string): Boolean;
 begin
   Result := RenameFile(AFrom, ATo);
+end;
+{$ENDIF}
+
+{$IFDEF PORTAPPIX_TESTINJECT}
+procedure CheckUpdateCrashPoint(const APoint: string);
+begin
+  if PortappixUpdateCrashPoint = APoint then
+    raise EPortappixSimulatedUpdateCrash.Create(APoint);
+end;
+{$ELSE}
+function UpdateKillSimulated(const E: Exception): Boolean;
+begin
+  Result := False;
+end;
+{$ENDIF}
+
+{$IFDEF PORTAPPIX_TESTINJECT}
+function UpdateKillSimulated(const E: Exception): Boolean;
+begin
+  // A simulated abrupt termination suppresses the failure restore: the
+  // process is gone, no exception handler could have run.
+  Result := PortappixUpdateCrashKill and (E is EPortappixSimulatedUpdateCrash);
 end;
 {$ENDIF}
 
@@ -452,6 +566,70 @@ begin
   Result := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), 'old_launcher.json');
 end;
 
+function TPortappixUpdateManager.MigrationFlagFile: string;
+begin
+  Result := TPath.Combine(TPath.Combine(FRootPath, 'Cache'),
+    MigrationFlagFileName);
+end;
+
+function TPortappixUpdateManager.CompanionBackupDir: string;
+begin
+  Result := TPath.Combine(TPath.Combine(FRootPath, 'Cache'),
+    CompanionBackupDirName);
+end;
+
+procedure TPortappixUpdateManager.WriteMigrationFlag;
+var
+  Flag: TJSONObject;
+begin
+  // Best-effort: the authoritative establishment marker is the DPAPI key
+  // blob; this unauthenticated flag only enables the fail-closed detection
+  // of a deleted key blob (R9).
+  try
+    ForceDirectories(TPath.GetDirectoryName(MigrationFlagFile));
+    Flag := TJSONObject.Create;
+    try
+      Flag.AddPair('establishedAt', DateToISO8601(Now));
+      Flag.AddPair('reason', 'authenticated rollback records established');
+      if not WriteTextFileDurable(MigrationFlagFile, Flag.Format(2)) then
+        Log('Unable to write the rollback establishment flag (advisory only).');
+    finally
+      Flag.Free;
+    end;
+  except
+    on E: Exception do
+      Log(Format('Unable to write the rollback establishment flag: %s',
+        [E.Message]));
+  end;
+end;
+
+function TPortappixUpdateManager.TryRecordHmac(out AHmac, AKeyError: string;
+  const ASha256: string; ASize: Int64; const AVersion,
+  ARecordedAt: string): Boolean;
+var
+  Key: TBytes;
+begin
+  Result := False;
+  AHmac := '';
+  AKeyError := '';
+  if not TryGetRollbackKey(Key) then
+  begin
+    AKeyError := 'the rollback record key is not available on this ' +
+      'installation (verification never creates it)';
+    Exit;
+  end;
+  try
+    AHmac := ComputeRecordHmac(Key, ASha256, ASize, AVersion, ARecordedAt);
+    Result := True;
+  except
+    on E: Exception do
+    begin
+      AKeyError := E.Message;
+      Result := False;
+    end;
+  end;
+end;
+
 procedure TPortappixUpdateManager.RecordOldLauncher(const AOldExePath,
   AOldVersion: string);
 var
@@ -478,6 +656,9 @@ begin
     // half-written verification record behind the renamed executable.
     if not WriteTextFileDurable(OldLauncherRecordFile, RecordObj.Format(2)) then
       raise EPortappixUpdateError.Create('Unable to write old_launcher.json.');
+    // R9: this schema-2 record write establishes authenticated rollback
+    // operation for this installation (key blob + advisory flag).
+    WriteMigrationFlag;
   finally
     RecordObj.Free;
   end;
@@ -499,7 +680,7 @@ var
   JsonValue: TJSONValue;
   Root: TJSONObject;
   SchemaVal, ShaVal, SizeVal, VersionVal, HmacVal, FieldVal: TJSONValue;
-  ExpectedHmac, RecordedHmac: string;
+  ExpectedHmac, RecordedHmac, KeyError: string;
   ParsedDate: TDateTime;
 begin
   AError := '';
@@ -508,6 +689,19 @@ begin
   AVersion := '';
   ARecordedAt := '';
   ASchema := 0;
+
+  // R9: establishment state gates. Once authenticated schema-2 operation is
+  // established (key blob exists or the advisory flag is present), legacy
+  // schema-1 records are rejected unconditionally — an attacker must not be
+  // able to launder a new record through the migration path. The fail-closed
+  // combination (flag present, key blob missing) refuses rollback entirely.
+  if TFile.Exists(MigrationFlagFile) and (not KeyBlobExists) then
+  begin
+    AError := 'Refusing rollback: the rollback authentication state is ' +
+      'inconsistent (establishment flag present without the key blob); ' +
+      'manual inspection is required.';
+    Exit(False);
+  end;
 
   JsonValue := TJSONObject.ParseJSONValue(AJsonText);
   if (JsonValue = nil) or not (JsonValue is TJSONObject) then
@@ -531,6 +725,18 @@ begin
     begin
       AError := 'Refusing rollback: rollback verification record has missing or unsupported schema.';
       Exit(False);
+    end;
+    // R9: schema-1 records are the migration input ONLY before authenticated
+    // schema-2 operation was established. Afterwards they are refused —
+    // accepting them would let an attacker downgrade around the HMAC.
+    if ASchema = 1 then
+    begin
+      if KeyBlobExists or TFile.Exists(MigrationFlagFile) then
+      begin
+        AError := 'Refusing rollback: legacy (schema-1) rollback records are ' +
+          'not accepted once authenticated rollback records are established.';
+        Exit(False);
+      end;
     end;
 
     ShaVal := Root.FindValue('sha256');
@@ -622,14 +828,11 @@ begin
         Exit(False);
       end;
       RecordedHmac := TJSONString(HmacVal).Value.Trim;
-      try
-        ExpectedHmac := RecordHmac(ASha256, ASize, AVersion, ARecordedAt);
-      except
-        on E: Exception do
-        begin
-          AError := 'Refusing rollback: rollback record key unavailable: ' + E.Message;
-          Exit(False);
-        end;
+      if not TryRecordHmac(ExpectedHmac, KeyError, ASha256, ASize, AVersion,
+        ARecordedAt) then
+      begin
+        AError := 'Refusing rollback: rollback record key unavailable: ' + KeyError;
+        Exit(False);
       end;
       if not RecordHmacMatches(ExpectedHmac, RecordedHmac) then
       begin
@@ -772,6 +975,8 @@ begin
       RecordObj.AddPair('hmac', RecordHmac(Sha256Value, SizeValue, VersionValue, RecordedAt));
       if not WriteTextFileDurable(OldLauncherRecordFile, RecordObj.Format(2)) then
         raise EPortappixUpdateError.Create('Unable to write old_launcher.json.');
+      // R9: the re-stamp establishes authenticated rollback operation.
+      WriteMigrationFlag;
     finally
       RecordObj.Free;
     end;
@@ -841,14 +1046,15 @@ begin
     ExpectedSize, ExpectedVersion, ExpectedRecordedAt, RecordSchema) then
     Exit(False);
 
-  // Open with a write-denying, delete-sharing handle. Without
-  // FILE_SHARE_WRITE, a concurrent replacement attempt fails with a sharing
-  // violation for the whole verify-to-move window; FILE_SHARE_DELETE lets
-  // our own MoveFileEx succeed while the handle stays open.
+  // Open with a write-denying handle that ALSO denies delete sharing (R10):
+  // without FILE_SHARE_DELETE, an external process cannot rename or delete
+  // the file during the entire verify-to-move window. The handle carries
+  // DELETE access so the verified file can be moved through it with
+  // SetFileInformationByHandle(FileRenameInfo).
   // FILE_FLAG_OPEN_REPARSE_POINT prevents a junction from being silently
   // followed; a reparse point is then detected via the handle attributes.
-  AHandle := CreateFile(PChar(OldLauncherExe), GENERIC_READ,
-    FILE_SHARE_READ or FILE_SHARE_DELETE, nil, OPEN_EXISTING,
+  AHandle := CreateFile(PChar(OldLauncherExe), GENERIC_READ or FILE_ACCESS_DELETE,
+    FILE_SHARE_READ, nil, OPEN_EXISTING,
     FILE_FLAG_OPEN_REPARSE_POINT, 0);
   if (AHandle = INVALID_HANDLE_VALUE) or (AHandle = 0) then
   begin
@@ -1081,6 +1287,38 @@ begin
         Log('Ignoring corrupt update_pending.json: "fromVersion" is not a string.');
         Result := '';
       end;
+      // P3: full field validation — every remaining optional field must be
+      // well-formed, otherwise the whole marker is treated as no pending.
+      VersionValue := Root.FindValue('channel');
+      if (VersionValue <> nil) and
+         ((not (VersionValue is TJSONString)) or (VersionValue is TJSONNumber)) then
+      begin
+        Log('Ignoring corrupt update_pending.json: "channel" is not a string.');
+        Result := '';
+      end;
+      VersionValue := Root.FindValue('appliedAt');
+      if (VersionValue <> nil) and (VersionValue is TJSONString) and
+         (not (VersionValue is TJSONNumber)) then
+      begin
+        try
+          ISO8601ToDate(TJSONString(VersionValue).Value, True);
+        except
+          Log('Ignoring corrupt update_pending.json: "appliedAt" is not ISO-8601.');
+          Result := '';
+        end;
+      end
+      else if VersionValue <> nil then
+      begin
+        Log('Ignoring corrupt update_pending.json: "appliedAt" is not a string.');
+        Result := '';
+      end;
+      VersionValue := Root.FindValue('stagingDir');
+      if (VersionValue <> nil) and
+         ((not (VersionValue is TJSONString)) or (VersionValue is TJSONNumber)) then
+      begin
+        Log('Ignoring corrupt update_pending.json: "stagingDir" is not a string.');
+        Result := '';
+      end;
     finally
       JsonValue.Free;
     end;
@@ -1119,11 +1357,11 @@ procedure TPortappixUpdateManager.PrepareUpdate(const AZipFile: string;
 var
   Extractor: TPortappixPackageManager;
   NewExe: string;
-  RollbackDir: string;
-  MovedRootFiles: TList<string>;
-  BaseName, Target, ExistingTarget: string;
+  RollbackDir, StagingName: string;
+  BaseName, ExistingTarget: string;
   PreSwapSha256: string;
   OkExisted, PendingExisted, RecordBackupExisted, RestoreVerified: Boolean;
+  MovedRootFiles: TList<string>;
 begin
   if ARelease = nil then
     raise EPortappixUpdateError.Create('Release must not be nil.');
@@ -1148,12 +1386,15 @@ begin
       [LauncherFileName]);
   end;
 
-  // All-or-nothing swap. Back up EVERYTHING the swap may destroy or replace
-  // before any mutation, so a failure anywhere later can restore the exact
-  // previous state: replaced root files, the previous rollback record, the
-  // update_ok watchdog marker and any pre-existing pending marker.
-  RollbackDir := TPath.Combine(TPath.Combine(FRootPath, 'Cache'),
-    Format('launcher_rollback_%s', [FormatDateTime('yyyymmdd_hhnnss_zzz', Now)]));
+  // Staging phase (R11): NOTHING in the installation root is moved or
+  // replaced here. Everything the finalize step may need is backed up, the
+  // authenticated rollback record is written for the CURRENT launcher, and
+  // the atomic swap itself (ReplaceFileW with backup) is performed by the
+  // finalize helper once this process has exited — Launcher.exe is never
+  // missing, not even for a moment between two renames.
+  StagingName := Format('launcher_rollback_%s',
+    [FormatDateTime('yyyymmdd_hhnnss_zzz', Now)]);
+  RollbackDir := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), StagingName);
   ForceDirectories(RollbackDir);
   MovedRootFiles := TList<string>.Create;
   OkExisted := False;
@@ -1185,8 +1426,8 @@ begin
       TFile.Copy(PendingFile, TPath.Combine(RollbackDir, PendingBackupName), True);
 
     // The pre-swap hash is the invariant every failure restore is verified
-    // against: after a rolled-back swap the launcher must be byte-identical
-    // to what it was before the update started.
+    // against and the marker the finalize helper uses to detect an already
+    // completed swap (idempotent resume, R11).
     PreSwapSha256 := Sha256File(LauncherExe).ToLower;
     TFile.WriteAllText(TPath.Combine(RollbackDir, PreSwapBackupName),
       '{"sha256":"' + PreSwapSha256 + '"}', TEncoding.UTF8);
@@ -1196,14 +1437,27 @@ begin
     // RollbackDir and restored by the failure path below.
     RemoveFileQuiet(OkFile);
 
-    // Record the pending update BEFORE touching the exe, so a crash mid-swap
-    // leaves the watchdog in charge (Launcher.exe.old present, update_ok missing).
+    // A rollback copy from a previous confirmed update is superseded by
+    // this update: remove it so the finalize's ReplaceFileW backup has a
+    // free target.
+    if TFile.Exists(OldLauncherExe) then
+      CheckedDeleteFile(OldLauncherExe);
+
+    // Record the saved old launcher's SHA-256 and size while it is still in
+    // place — the finalize step later creates the backup copy of exactly
+    // this binary, so record and backup always agree.
+    RecordOldLauncher(LauncherExe, InstalledVersion);
+
+    // Pending marker with the staging reference, written AFTER the backups
+    // and BEFORE the finalize spawn: a crash anywhere after this point
+    // leaves a recoverable staged state (recovery respawns the helper).
     var Pending := TJSONObject.Create;
     try
       Pending.AddPair('fromVersion', InstalledVersion);
       Pending.AddPair('toVersion', ARelease.Version);
       Pending.AddPair('channel', ARelease.Channel);
       Pending.AddPair('appliedAt', DateToISO8601(Now));
+      Pending.AddPair('stagingDir', StagingName);
       ForceDirectories(TPath.GetDirectoryName(PendingFile));
       if not WriteTextFileDurable(PendingFile, Pending.Format(2)) then
         raise EPortappixUpdateError.Create('Unable to write update_pending.json.');
@@ -1211,81 +1465,276 @@ begin
       Pending.Free;
     end;
 
-    // Swap. Renaming a running executable is allowed on Windows.
-    var OldVersionBeforeSwap := InstalledVersion;
-    try
-      // A rollback copy from a previous confirmed update is superseded by
-      // this update: remove it so the rename below has a free target.
-      if TFile.Exists(OldLauncherExe) then
-        CheckedDeleteFile(OldLauncherExe);
-
-      // Record the saved old launcher's SHA-256 and size BEFORE the rename:
-      // a crash between the rename and a later record write would leave
-      // Launcher.exe.old with no verification record, permanently refusing
-      // rollback. Writing first means every post-record failure window is
-      // protected by the watchdog instead of a wedge.
-      RecordOldLauncher(LauncherExe, OldVersionBeforeSwap);
-
-      if not UpdateRenameFile(LauncherExe, OldLauncherExe) then
-        raise EPortappixUpdateError.CreateFmt(
-          'Unable to move the running launcher to "%s": %s',
-          [OldLauncherExe, SysErrorMessage(Integer(GetLastError))]);
-
-      if not UpdateRenameFile(NewExe, LauncherExe) then
-        raise EPortappixUpdateError.CreateFmt(
-          'Unable to move the new launcher into place: %s',
-          [SysErrorMessage(Integer(GetLastError))]);
-
-      // Extra root files shipped with the release replace the old ones.
-      for var FileName in TDirectory.GetFiles(NewDir) do
-      begin
-        BaseName := TPath.GetFileName(FileName);
-        if SameText(BaseName, LauncherFileName) then
-          Continue;
-        Target := TPath.Combine(FRootPath, BaseName);
-        RemoveFileQuiet(Target);
-        TFile.Move(FileName, Target);
-        MovedRootFiles.Add(Target);
-      end;
-    except
-      // All-or-nothing restore of every mutation this method performed.
-      // Raises when any restore step fails, so the failure is never silent.
-      RestoreFailedSwap(RollbackDir, OkExisted, PendingExisted,
-        RecordBackupExisted, PreSwapSha256, MovedRootFiles);
+    RemoveFileQuiet(AZipFile);
+    RestoreVerified := True;
+  except
+    // Staging failures restore everything this method touched. Raises when
+    // any restore step fails, so the failure is never silent.
+    on E: Exception do
+    begin
+      if not UpdateKillSimulated(E) then
+        RestoreFailedSwap(RollbackDir, OkExisted, PendingExisted,
+          RecordBackupExisted, PreSwapSha256, MovedRootFiles);
       raise;
     end;
-
-    RestoreVerified := True;
-  finally
-    MovedRootFiles.Free;
-    if RestoreVerified then
-    begin
-      try
-        if TDirectory.Exists(RollbackDir) then
-          TDirectory.Delete(RollbackDir, True);
-      except
-      end;
-    end
-    else if TDirectory.Exists(RollbackDir) then
-      // A failed restore keeps the backup directory for forensics and
-      // manual recovery; deleting it would destroy the only remaining copy
-      // of the previous state.
-      Log(Format('The rollback backup directory "%s" was kept for manual inspection.',
-        [RollbackDir]));
   end;
+  MovedRootFiles.Free;
 
+  Log(Format('Update to %s staged; launching the finalize step.', [ARelease.Version]));
+  if ALaunchNewExe then
+    SpawnUpdateHelper;
+end;
+
+procedure TPortappixUpdateManager.SpawnUpdateHelper;
+var
+  NewExe, Args: string;
+begin
+  // The finalize helper runs from the staged launcher: it is not the
+  // running installation image, so it can atomically replace Launcher.exe.
+  NewExe := TPath.Combine(NewDir, LauncherFileName);
+  Args := Format('--finalize-update --root "%s" --parent %d',
+    [ExcludeTrailingPathDelimiter(FRootPath), GetCurrentProcessId]);
+  SpawnProcess(NewExe, Args);
+end;
+
+function TPortappixUpdateManager.ReadPendingStagingDir: string;
+var
+  JsonValue: TJSONValue;
+  Root: TJSONObject;
+  Value: TJSONValue;
+begin
+  Result := '';
+  if not TFile.Exists(PendingFile) then
+    Exit;
   try
-    TDirectory.Delete(NewDir, True);
+    JsonValue := TJSONObject.ParseJSONValue(
+      TFile.ReadAllText(PendingFile, TEncoding.UTF8));
+    try
+      if (JsonValue = nil) or not (JsonValue is TJSONObject) then
+        Exit;
+      Root := TJSONObject(JsonValue);
+      Value := Root.FindValue('stagingDir');
+      if (Value is TJSONString) and (not (Value is TJSONNumber)) then
+        Result := TJSONString(Value).Value.Trim;
+      if (Result <> '') and (not IsSafeFileComponent(Result)) then
+        Result := '';
+    finally
+      JsonValue.Free;
+    end;
+  except
+    Result := '';
+  end;
+end;
+
+function TPortappixUpdateManager.UnfinalizedPendingUpdate: Boolean;
+var
+  StagingDir: string;
+begin
+  Result := False;
+  if not TFile.Exists(PendingFile) then
+    Exit;
+  // The finalize step deletes launcher_new when it completes; its presence
+  // with a live pending marker means the staged update was never finalized.
+  if not TFile.Exists(TPath.Combine(NewDir, LauncherFileName)) then
+    Exit;
+  StagingDir := ReadPendingStagingDir;
+  if StagingDir = '' then
+    Exit; // pre-Phase-2 pending marker: legacy watchdog semantics apply
+  Result := TDirectory.Exists(TPath.Combine(TPath.Combine(FRootPath, 'Cache'),
+    StagingDir));
+end;
+
+procedure TPortappixUpdateManager.PreserveCompanionBackups(const AStagingDir: string);
+const
+  ObsoleteBackups: array[0..3] of string = (RecordBackupName, OkBackupName,
+    PendingBackupName, PreSwapBackupName);
+var
+  Name: string;
+  BackupFile, Target: string;
+begin
+  // R14: keep the replaced root-file backups alive until the new launcher
+  // confirms startup; only the swap-time bookkeeping backups are dropped.
+  for Name in ObsoleteBackups do
+    RemoveFileQuiet(TPath.Combine(AStagingDir, Name));
+  try
+    if TDirectory.Exists(CompanionBackupDir) then
+      TDirectory.Delete(CompanionBackupDir, True);
   except
     on E: Exception do
-      Log(Format('Unable to remove the temporary update folder "%s": %s',
-        [NewDir, E.Message]));
+      Log(Format('Unable to clear the previous companion backup directory: %s',
+        [E.Message]));
   end;
-  RemoveFileQuiet(AZipFile);
+  var Remaining := TDirectory.GetFiles(AStagingDir, '*', TSearchOption.soTopDirectoryOnly);
+  if Length(Remaining) = 0 then
+  begin
+    try
+      TDirectory.Delete(AStagingDir, True);
+    except
+    end;
+    Exit;
+  end;
+  ForceDirectories(CompanionBackupDir);
+  for BackupFile in Remaining do
+  begin
+    Target := TPath.Combine(CompanionBackupDir, TPath.GetFileName(BackupFile));
+    if not MoveFileEx(PChar(BackupFile), PChar(Target),
+      MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
+      Log(Format('Unable to preserve companion backup "%s": %s',
+        [BackupFile, SysErrorMessage(Integer(GetLastError))]));
+  end;
+  try
+    TDirectory.Delete(AStagingDir, True);
+  except
+    on E: Exception do
+      Log(Format('Unable to remove the staging directory "%s": %s',
+        [AStagingDir, E.Message]));
+  end;
+end;
 
-  Log(Format('Update to %s applied; restarting the launcher.', [ARelease.Version]));
-  if ALaunchNewExe then
-    SpawnNewLauncher('--post-update');
+procedure TPortappixUpdateManager.FinalizePendingUpdate;
+var
+  StagingDir, StagingName, NewExe, PreSwapSha256, CurrentHash: string;
+  Target: string;
+  MovedRootFiles: TList<string>;
+  SwapDone, SwapSucceeded: Boolean;
+  Retries: Integer;
+  Replaced: Boolean;
+begin
+  if not TFile.Exists(PendingFile) then
+    raise EPortappixUpdateError.Create(
+      'No pending update to finalize (update_pending.json is missing).');
+  StagingName := ReadPendingStagingDir;
+  if StagingName = '' then
+    raise EPortappixUpdateError.Create(
+      'The pending update marker has no staging reference.');
+  StagingDir := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), StagingName);
+  if not TDirectory.Exists(StagingDir) then
+    raise EPortappixUpdateError.CreateFmt(
+      'The staging directory "%s" is missing.', [StagingDir]);
+  NewExe := TPath.Combine(NewDir, LauncherFileName);
+  if not TFile.Exists(NewExe) then
+    raise EPortappixUpdateError.Create(
+      'The staged launcher binary is missing (launcher_new\Launcher.exe).');
+
+  // Pre-swap hash from the staging dir: a mismatch means a previous helper
+  // already completed the swap (idempotent resume, R11).
+  PreSwapSha256 := '';
+  SwapDone := False;
+  if TFile.Exists(TPath.Combine(StagingDir, PreSwapBackupName)) then
+  begin
+    var PreSwapJson := TJSONObject.ParseJSONValue(
+      TFile.ReadAllText(TPath.Combine(StagingDir, PreSwapBackupName),
+        TEncoding.UTF8)) as TJSONObject;
+    if PreSwapJson <> nil then
+      try
+        if (PreSwapJson.FindValue('sha256') <> nil) then
+          PreSwapSha256 := PreSwapJson.FindValue('sha256').Value;
+      finally
+        PreSwapJson.Free;
+      end;
+    CurrentHash := Sha256File(LauncherExe).ToLower;
+    SwapDone := (PreSwapSha256 <> '') and (not SameText(CurrentHash, PreSwapSha256));
+  end;
+
+  SwapSucceeded := False;
+  MovedRootFiles := TList<string>.Create;
+  try
+    if not SwapDone then
+    begin
+      // Atomic replacement (R11): ReplaceFileW swaps the staged launcher
+      // into place and preserves the current binary as Launcher.exe.old in
+      // ONE operation — there is no window in which Launcher.exe is
+      // missing. Retries absorb a briefly running launcher instance.
+      Replaced := False;
+      for Retries := 1 to 20 do
+      begin
+        if ReplaceFile(PChar(LauncherExe), PChar(NewExe),
+          PChar(OldLauncherExe), REPLACEFILE_REPLACE_EXISTING, nil, nil) then
+        begin
+          Replaced := True;
+          Break;
+        end;
+        if (GetLastError <> ERROR_SHARING_VIOLATION) and
+           (GetLastError <> ERROR_ACCESS_DENIED) then
+          Break;
+        Sleep(250);
+      end;
+      if not Replaced then
+        raise EPortappixUpdateError.CreateFmt(
+          'Unable to atomically install the staged launcher (ReplaceFileW): %s',
+          [SysErrorMessage(Integer(GetLastError))]);
+      Log('The staged launcher was installed atomically; the previous ' +
+        'launcher is preserved as Launcher.exe.old.');
+      {$IFDEF PORTAPPIX_TESTINJECT}
+      CheckUpdateCrashPoint(UpdateFinalizeCrashAfterSwap);
+      {$ENDIF}
+    end;
+
+    // Companion root files (unchanged move semantics from the staged dir).
+    for var FileName in TDirectory.GetFiles(NewDir) do
+    begin
+      var BaseName := TPath.GetFileName(FileName);
+      if SameText(BaseName, LauncherFileName) then
+        Continue;
+      Target := TPath.Combine(FRootPath, BaseName);
+      RemoveFileQuiet(Target);
+      TFile.Move(FileName, Target);
+      MovedRootFiles.Add(Target);
+    end;
+
+    {$IFDEF PORTAPPIX_TESTINJECT}
+    CheckUpdateCrashPoint(UpdateFinalizeCrashAfterRootFiles);
+    {$ENDIF}
+
+    // R14: the replaced companions survive until confirmation.
+    PreserveCompanionBackups(StagingDir);
+
+    try
+      TDirectory.Delete(NewDir, True);
+    except
+      on E: Exception do
+        Log(Format('Unable to remove the temporary update folder "%s": %s',
+          [NewDir, E.Message]));
+    end;
+
+    SwapSucceeded := True;
+    Log('Update finalization complete; restarting the launcher.');
+    // Best-effort: the atomic install is done; if the new launcher cannot
+    // be started automatically, the watchdog still offers rollback on its
+    // next start (update_ok is missing until it confirms).
+    try
+      SpawnNewLauncher('--post-update');
+    except
+      on E: Exception do
+        Log(Format('The finalized launcher could not be started automatically: %s',
+          [E.Message]));
+    end;
+  except
+    // Checked all-or-nothing restore of the finalize mutations. Raises when
+    // any restore step fails, so the failure is never silent. The staging
+    // directory tells which backups exist (it was already converted into
+    // the companion dir only after the root files moved).
+    on E: Exception do
+    begin
+      if not UpdateKillSimulated(E) then
+      begin
+        RestoreFailedSwap(StagingDir,
+          TFile.Exists(TPath.Combine(StagingDir, OkBackupName)),
+          TFile.Exists(TPath.Combine(StagingDir, PendingBackupName)),
+          TFile.Exists(TPath.Combine(StagingDir, RecordBackupName)),
+          PreSwapSha256, MovedRootFiles);
+        // After a verified restore the staging directory is recoverable
+        // state nobody needs: clean it (best-effort).
+        try
+          if SameText(Sha256File(LauncherExe).ToLower, PreSwapSha256) then
+            TDirectory.Delete(StagingDir, True);
+        except
+        end;
+      end;
+      raise;
+    end;
+  end;
+  MovedRootFiles.Free;
 end;
 
 procedure TPortappixUpdateManager.RestoreFailedSwap(const ARollbackDir: string;
@@ -1451,6 +1900,18 @@ begin
 
   SetInstalledVersion(PendingVersion);
   RemoveFileQuiet(PendingFile);
+
+  // R14: the update is confirmed healthy — the old companion files are
+  // discarded and the new ones stay in place.
+  if TDirectory.Exists(CompanionBackupDir) then
+    try
+      TDirectory.Delete(CompanionBackupDir, True);
+    except
+      on E: Exception do
+        Log(Format('Unable to remove the companion backup directory: %s',
+          [E.Message]));
+    end;
+
   Log(Format('Update to %s confirmed. Launcher.exe.old is kept as the rollback copy ' +
     'until the next update; delete it manually to remove the rollback offer.',
     [PendingVersion]));
@@ -1459,7 +1920,7 @@ end;
 function TPortappixUpdateManager.RollbackToOldLauncher(
   const ARestartLauncher: Boolean): Boolean;
 var
-  StaleExe, ErrorMsg: string;
+  StaleExe, ErrorMsg, Target: string;
   OldHandle: THandle;
 begin
   // TOCTOU-safe restore: the same handle that verified size and hash stays
@@ -1468,6 +1929,10 @@ begin
   if not OpenVerifiedOldLauncher(OldHandle, ErrorMsg) then
     raise EPortappixUpdateError.Create(ErrorMsg);
   try
+    {$IFDEF PORTAPPIX_TESTINJECT}
+    if Assigned(PortappixRollbackAttackHook) then
+      PortappixRollbackAttackHook();
+    {$ENDIF}
     Log('Restoring the previous launcher version...');
     StaleExe := Format('%s.failed_%s', [LauncherExe,
       FormatDateTime('yyyymmdd_hhnnss', Now)]);
@@ -1478,7 +1943,11 @@ begin
         [StaleExe, SysErrorMessage(Integer(GetLastError))]);
 
     try
-      if not UpdateRenameFile(OldLauncherExe, LauncherExe) then
+      // R10: the verified file is renamed THROUGH the still-open handle
+      // (FileRenameInfo), so what was verified is exactly what is moved —
+      // a pathname swap after verification is impossible while the
+      // delete-unshared handle is held.
+      if not RenameByHandle(OldHandle, LauncherExe) then
         raise EPortappixUpdateError.CreateFmt(
           'Unable to restore "%s": %s',
           [LauncherExe, SysErrorMessage(Integer(GetLastError))]);
@@ -1500,6 +1969,31 @@ begin
   RemoveFileQuiet(OkFile);
   RemoveFileQuiet(PendingFile);
   RemoveFileQuiet(OldLauncherRecordFile);
+
+  // R14: restore the companion files the update replaced. This runs for
+  // watchdog rollbacks (before the update was confirmed); after a confirmed
+  // update the directory was already deleted by ConfirmUpdate.
+  if TDirectory.Exists(CompanionBackupDir) then
+  begin
+    for var BackupFile in TDirectory.GetFiles(CompanionBackupDir, '*',
+      TSearchOption.soTopDirectoryOnly) do
+    begin
+      Target := TPath.Combine(FRootPath, TPath.GetFileName(BackupFile));
+      RemoveFileQuiet(Target);
+      if not RenameFile(BackupFile, Target) then
+        Log(Format('Unable to restore companion file "%s": %s',
+          [BackupFile, SysErrorMessage(Integer(GetLastError))]));
+    end;
+    try
+      TDirectory.Delete(CompanionBackupDir, True);
+      Log('Companion files restored to their pre-update state.');
+    except
+      on E: Exception do
+        Log(Format('Unable to remove the companion backup directory: %s',
+          [E.Message]));
+    end;
+  end;
+
   Log('Previous launcher restored. The failed build stays next to it as ' +
     LauncherFileName + '.failed_* and can be deleted.');
 
@@ -1509,6 +2003,11 @@ begin
 end;
 
 procedure TPortappixUpdateManager.SpawnNewLauncher(const AArguments: string);
+begin
+  SpawnProcess(LauncherExe, AArguments);
+end;
+
+procedure TPortappixUpdateManager.SpawnProcess(const AExePath, AArguments: string);
 var
   StartupInfo: TStartupInfo;
   ProcessInfo: TProcessInformation;
@@ -1522,7 +2021,7 @@ begin
   FillChar(StartupInfo, SizeOf(StartupInfo), 0);
   StartupInfo.cb := SizeOf(StartupInfo);
 
-  CommandLine := QuoteArgument(LauncherExe);
+  CommandLine := QuoteArgument(AExePath);
   if AArguments <> '' then
     CommandLine := CommandLine + ' ' + AArguments;
   UniqueString(CommandLine);
@@ -1531,7 +2030,7 @@ begin
     CREATE_NEW_PROCESS_GROUP or CREATE_UNICODE_ENVIRONMENT, nil,
     PChar(FRootPath), StartupInfo, ProcessInfo) then
     raise EPortappixUpdateError.CreateFmt('Unable to start "%s": %s',
-      [LauncherExe, SysErrorMessage(Integer(GetLastError))]);
+      [AExePath, SysErrorMessage(Integer(GetLastError))]);
   CloseHandle(ProcessInfo.hThread);
   CloseHandle(ProcessInfo.hProcess);
 end;

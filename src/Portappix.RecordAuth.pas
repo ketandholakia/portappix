@@ -31,7 +31,16 @@ type
 /// Returns the per-installation rollback key (32 bytes), creating and
 /// DPAPI-protecting it on first use. Raises EPortappixRecordAuthError when
 /// the key cannot be created or decrypted (callers must fail closed).
+/// First-time creation is serialized across processes (R13).
 function GetRollbackKey: TBytes;
+
+/// Reads the stored key WITHOUT creating it (R9): verification paths use
+/// this and fail closed when the key blob does not exist.
+function TryGetRollbackKey(out AKey: TBytes): Boolean;
+
+/// True when the DPAPI-protected key blob exists on disk. Blob existence is
+/// the authenticated "schema-2 operation established" marker (R9).
+function KeyBlobExists: Boolean;
 
 /// Computes the record HMAC (lowercase hex) over the canonical field
 /// serialization. ASha256 must already be lowercase hex; AVersion and
@@ -50,18 +59,29 @@ var
   /// production artifacts, which is enforced by byte scan).
   PortappixRecordKeyPathOverride: string = '';
 {$ENDIF}
+{$IFDEF PORTAPPIX_TESTINJECT}
+var
+  /// Milliseconds slept inside GetRollbackKey after the existence check and
+  /// before the key is generated/written — deterministically widens the
+  /// first-creation race window in repro tests. Test builds only.
+  PortappixKeyCreateDelayMs: Integer = 0;
+{$ENDIF}
 
 implementation
 
 uses
   System.Classes,
   System.Hash,
-  System.IOUtils;
+  System.IOUtils,
+  Portappix.Common;
 
 const
   KeyFileDirectory = 'Portappix';
   KeyFileName = 'rollback_key.bin';
   KeySizeBytes = 32;
+  KeyBlobMagic: array[0..7] of Byte = (Ord('P'), Ord('X'), Ord('P'), Ord('X'),
+    Ord('R'), Ord('K'), Ord('E'), Ord('Y'));
+  KeyBlobFormatVersion = 2;
 
 type
   TDataBlob = record
@@ -86,6 +106,9 @@ const
   CRYPTPROTECT_UI_FORBIDDEN = $1;
   BCRYPT_USE_SYSTEM_PREFERRED_RNG = $2;
   STATUS_SUCCESS = 0;
+
+var
+  GDurableTempCounter: Integer = 0;
 
 function KeyFilePath: string;
 begin
@@ -116,11 +139,68 @@ begin
   end;
 end;
 
+function KeyBlobExists: Boolean;
+begin
+  Result := TFile.Exists(KeyFilePath);
+end;
+
+/// Unwraps a decrypted blob into the 32-byte key. Accepts the versioned
+/// format (magic + version + key) and the legacy v1 format (raw 32 bytes
+/// written by the first remediation round, which never wrote anything but
+/// authenticated schema-2 records).
+function DecodeKeyBlob(const ADpapiPlain: TBytes; out AKey: TBytes;
+  out ALegacy: Boolean): Boolean;
+var
+  I: Integer;
+begin
+  SetLength(AKey, 0);
+  ALegacy := False;
+  Result := False;
+  if Length(ADpapiPlain) = KeySizeBytes then
+  begin
+    // Legacy v1 payload: the raw key without a header.
+    AKey := Copy(ADpapiPlain, 0, KeySizeBytes);
+    ALegacy := True;
+    Exit(True);
+  end;
+  if Length(ADpapiPlain) < 16 then
+    Exit;
+  for I := 0 to 7 do
+    if ADpapiPlain[I] <> KeyBlobMagic[I] then
+      Exit;
+  if (ADpapiPlain[8] <> KeyBlobFormatVersion) or
+     (ADpapiPlain[9] <> 0) or (ADpapiPlain[10] <> 0) or (ADpapiPlain[11] <> 0) then
+    Exit;
+  if Length(ADpapiPlain) <> 16 + KeySizeBytes then
+    Exit;
+  AKey := Copy(ADpapiPlain, 16, KeySizeBytes);
+  Result := True;
+end;
+
+function EncodeKeyBlob(const AKey: TBytes): TBytes;
+var
+  I: Integer;
+begin
+  SetLength(Result, 16 + KeySizeBytes);
+  for I := 0 to 7 do
+    Result[I] := KeyBlobMagic[I];
+  Result[8] := KeyBlobFormatVersion;
+  Result[9] := 0;
+  Result[10] := 0;
+  Result[11] := 0;
+  for I := 0 to 12 do
+    Result[12 + I] := 0; // reserved
+  for I := 0 to KeySizeBytes - 1 do
+    Result[16 + I] := AKey[I];
+end;
+
 function ReadKeyFile: TBytes;
 var
   BlobBytes: TBytes;
   InputBlob, OutputBlob: TDataBlob;
   Descr: PWideChar;
+  Plain: TBytes;
+  Legacy: Boolean;
 begin
   SetLength(Result, 0);
   BlobBytes := TFile.ReadAllBytes(KeyFilePath);
@@ -140,11 +220,17 @@ begin
         'Unable to decrypt the rollback record key (error %d).',
         [Integer(GetLastError)]);
     try
-      if (OutputBlob.cbData <> KeySizeBytes) or (OutputBlob.pbData = nil) then
+      if (OutputBlob.cbData = 0) or (OutputBlob.pbData = nil) then
+        raise EPortappixRecordAuthError.Create(
+          'DPAPI returned an empty decrypted key blob.');
+      SetLength(Plain, OutputBlob.cbData);
+      Move(OutputBlob.pbData^, Plain[0], OutputBlob.cbData);
+      if not DecodeKeyBlob(Plain, Result, Legacy) then
+        raise EPortappixRecordAuthError.Create(
+          'The rollback record key blob has an unexpected format.');
+      if Length(Result) <> KeySizeBytes then
         raise EPortappixRecordAuthError.Create(
           'The decrypted rollback record key has an unexpected length.');
-      SetLength(Result, OutputBlob.cbData);
-      Move(OutputBlob.pbData^, Result[0], OutputBlob.cbData);
     finally
       LocalFreeBlob(OutputBlob);
     end;
@@ -154,54 +240,152 @@ begin
   end;
 end;
 
-procedure WriteKeyFile(const AProtected: TDataBlob);
+/// Crash-safe and overwrite-safe blob write (R13): the protected blob goes
+/// to a per-process temp file created with CREATE_NEW semantics, is
+/// flushed, verified, then atomically replaces the target with
+/// WRITE_THROUGH and a directory flush. Any failure removes the temp file
+/// and leaves the previous key file untouched.
+procedure WriteKeyFile(const AProtected: TBytes);
 var
-  Stream: TFileStream;
+  TemporaryFile: string;
+  Handle: THandle;
+  Written: DWORD;
 begin
   ForceDirectories(TPath.GetDirectoryName(TPath.GetFullPath(KeyFilePath)));
-  // The user profile directory already carries a user-only ACL on NTFS; the
-  // file is additionally created without wide sharing so a concurrent first
-  // use cannot interleave.
-  Stream := TFileStream.Create(KeyFilePath, fmCreate or fmShareExclusive);
+  TemporaryFile := Format('%s.%d.%d.tmp', [KeyFilePath, GetCurrentProcessId,
+    InterlockedIncrement(GDurableTempCounter)]);
+  // CREATE_NEW: a concurrent creator (outside our mutex) loses the race
+  // here instead of overwriting the winner's blob.
+  Handle := CreateFile(PChar(TemporaryFile), GENERIC_WRITE, 0, nil,
+    CREATE_NEW, FILE_ATTRIBUTE_NORMAL, 0);
+  if Handle = INVALID_HANDLE_VALUE then
+    raise EPortappixRecordAuthError.CreateFmt(
+      'Unable to stage the rollback record key (temp file): %s',
+      [SysErrorMessage(Integer(GetLastError))]);
   try
-    if AProtected.cbData > 0 then
-      Stream.WriteBuffer(AProtected.pbData^, AProtected.cbData);
+    if not WriteFile(Handle, AProtected[0], DWORD(Length(AProtected)),
+      Written, nil) or (Written <> DWORD(Length(AProtected))) then
+      raise EPortappixRecordAuthError.Create(
+        'The staged rollback record key was not written completely.');
+    if not FlushFileBuffers(Handle) then
+      raise EPortappixRecordAuthError.Create(
+        'Unable to flush the staged rollback record key.');
   finally
-    Stream.Free;
+    CloseHandle(Handle);
   end;
+  if not MoveFileEx(PChar(TemporaryFile), PChar(KeyFilePath),
+    MOVEFILE_REPLACE_EXISTING or MOVEFILE_WRITE_THROUGH) then
+  begin
+    try
+      if TFile.Exists(TemporaryFile) then
+        TFile.Delete(TemporaryFile);
+    except
+    end;
+    raise EPortappixRecordAuthError.CreateFmt(
+      'Unable to store the rollback record key (replace failed): %s',
+      [SysErrorMessage(Integer(GetLastError))]);
+  end;
+  FlushDirectoryWindows(TPath.GetDirectoryName(TPath.GetFullPath(KeyFilePath)));
+end;
+
+function AcquireKeyCreateLock: THandle;
+var
+  WaitResult: DWORD;
+begin
+  // Serialize first-time creation across processes (R13). Thread-recursive:
+  // safe to nest where callers already hold it.
+  Result := CreateMutex(nil, False,
+    PChar(MutexNameFor('RecordKey', KeyFilePath.ToLower)));
+  if Result = 0 then
+    raise EPortappixRecordAuthError.Create(
+      'Unable to create the rollback-key mutex.');
+  WaitResult := WaitForSingleObject(Result, 10000);
+  if WaitResult = WAIT_ABANDONED then
+  begin
+    // The previous creator died; the durable write is an atomic replace so
+    // the file is either absent or complete. Proceed and re-check.
+  end
+  else if WaitResult <> WAIT_OBJECT_0 then
+  begin
+    CloseHandle(Result);
+    Result := 0;
+    raise EPortappixRecordAuthError.Create(
+      'Another process is creating the rollback record key; try again later.');
+  end;
+end;
+
+procedure ReleaseKeyCreateLock(var AHandle: THandle);
+begin
+  if AHandle <> 0 then
+  begin
+    ReleaseMutex(AHandle);
+    CloseHandle(AHandle);
+    AHandle := 0;
+  end;
+end;
+
+function TryGetRollbackKey(out AKey: TBytes): Boolean;
+begin
+  SetLength(AKey, 0);
+  if not KeyBlobExists then
+    Exit(False);
+  AKey := ReadKeyFile;
+  Result := True;
 end;
 
 function GetRollbackKey: TBytes;
 var
-  PlainBlob, ProtectedBlob: TDataBlob;
+  PlainBlob: TDataBlob;
+  ProtectedBlob: TDataBlob;
+  KeyLock: THandle;
+  Plain, ProtectedBytes: TBytes;
 begin
   if TFile.Exists(KeyFilePath) then
     Exit(ReadKeyFile);
 
-  // First use on this installation: generate, protect, store.
-  Result := RandomBytes(KeySizeBytes);
-  FillChar(PlainBlob, SizeOf(PlainBlob), 0);
-  FillChar(ProtectedBlob, SizeOf(ProtectedBlob), 0);
-  PlainBlob.cbData := DWORD(Length(Result));
-  PlainBlob.pbData := @Result[0];
-  if not CryptProtectData(@PlainBlob, 'Portappix rollback record key',
-    nil, nil, nil, CRYPTPROTECT_UI_FORBIDDEN, ProtectedBlob) then
-    raise EPortappixRecordAuthError.CreateFmt(
-      'Unable to protect the rollback record key (error %d).',
-      [Integer(GetLastError)]);
+  {$IFDEF PORTAPPIX_TESTINJECT}
+  if PortappixKeyCreateDelayMs > 0 then
+    Sleep(PortappixKeyCreateDelayMs);
+  {$ENDIF}
+
+  // First use on this installation: serialize creation across processes,
+  // re-check, then generate, protect and store atomically (R13).
+  KeyLock := AcquireKeyCreateLock;
   try
-    if (ProtectedBlob.cbData = 0) or (ProtectedBlob.pbData = nil) then
-      raise EPortappixRecordAuthError.Create(
-        'DPAPI returned an empty protected key blob.');
+    // Double-check: another process may have created the key while we
+    // waited for the mutex — the loser reads the winner's key.
+    if TFile.Exists(KeyFilePath) then
+      Exit(ReadKeyFile);
+
+    Result := RandomBytes(KeySizeBytes);
+    Plain := EncodeKeyBlob(Result);
+    FillChar(PlainBlob, SizeOf(PlainBlob), 0);
+    FillChar(ProtectedBlob, SizeOf(ProtectedBlob), 0);
+    PlainBlob.cbData := DWORD(Length(Plain));
+    PlainBlob.pbData := @Plain[0];
+    if not CryptProtectData(@PlainBlob, 'Portappix rollback record key',
+      nil, nil, nil, CRYPTPROTECT_UI_FORBIDDEN, ProtectedBlob) then
+      raise EPortappixRecordAuthError.CreateFmt(
+        'Unable to protect the rollback record key (error %d).',
+        [Integer(GetLastError)]);
     try
-      WriteKeyFile(ProtectedBlob);
-    except
-      on E: Exception do
-        raise EPortappixRecordAuthError.CreateFmt(
-          'Unable to store the rollback record key: %s', [E.Message]);
+      if (ProtectedBlob.cbData = 0) or (ProtectedBlob.pbData = nil) then
+        raise EPortappixRecordAuthError.Create(
+          'DPAPI returned an empty protected key blob.');
+      SetLength(ProtectedBytes, ProtectedBlob.cbData);
+      Move(ProtectedBlob.pbData^, ProtectedBytes[0], ProtectedBlob.cbData);
+      try
+        WriteKeyFile(ProtectedBytes);
+      except
+        on E: Exception do
+          raise EPortappixRecordAuthError.CreateFmt(
+            'Unable to store the rollback record key: %s', [E.Message]);
+      end;
+    finally
+      LocalFreeBlob(ProtectedBlob);
     end;
   finally
-    LocalFreeBlob(ProtectedBlob);
+    ReleaseKeyCreateLock(KeyLock);
   end;
 end;
 

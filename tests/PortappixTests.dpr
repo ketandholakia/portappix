@@ -5095,7 +5095,8 @@ begin
   Check(Length(Hmac1) = 64, 'RecordAuth: HMAC digest is 64 hex characters');
   Check(RecordHmacMatches(Hmac1, Hmac1.ToUpper),
     'RecordAuth: HMAC comparison is case-insensitive');
-  Check(not RecordHmacMatches(Hmac1, Copy(Hmac1, 1, 63) + '0'),
+  Check(not RecordHmacMatches(Hmac1,
+    Copy(Hmac1, 1, 63) + IfThen(Hmac1[64] = '0', '1', '0')),
     'RecordAuth: a single changed HMAC character is rejected');
   Check(not RecordHmacMatches(Hmac1, 'short'),
     'RecordAuth: a wrong-length HMAC is rejected');
@@ -5145,7 +5146,10 @@ begin
   OldSize := TFile.GetSize(OldLauncherExe);
 
   {$IFDEF PORTAPPIX_TESTCRASH}
-  PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth1', 'rollback_key.bin');
+  // Fresh key directory: migration (schema-1 acceptance) is only legal
+  // before authenticated schema-2 operation was established (R9).
+  ForceDirectories(TPath.Combine(ARoot, 'recordauth-migrate'));
+  PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth-migrate', 'rollback_key.bin');
   {$ENDIF}
   Manager := TPortappixUpdateManager.Create(CacheDir);
   try
@@ -5193,7 +5197,7 @@ begin
     {$IFDEF PORTAPPIX_TESTCRASH}
     PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth2', 'rollback_key.bin');
     Key2 := GetRollbackKey;
-    PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth1', 'rollback_key.bin');
+    PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth-migrate', 'rollback_key.bin');
     {$ELSE}
     Key2 := nil;
     {$ENDIF}
@@ -5596,56 +5600,62 @@ begin
       'Update injection: disk-full launcher hash matches the pre-swap hash');
     PortappixWriteHook := nil;
 
-    // Scenario 3: the running-launcher rename fails; the original
-    // executable and previous metadata must be restored.
-    PortappixRenameHook :=
-      function(const AFrom, ATo: string): Integer
-      begin
-        if SameText(ATo, OldLauncherExe) then
-          Result := ERROR_ACCESS_DENIED
-        else
-          Result := 0;
-      end;
-    ExpectException(
-      procedure
-      begin
-        Manager.PrepareUpdate(ZipPath, Release, False);
-      end,
-      'Update injection: a launcher rename failure aborts PrepareUpdate');
+    // Scenario 3 (R11): the staging step completes without touching the
+    // installation; the atomic finalize replaces the executable. A crash
+    // after the swap (simulated, restore enabled) must restore the
+    // original executable and previous metadata byte-identically.
+    BuildLauncherZip(ZipPath, NewContent);
+    Release.Free;
+    Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+      Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+    Manager.PrepareUpdate(ZipPath, Release, False);
     Check(TFile.ReadAllText(LauncherExe) = OldContent,
-      'Update injection: rename failure restores the original launcher');
+      'Update injection: staging leaves the launcher untouched');
+    Check(TFile.Exists(RecordFile),
+      'Update injection: staging writes the rollback record');
+    PortappixUpdateCrashPoint := UpdateFinalizeCrashAfterSwap;
+    try
+      ExpectException(
+        procedure
+        begin
+          Manager.FinalizePendingUpdate;
+        end,
+        'Update injection: a finalize crash after the swap aborts finalization');
+    finally
+      PortappixUpdateCrashPoint := '';
+    end;
     Check(Sha256File(LauncherExe) = PreSwapHash,
-      'Update injection: restored launcher is byte-identical to the pre-swap state');
+      'Update injection: finalize failure restores the launcher byte-identically');
     Check(not TFile.Exists(OldLauncherExe),
-      'Update injection: rename failure leaves no .old');
+      'Update injection: finalize failure consumes the .old backup on restore');
     Check(not TFile.Exists(RecordFile),
-      'Update injection: rename failure leaves no rollback record (no backup existed)');
+      'Update injection: finalize failure leaves no rollback record (no backup existed)');
     Check(not TFile.Exists(PendingFile),
-      'Update injection: rename failure leaves no pending marker');
+      'Update injection: finalize failure leaves no pending marker');
     Check(Length(TDirectory.GetFiles(CacheDir, 'launcher_rollback_*')) = 0,
-      'Update injection: the rollback backup directory is cleaned after a verified restore');
-    PortappixRenameHook := nil;
+      'Update injection: the staging directory is cleaned after a verified restore');
 
-    // Scenario 4: the new-launcher installation rename fails after the old
-    // launcher was moved away; everything must be restored, including a
-    // replaced root file and a pre-existing update_ok marker.
+    // Scenario 4 (R11+R14): a finalize crash after the companion root files
+    // were moved must restore everything, including a replaced root file
+    // and a pre-existing update_ok marker.
     TFile.WriteAllText(OkFile, '{"toVersion":"0.9.0","confirmedAt":"t"}');
     TFile.WriteAllText(ReadmeFile, 'old-readme-content');
-    PortappixRenameHook :=
-      function(const AFrom, ATo: string): Integer
-      begin
-        if SameText(AFrom, TPath.Combine(TPath.Combine(RootDir, 'Cache'),
-          'launcher_new\Launcher.exe')) then
-          Result := ERROR_WRITE_FAULT
-        else
-          Result := 0;
-      end;
-    ExpectException(
-      procedure
-      begin
-        Manager.PrepareUpdate(ZipPath, Release, False);
-      end,
-      'Update injection: a new-launcher installation failure aborts PrepareUpdate');
+    BuildLauncherZip(ZipPath, NewContent);
+    Release.Free;
+    Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+      Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+    Manager.PrepareUpdate(ZipPath, Release, False);
+    PortappixUpdateCrashPoint := UpdateFinalizeCrashAfterRootFiles;
+    try
+      ExpectException(
+        procedure
+        begin
+          Manager.FinalizePendingUpdate;
+        end,
+        'Update injection: a finalize crash after the root files aborts finalization');
+    finally
+      PortappixUpdateCrashPoint := '';
+    end;
     Check(Sha256File(LauncherExe) = PreSwapHash,
       'Update injection: installation failure restores the launcher byte-identically');
     Check(TFile.ReadAllText(OkFile).Contains('0.9.0'),
@@ -5659,31 +5669,31 @@ begin
     Check(not TFile.Exists(PendingFile),
       'Update injection: installation failure leaves no pending marker');
     Check(Length(TDirectory.GetFiles(CacheDir, 'launcher_rollback_*')) = 0,
-      'Update injection: the rollback directory is cleaned after the verified restore');
-    PortappixRenameHook := nil;
+      'Update injection: the staging directory is cleaned after the verified restore');
 
-    // Scenario 5: a pre-existing pending marker is restored on failure.
+    // Scenario 5 (R11): a pre-existing pending marker is restored on a
+    // finalize failure.
     WriteTextFile(PendingFile, '{"fromVersion":"0.8.0","toVersion":"0.9.0"}');
-    PortappixRenameHook :=
-      function(const AFrom, ATo: string): Integer
-      begin
-        if SameText(AFrom, TPath.Combine(TPath.Combine(RootDir, 'Cache'),
-          'launcher_new\Launcher.exe')) then
-          Result := ERROR_WRITE_FAULT
-        else
-          Result := 0;
-      end;
-    ExpectException(
-      procedure
-      begin
-        Manager.PrepareUpdate(ZipPath, Release, False);
-      end,
-      'Update injection: installation failure with a pre-existing pending marker aborts');
+    BuildLauncherZip(ZipPath, NewContent);
+    Release.Free;
+    Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+      Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+    Manager.PrepareUpdate(ZipPath, Release, False);
+    PortappixUpdateCrashPoint := UpdateFinalizeCrashAfterSwap;
+    try
+      ExpectException(
+        procedure
+        begin
+          Manager.FinalizePendingUpdate;
+        end,
+        'Update injection: finalize failure with a pre-existing pending marker aborts');
+    finally
+      PortappixUpdateCrashPoint := '';
+    end;
     Check(ContainsText(TFile.ReadAllText(PendingFile), '0.8.0'),
       'Update injection: the pre-existing pending marker is restored');
     Check(Sha256File(LauncherExe) = PreSwapHash,
       'Update injection: launcher is still byte-identical after the second failure');
-    PortappixRenameHook := nil;
   finally
     PortappixWriteHook := nil;
     PortappixRenameHook := nil;
@@ -5807,6 +5817,8 @@ begin
 
       BuildLauncherZip(ZipPath, 'new-launcher');
       Manager.PrepareUpdate(ZipPath, Release, False);
+      // R11: the swap happens in the finalize step (atomic ReplaceFileW).
+      Manager.FinalizePendingUpdate;
       Check(TFile.ReadAllText(TPath.Combine(ARoot, 'Launcher.exe')) = 'new-launcher',
         'PrepareUpdate puts the new launcher in place');
       Check(TFile.ReadAllText(TPath.Combine(ARoot, 'Launcher.exe.old')) = 'old-launcher',
@@ -5896,6 +5908,7 @@ begin
     try
       // Apply first update
       Manager.PrepareUpdate(ZipPath1, Release1, False);
+      Manager.FinalizePendingUpdate;
       Check(TFile.ReadAllText(LauncherExe) = NewContent, 'PrepareUpdate puts new launcher in place');
       Check(TFile.ReadAllText(OldLauncherExe) = OldContent, 'PrepareUpdate preserves old launcher');
       Check(TFile.Exists(RecordFile), 'PrepareUpdate records old_launcher.json');
@@ -6054,9 +6067,25 @@ begin
         TDirectory.Delete(JunctionTarget, True);
       end;
 
-      // 11. Verified rollback succeeds with valid record
+      // 11. Verified rollback succeeds with an authenticated record; a
+      // legacy schema-1 record is refused now that schema-2 operation is
+      // established (R9 downgrade protection).
       TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
-      WriteTextFile(RecordFile, '{"schema":1,"sha256":"' + OldHash + '","size":' + IntToStr(OldSize) + ',"version":"0.0.0"}');
+      WriteTextFile(RecordFile, Format(
+        '{"schema":2,"sha256":"%s","size":%d,"version":"0.0.0","recordedAt":"%s","hmac":"%s"}',
+        [OldHash, OldSize, DateToISO8601(Now),
+         ComputeRecordHmac(GetRollbackKey, OldHash, OldSize, '0.0.0', DateToISO8601(Now))]));
+      Check(Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher succeeds with authenticated schema-2 record');
+      TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
+      WriteTextFile(RecordFile,
+        '{"schema":1,"sha256":"' + OldHash + '","size":' + IntToStr(OldSize) + ',"version":"0.0.0"}');
+      Check(not Manager.VerifyOldLauncher(Err),
+        'VerifyOldLauncher refuses schema-1 records once schema-2 is established (R9)');
+      TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
+      WriteTextFile(RecordFile, Format(
+        '{"schema":2,"sha256":"%s","size":%d,"version":"0.0.0","recordedAt":"%s","hmac":"%s"}',
+        [OldHash, OldSize, DateToISO8601(Now),
+         ComputeRecordHmac(GetRollbackKey, OldHash, OldSize, '0.0.0', DateToISO8601(Now))]));
       Check(Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher succeeds with restored valid record');
       Check(Manager.RollbackToOldLauncher(False), 'Rollback with valid record reports success');
       Check(TFile.ReadAllText(LauncherExe) = OldContent, 'Verified rollback restores previous Launcher.exe');
@@ -6077,6 +6106,7 @@ begin
     Release1 := ParseReleasesJson(ReleasesJsonFor('1.1.0', Sha256File(ZipPath1), TFile.GetSize(ZipPath1)));
     try
       Manager.PrepareUpdate(ZipPath1, Release1, False);
+      Manager.FinalizePendingUpdate;
       Manager.ConfirmUpdate;
       Check(Manager.InstalledVersion = '1.1.0', 'Update 1 installed 1.1.0');
 
@@ -6085,6 +6115,7 @@ begin
       Release2 := ParseReleasesJson(ReleasesJsonFor('1.2.0', Sha256File(ZipPath2), TFile.GetSize(ZipPath2)));
       try
         Manager.PrepareUpdate(ZipPath2, Release2, False);
+        Manager.FinalizePendingUpdate;
         Check(TFile.ReadAllText(LauncherExe) = SecondNewContent, 'Update 2 puts v3 launcher in place');
         Check(TFile.ReadAllText(OldLauncherExe) = NewContent, 'Update 2 rotates v2 into Launcher.exe.old');
         JsonText := TFile.ReadAllText(RecordFile, TEncoding.UTF8);
@@ -6489,6 +6520,390 @@ begin
 end;
 {$ENDIF}
 
+{$IFDEF PORTAPPIX_TESTINJECT}
+// Phase 2 repro tests: each asserts the FIXED behavior of an independent
+// second-pass audit finding (R9-R14). Run against the pre-fix build they
+// fail, providing deterministic reproduction evidence.
+
+type
+  // FILE_RENAME_INFO (win32): used by the rename-attack repro to rename via
+  // an attacker-held DELETE handle, the way a real external process would.
+  TPortappixTestRenameInfo = record
+    Flags: DWORD;
+    RootDirectory: THandle;
+    FileNameLength: DWORD;
+    FileName: array[0..MAX_PATH] of WideChar;
+  end;
+const
+  FILE_INFO_CLASS_RENAME = 3;
+  FILE_RENAME_FLAG_POSIX_SEMANTICS = 2;
+
+// Not declared by the Delphi RTL; kernel32 export used by the rename-attack
+// repro and by the handle-based rollback rename.
+function SetFileInformationByHandle(hFile: THandle; FileInformationClass: Integer;
+  lpFileInformation: Pointer; dwBufferSize: DWORD): BOOL; stdcall;
+  external 'kernel32.dll' name 'SetFileInformationByHandle';
+
+procedure TestSchemaDowngradeRefused(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, LauncherExe, OldLauncherExe, RecordFile, FlagFile: string;
+  OldContent, OldHash, Err: string;
+  OldSize: Int64;
+begin
+  RootDir := TPath.Combine(ARoot, 'p2-downgrade');
+  ForceDirectories(TPath.Combine(RootDir, 'Cache'));
+  LauncherExe := TPath.Combine(RootDir, 'Launcher.exe');
+  OldLauncherExe := TPath.Combine(RootDir, 'Launcher.exe.old');
+  RecordFile := TPath.Combine(TPath.Combine(RootDir, 'Cache'), 'old_launcher.json');
+  FlagFile := TPath.Combine(TPath.Combine(RootDir, 'Cache'), 'rollback_migration.flag');
+  OldContent := 'p2-downgrade-v1-original';
+  TFile.WriteAllText(LauncherExe, 'p2-downgrade-v2-current', TEncoding.ASCII);
+  TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
+  OldHash := Sha256File(OldLauncherExe).ToLower;
+  OldSize := TFile.GetSize(OldLauncherExe);
+
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  // Fresh key directory: the test establishes schema-2 operation itself.
+  ForceDirectories(TPath.Combine(ARoot, 'recordauth-downgrade'));
+  PortappixRecordKeyPathOverride := TPath.Combine(ARoot, 'recordauth-downgrade', 'rollback_key.bin');
+  {$ENDIF}
+  Manager := TPortappixUpdateManager.Create(RootDir);
+  try
+    // Legitimate migration input: a schema-1 record that matches the .old on
+    // disk verifies and re-stamps, which ESTABLISHES authenticated schema-2
+    // operation (key blob + advisory flag).
+    WriteTextFile(RecordFile, Format('{"schema":1,"sha256":"%s","size":%d,"version":"0.0.0"}',
+      [OldHash, OldSize]));
+    Check(Manager.VerifyOldLauncher(Err),
+      'R9: legitimate schema-1 record verifies pre-establishment');
+    Check(TFile.Exists(FlagFile),
+      'R9: the advisory migration flag is written at establishment');
+
+    // Attacker: replaces Launcher.exe.old and writes a matching schema-1
+    // record. Once authenticated operation is established this must be
+    // refused — the old schema-1 acceptance must not launder new records.
+    TFile.WriteAllText(OldLauncherExe, 'p2-attacker-content', TEncoding.ASCII);
+    WriteTextFile(RecordFile, Format('{"schema":1,"sha256":"%s","size":%d,"version":"0.0.0"}',
+      [Sha256File(OldLauncherExe).ToLower, TFile.GetSize(OldLauncherExe)]));
+    Check(not Manager.VerifyOldLauncher(Err),
+      'R9: schema-1 record refused after authenticated establishment');
+    Check(ContainsText(Err, 'legacy'),
+      'R9: the refusal explains the legacy-record rejection');
+
+    // Fail-closed: if the establishment flag survived but the key blob did
+    // not, rollback must be refused entirely (no fresh-key laundering).
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    if TFile.Exists(PortappixRecordKeyPathOverride) then
+      TFile.Delete(PortappixRecordKeyPathOverride);
+    {$ENDIF}
+    Check(not Manager.VerifyOldLauncher(Err),
+      'R9: rollback refused while the establishment flag exists without the key blob');
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+  finally
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+
+procedure TestConcurrentRenameBlocked(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, LauncherExe, OldLauncherExe, RecordFile: string;
+  OldContent, NewContent, OldHash, Err, RecordedAt, AttackError: string;
+  OldSize: Int64;
+  AttackRan: Boolean;
+  AttackHandle: THandle;
+  AttackInfo: TPortappixTestRenameInfo;
+  MovedName: string;
+begin
+  RootDir := TPath.Combine(ARoot, 'p2-rename-attack');
+  ForceDirectories(TPath.Combine(RootDir, 'Cache'));
+  LauncherExe := TPath.Combine(RootDir, 'Launcher.exe');
+  OldLauncherExe := TPath.Combine(RootDir, 'Launcher.exe.old');
+  RecordFile := TPath.Combine(TPath.Combine(RootDir, 'Cache'), 'old_launcher.json');
+  OldContent := 'p2-rename-v1-original';
+  NewContent := 'p2-rename-v2-current';
+  TFile.WriteAllText(LauncherExe, NewContent, TEncoding.ASCII);
+  TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
+  OldHash := Sha256File(OldLauncherExe).ToLower;
+  OldSize := TFile.GetSize(OldLauncherExe);
+
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  PortappixRecordKeyPathOverride := RecordKeyBasePath;
+  {$ENDIF}
+  Manager := TPortappixUpdateManager.Create(RootDir);
+  try
+    RecordedAt := DateToISO8601(Now);
+    WriteTextFile(RecordFile, Format(
+      '{"schema":2,"sha256":"%s","size":%d,"version":"0.0.0","recordedAt":"%s","hmac":"%s"}',
+      [OldHash, OldSize, RecordedAt,
+       ComputeRecordHmac(GetRollbackKey, OldHash, OldSize, '0.0.0', RecordedAt)]));
+    Check(Manager.VerifyOldLauncher(Err),
+      'R10: authenticated baseline record verifies');
+
+    // Deterministic concurrent rename-and-replace attack executed inside the
+    // verify-to-move window (PortappixRollbackAttackHook).
+    AttackRan := False;
+    AttackError := '';
+    AttackHandle := 0;
+    PortappixRollbackAttackHook := procedure
+      begin
+        AttackRan := True;
+        // $10000 = DELETE access right (winnt.h); the bare identifier collides
+        // with the built-in System.Delete procedure.
+        AttackHandle := CreateFile(PChar(OldLauncherExe), GENERIC_READ or $00010000,
+          FILE_SHARE_READ, nil, OPEN_EXISTING, 0, 0);
+        if AttackHandle = INVALID_HANDLE_VALUE then
+        begin
+          AttackHandle := 0;
+          AttackError := 'open with DELETE denied: ' + SysErrorMessage(Integer(GetLastError));
+          Exit;
+        end;
+        // Rename through the attacker-held DELETE handle, exactly like an
+        // external process would (MoveFile would need a second open).
+        MovedName := OldLauncherExe + '.moved';
+        FillChar(AttackInfo, SizeOf(AttackInfo), 0);
+        AttackInfo.Flags := FILE_RENAME_FLAG_POSIX_SEMANTICS;
+        AttackInfo.FileNameLength := Length(MovedName) * SizeOf(WideChar);
+        Move(PChar(MovedName)^, AttackInfo.FileName[0],
+          Length(MovedName) * SizeOf(WideChar));
+        if not SetFileInformationByHandle(AttackHandle, FILE_INFO_CLASS_RENAME,
+          @AttackInfo, SizeOf(AttackInfo)) then
+        begin
+          AttackError := 'rename denied: ' + SysErrorMessage(Integer(GetLastError));
+          CloseHandle(AttackHandle);
+          AttackHandle := 0;
+          Exit;
+        end;
+        CloseHandle(AttackHandle);
+        AttackHandle := 0;
+        // The verified original is gone from its pathname; plant attacker
+        // content at the old path.
+        TFile.WriteAllText(OldLauncherExe, 'p2-attacker-content', TEncoding.ASCII);
+      end;
+    try
+      Check(Manager.RollbackToOldLauncher(False),
+        'R10: rollback succeeds despite a concurrent rename-and-replace attempt');
+      Check(TFile.ReadAllText(LauncherExe) = OldContent,
+        'R10: the verified file was restored, not the attacker content');
+      Check(AttackRan and (AttackError <> ''),
+        'R10: the concurrent rename attempt was blocked: ' + AttackError);
+    finally
+      PortappixRollbackAttackHook := nil;
+    end;
+  finally
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+
+procedure TestLauncherNeverMissingDuringSwap(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, CacheDir, LauncherExe, OldLauncherExe, ZipPath: string;
+  OldContent, NewContent: string;
+  Release: TPortappixRelease;
+begin
+  RootDir := TPath.Combine(ARoot, 'p2-missing-window');
+  CacheDir := TPath.Combine(RootDir, 'Cache');
+  ForceDirectories(CacheDir);
+  LauncherExe := TPath.Combine(RootDir, 'Launcher.exe');
+  OldLauncherExe := TPath.Combine(RootDir, 'Launcher.exe.old');
+  OldContent := 'p2-missing-v1';
+  NewContent := 'p2-missing-v2';
+  TFile.WriteAllText(LauncherExe, OldContent, TEncoding.ASCII);
+
+  ZipPath := TPath.Combine(CacheDir, 'update_missing.zip');
+  BuildLauncherZip(ZipPath, NewContent);
+  Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+    Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  PortappixRecordKeyPathOverride := RecordKeyBasePath;
+  {$ENDIF}
+  Manager := TPortappixUpdateManager.Create(RootDir);
+  try
+    // Simulate abrupt termination exactly between the two swap renames: the
+    // crash point fires AND the failure restore is suppressed (the process
+    // is dead, no exception handler could have run).
+    PortappixUpdateCrashPoint := UpdateSwapCrashAfterRenameOld;
+    PortappixUpdateCrashKill := True;
+    try
+      try
+        Manager.PrepareUpdate(ZipPath, Release, False);
+      except
+        on E: EPortappixSimulatedUpdateCrash do ;
+      end;
+    finally
+      PortappixUpdateCrashPoint := '';
+      PortappixUpdateCrashKill := False;
+    end;
+
+    Check(TFile.Exists(LauncherExe),
+      'R11: Launcher.exe exists after an interrupted update swap');
+    if TFile.Exists(LauncherExe) then
+      Check(TFile.ReadAllText(LauncherExe) = OldContent,
+        'R11: Launcher.exe was never replaced by a partial swap');
+
+    // Post-fix: the staged update is finalized atomically (ReplaceFileW) —
+    // the launcher goes from v1 to v2 without ever going missing.
+    Manager.FinalizePendingUpdate;
+    Check(TFile.ReadAllText(LauncherExe) = NewContent,
+      'R11: the finalized update installs the new launcher atomically');
+    Check(TFile.ReadAllText(OldLauncherExe) = OldContent,
+      'R11: the finalize preserves the previous launcher as .old');
+  finally
+    Release.Free;
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+
+procedure TestReviewRaceCrossInstance(const ARoot: string);
+var
+  JournalA, JournalB: TPortappixJournal;
+  TxDir: string;
+  Items: TArray<TPortappixReviewItem>;
+  HasA, HasB: Boolean;
+  Item: TPortappixReviewItem;
+begin
+  TxDir := TPath.Combine(ARoot, 'p2-review-race');
+  ForceDirectories(TxDir);
+  JournalA := TPortappixJournal.Create(TxDir);
+  JournalB := TPortappixJournal.Create(TxDir);
+  try
+    JournalA.OnLog := procedure(AMsg: string) begin end;
+    JournalB.OnLog := procedure(AMsg: string) begin end;
+
+    // Two "processes" (separate journal instances, each with its own
+    // critical section) record review entries concurrently; the write hook
+    // delay deterministically interleaves A's read and B's write.
+    PortappixWriteHook :=
+      function(const AFileName, AContent: string): TPortappixWriteHookResult
+      begin
+        Result := whPass;
+      end;
+    PortappixWriteDelayMs := 400;
+    try
+      TThread.CreateAnonymousThread(
+        procedure
+        begin
+          JournalA.RecordReviewItem('race-a', 'J:\a', 'T:\a', 'unowned');
+        end).Start;
+      TThread.CreateAnonymousThread(
+        procedure
+        begin
+          JournalB.RecordReviewItem('race-b', 'J:\b', 'T:\b', 'unowned');
+        end).Start;
+      Sleep(1200); // both threads completed (400 ms delay + write)
+    finally
+      PortappixWriteDelayMs := 0;
+      PortappixWriteHook := nil;
+    end;
+
+    Items := JournalA.ListReviewItems;
+    HasA := False;
+    HasB := False;
+    for Item in Items do
+    begin
+      if Item.AppId = 'race-a' then HasA := True;
+      if Item.AppId = 'race-b' then HasB := True;
+    end;
+    Check(HasA and HasB,
+      'R12: concurrent review recordings from two instances both survive');
+  finally
+    JournalA.Free;
+    JournalB.Free;
+  end;
+end;
+
+procedure TestKeyCreationRaceSafe(const ARoot: string);
+var
+  KeyDir: string;
+  Key1, Key2, Key3: TBytes;
+begin
+  KeyDir := TPath.Combine(ARoot, 'p2-keyrace');
+  ForceDirectories(KeyDir);
+  PortappixKeyCreateDelayMs := 400;
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  PortappixRecordKeyPathOverride := TPath.Combine(KeyDir, 'rollback_key.bin');
+  {$ENDIF}
+  try
+    TThread.CreateAnonymousThread(
+      procedure
+      begin
+        Key1 := GetRollbackKey;
+      end).Start;
+    TThread.CreateAnonymousThread(
+      procedure
+      begin
+        Key2 := GetRollbackKey;
+      end).Start;
+    Sleep(1200); // both threads completed
+    Key3 := GetRollbackKey; // reads whatever survived on disk
+
+    Check(BytesEqual(Key1, Key2) and BytesEqual(Key1, Key3) and (Length(Key1) = 32),
+      'R13: concurrent first-time key creation yields one consistent key');
+  finally
+    PortappixKeyCreateDelayMs := 0;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+
+procedure TestCompanionRestoreOnRollback(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, CacheDir, LauncherExe, ReadmeFile, ZipPath: string;
+  OldContent, NewContent: string;
+  Release: TPortappixRelease;
+begin
+  RootDir := TPath.Combine(ARoot, 'p2-companion');
+  CacheDir := TPath.Combine(RootDir, 'Cache');
+  ForceDirectories(CacheDir);
+  LauncherExe := TPath.Combine(RootDir, 'Launcher.exe');
+  ReadmeFile := TPath.Combine(RootDir, 'readme.txt');
+  OldContent := 'p2-companion-v1';
+  NewContent := 'p2-companion-v2';
+  TFile.WriteAllText(LauncherExe, OldContent, TEncoding.ASCII);
+  TFile.WriteAllText(ReadmeFile, 'old-companion-readme');
+
+  ZipPath := TPath.Combine(CacheDir, 'update_companion.zip');
+  BuildLauncherZip(ZipPath, NewContent); // ships a NEW readme.txt companion
+  Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+    Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+  {$IFDEF PORTAPPIX_TESTCRASH}
+  PortappixRecordKeyPathOverride := RecordKeyBasePath;
+  {$ENDIF}
+  Manager := TPortappixUpdateManager.Create(RootDir);
+  try
+    Manager.PrepareUpdate(ZipPath, Release, False);
+    Manager.FinalizePendingUpdate;
+    Check(TFile.ReadAllText(ReadmeFile) = NewContent,
+      'R14: the companion file was replaced by the update');
+    Check(Manager.RollbackToOldLauncher(False),
+      'R14: watchdog rollback succeeds');
+    Check(TFile.ReadAllText(LauncherExe) = OldContent,
+      'R14: rollback restores the previous launcher');
+    Check(TFile.ReadAllText(ReadmeFile) = 'old-companion-readme',
+      'R14: rollback also restores companion files');
+  finally
+    Release.Free;
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+{$ENDIF}
+
 procedure TestConsent(const ARoot: string);
 var
   Consent: TPortappixConsent;
@@ -6596,6 +7011,13 @@ begin
 {$IFDEF PORTAPPIX_TESTINJECT}
     TestReviewPersistenceFailures(Root);
     TestUpdateFailureInjection(Root);
+    // Phase 2 repro tests (each asserts FIXED behavior; fails pre-fix).
+    TestSchemaDowngradeRefused(Root);
+    TestConcurrentRenameBlocked(Root);
+    TestLauncherNeverMissingDuringSwap(Root);
+    TestReviewRaceCrossInstance(Root);
+    TestKeyCreationRaceSafe(Root);
+    TestCompanionRestoreOnRollback(Root);
     // Materialize the marker constant into the test-mode binary (byte-scanned
     // by the isolation tests); production binaries contain no reference and
     // therefore no marker bytes.

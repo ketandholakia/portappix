@@ -60,6 +60,11 @@ type
     function DataDirFor(const AAppId: string): string;
     function AcquireJournalLock(out AAbandoned: Boolean): THandle;
     procedure ReleaseJournalLock(var AHandle: THandle);
+    /// Cross-process named mutex serializing the needs_review.json
+    /// read-modify-write cycle. FSync alone is per-instance and does NOT
+    /// serialize separate launcher processes (audit finding R12).
+    function AcquireReviewLock: THandle;
+    procedure ReleaseReviewLock(var AHandle: THandle);
     function ListTransactionIds: TArray<string>;
     function LoadTransaction(const ATxId: string): TPortappixTransaction;
     procedure QuarantineTransaction(const ATxId: string);
@@ -227,6 +232,45 @@ begin
 end;
 
 procedure TPortappixJournal.ReleaseJournalLock(var AHandle: THandle);
+begin
+  if AHandle <> 0 then
+  begin
+    ReleaseMutex(AHandle);
+    CloseHandle(AHandle);
+    AHandle := 0;
+  end;
+end;
+
+function TPortappixJournal.AcquireReviewLock: THandle;
+var
+  WaitResult: DWORD;
+begin
+  // Windows mutexes are thread-recursive: a thread that already owns the
+  // mutex (e.g. RecordReviewItem calling ListReviewItems, or BeginTransaction
+  // holding the journal lock and reading the review list) re-acquires it
+  // immediately, so nesting is safe as long as acquisition is balanced.
+  Result := CreateMutex(nil, False,
+    PChar(MutexNameFor('Review', FRootPath.ToLower)));
+  if Result = 0 then
+    raise EPortappixStateError.Create('Unable to create the review mutex.');
+  WaitResult := WaitForSingleObject(Result, 5000);
+  if WaitResult = WAIT_ABANDONED then
+  begin
+    // The previous holder died mid-cycle; the durable write is an atomic
+    // replace, so the file is either the old or the new complete content.
+    Log('The review mutex was abandoned by a previous launcher; continuing ' +
+      'with the durable (atomically replaced) review file.');
+  end
+  else if WaitResult <> WAIT_OBJECT_0 then
+  begin
+    CloseHandle(Result);
+    Result := 0;
+    raise EPortappixJournalBusy.Create(
+      'Another Portappix process is updating the review list; try again later.');
+  end;
+end;
+
+procedure TPortappixJournal.ReleaseReviewLock(var AHandle: THandle);
 begin
   if AHandle <> 0 then
   begin
@@ -891,16 +935,21 @@ var
   List: TList<TPortappixReviewItem>;
   Item: TPortappixReviewItem;
   I: Integer;
+  ReviewLock: THandle;
 begin
   SetLength(Result, 0);
   FilePath := ReviewFilePath;
-  // A missing review file is the normal empty state (fresh installation or
-  // no unowned junction ever recorded), not an error.
-  if not TFile.Exists(FilePath) then
-    Exit;
-
-  FSync.Enter;
+  // Cross-process serialization (R12): the file-existence check and the read
+  // happen inside the review mutex so no writer interleaves.
+  ReviewLock := AcquireReviewLock;
   try
+    // A missing review file is the normal empty state (fresh installation or
+    // no unowned junction ever recorded), not an error.
+    if not TFile.Exists(FilePath) then
+      Exit;
+
+    FSync.Enter;
+    try
     // Fail closed: any problem reading or interpreting the review file must
     // raise. Degrading to an empty list would silently unblock applications
     // that require manual review and report a clean status.
@@ -970,8 +1019,11 @@ begin
     finally
       JsonVal.Free;
     end;
+    finally
+      FSync.Leave;
+    end;
   finally
-    FSync.Leave;
+    ReleaseReviewLock(ReviewLock);
   end;
 end;
 
@@ -1001,10 +1053,15 @@ var
   JsonArr: TJSONArray;
   ItemObj: TJSONObject;
   FilePath: string;
+  ReviewLock: THandle;
 begin
   FSync.Enter;
   try
-    Items := ListReviewItems;
+    // R12: the whole read-modify-write cycle is serialized across processes
+    // (ListReviewItems re-acquires the thread-recursive review mutex).
+    ReviewLock := AcquireReviewLock;
+    try
+      Items := ListReviewItems;
     for Item in Items do
     begin
       if SameText(Item.AppId, AAppId) and SameText(Item.JunctionPath, AJunctionPath) then
@@ -1042,8 +1099,11 @@ begin
           'junction was NOT recorded.', [FilePath, AAppId]);
       Log(Format('Recorded unowned junction for app "%s" at "%s" in needs_review.json.',
         [AAppId, AJunctionPath]));
+      finally
+        JsonArr.Free;
+      end;
     finally
-      JsonArr.Free;
+      ReleaseReviewLock(ReviewLock);
     end;
   finally
     FSync.Leave;
@@ -1063,11 +1123,15 @@ var
   FilePath: string;
   TxIds: TArray<string>;
   Tx: TPortappixTransaction;
+  ReviewLock: THandle;
 begin
   AError := '';
   Result := False;
   FSync.Enter;
   try
+    // R12: serialized against concurrent record/clear cycles across processes.
+    ReviewLock := AcquireReviewLock;
+    try
     // Fail closed on an unreadable/corrupt review file: report the error
     // instead of treating the review list as empty.
     try
@@ -1204,6 +1268,9 @@ begin
     finally
       Matching.Free;
       Remaining.Free;
+    end;
+    finally
+      ReleaseReviewLock(ReviewLock);
     end;
   finally
     FSync.Leave;
