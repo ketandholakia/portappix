@@ -1,0 +1,47 @@
+WARNING: PSReadLine configuration failed: The predictive suggestion feature cannot be enabled 
+because the console output doesn't support virtual terminal processing or it's redirected.
+============================================================
+PORTAPPIX GATE 3: SELF-UPDATE SANDBOX VALIDATION
+  Fixture dir : C:\Users\Admin\Documents\github\portappix\tests\suite\fixtures\selfupdate
+  Work dir    : C:\Users\Admin\AppData\Local\Temp\portappix_selfupdate_sandbox_test
+  HTTP Port   : 8080
+============================================================
+  [PASS] HTTP loopback server is serving releases.json
+
+Step 1: Setting up initial working directory with Launcher 1.0.0...
+  [PASS] Initial Launcher is version 1.0.0.0
+
+Step 2: Testing update check against 1.1.0 release...
+  [PASS] Launcher --check-updates exited with code 0
+
+Step 3: Applying self-update 1.0.0 -> 1.1.0...
+  [PASS] Launcher --self-update exited with code 0
+  [PASS] Cache\update_ok marker was created by --post-update
+  [PASS] update_ok confirms update to 1.1.0
+  [PASS] Launcher.exe is now version 1.1.0.0
+  [PASS] Launcher.exe.old backup copy exists
+  [PASS] Launcher.exe.old is the previous 1.0.0.0 version
+
+Step 4: Applying second consecutive self-update 1.1.0 -> 1.2.0...
+  [PASS] Second --self-update exited with code 0
+  [PASS] Second update_ok confirms update to 1.2.0
+  [PASS] Launcher.exe is now version 1.2.0.0
+  [PASS] Launcher.exe.old was rotated and holds 1.1.0.0
+
+Step 5: Testing rollback watchdog with deleted update_ok...
+  [PASS] update_ok removed to simulate unconfirmed start
+  [PASS] Launcher --rollback exited with code 0
+  [PASS] Rollback restored Launcher.exe to version 1.1.0.0
+  [PASS] Failing launcher was renamed to Launcher.exe.failed_*
+
+Step 6: Testing failure case with release crashing on startup...
+  [PASS] Update to 1.3.0-fail staged and launched
+  [PASS] update_ok was NOT created because 1.3.0 crashed on start
+  [PASS] Launcher.exe.old is preserved
+  [PASS] Launcher.exe.old is the working 1.1.0.0
+  [PASS] Watchdog rollback executed cleanly
+  [PASS] Rollback watchdog restored working 1.1.0.0 launcher
+
+============================================================
+ALL SELF-UPDATE VALIDATION CHECKS PASSED: 23 passed, 0 failed.
+============================================================

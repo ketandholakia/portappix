@@ -6355,8 +6355,98 @@ begin
   end;
 end;
 
-procedure TestReleaseUrlSecurity;
+procedure TestCliFinalizeArguments;
 var
+  Cli: TPortappixCli;
+  Root: string;
+begin
+  Root := TPath.Combine(TPath.GetTempPath, 'portappix-cli-root');
+  // The exact command line SpawnUpdateHelper builds: the flag takes no value,
+  // so it must not swallow --root. A regression here makes EVERY real finalize
+  // helper fail with exit 3 (usage) and the update never completes.
+  Cli := TPortappixCli.Create;
+  try
+    Check(Cli.Parse(['--finalize-update', '--root', Root, '--parent', '1234']),
+      'CLI: --finalize-update with --root and --parent parses');
+    Check(SameText(Cli.Command, 'finalize-update'),
+      'CLI: --finalize-update selects the finalize command');
+  finally
+    Cli.Free;
+  end;
+
+  // --root BEFORE the flag must parse too (argument order independence).
+  Cli := TPortappixCli.Create;
+  try
+    Check(Cli.Parse(['--root', Root, '--finalize-update']),
+      'CLI: --root before --finalize-update parses');
+    Check(SameText(Cli.Command, 'finalize-update'),
+      'CLI: the flag selects finalize with a preceding --root');
+  finally
+    Cli.Free;
+  end;
+
+  // --finalize-update alone is still a valid command.
+  Cli := TPortappixCli.Create;
+  try
+    Check(Cli.Parse(['--finalize-update']), 'CLI: bare --finalize-update parses');
+  finally
+    Cli.Free;
+  end;
+end;
+
+/// The finalize helper runs from `launcher_new\Launcher.exe` and must install
+/// that staged binary. ReplaceFileW refuses (ERROR_SHARING_VIOLATION) when the
+/// replacement SOURCE is the caller's own executing image, so the helper has
+/// to install from a private copy. This reproduces that exact situation: the
+/// source file is the running module, and ReplaceFileW must be avoided.
+procedure TestFinalizeDoesNotReplaceOwnImage(const ARoot: string);
+const
+  ReplaceFileReplaceExisting = $00000001;
+var
+  RootDir, SelfPath, TargetPath, OldPath: string;
+  SrcCopy: string;
+begin
+  RootDir := TPath.Combine(ARoot, 'r20-self-image');
+  ForceDirectories(RootDir);
+  SelfPath := TPath.GetFullPath(ParamStr(0));
+  Check(TFile.Exists(SelfPath), 'R11: the test binary path resolves');
+
+  TargetPath := TPath.Combine(RootDir, 'Launcher.exe');
+  OldPath := TPath.Combine(RootDir, 'Launcher.exe.old');
+  // The "installed" launcher is the running test binary itself: replacing it
+  // with itself would be exactly the forbidden self-image case.
+  TFile.Copy(SelfPath, TargetPath, False);
+
+  // 1. The direct call fails while the file is the executing image.
+  var Direct := ReplaceFile(PChar(TargetPath), PChar(SelfPath),
+    PChar(OldPath), ReplaceFileReplaceExisting, nil, nil);
+  Check(not Direct,
+    'R11: ReplaceFileW cannot use the executing image as its source (error 32)');
+  Check(GetLastError = ERROR_SHARING_VIOLATION,
+    'R11: the self-image rejection is ERROR_SHARING_VIOLATION');
+
+  // 2. Installing from a private copy succeeds — the strategy the helper uses.
+  SrcCopy := TPath.Combine(RootDir, 'install_copy.exe');
+  Check(CopyFile(PChar(SelfPath), PChar(SrcCopy), False),
+    'R11: the staged binary can be copied to a private install source');
+  Check(TFile.GetSize(SrcCopy) = TFile.GetSize(SelfPath),
+    'R11: the private install source is a complete copy');
+  var ViaCopy := ReplaceFile(PChar(TargetPath), PChar(SrcCopy),
+    PChar(OldPath), ReplaceFileReplaceExisting, nil, nil);
+  Check(ViaCopy,
+    'R11: ReplaceFileW succeeds from a private copy (the finalize strategy)');
+  if ViaCopy then
+  begin
+    Check(TFile.GetSize(TargetPath) = TFile.GetSize(SelfPath),
+      'R11: the installed launcher is the staged binary');
+    Check(TFile.Exists(OldPath),
+      'R11: the previous launcher is preserved as .old');
+    Check(not TFile.Exists(SrcCopy),
+      'R11: ReplaceFileW consumed the private install source');
+  end;
+end;
+
+procedure TestReleaseUrlSecurity;var
   Cli: TPortappixCli;
 begin
 {$IFDEF PORTAPPIX_TESTUPDATE}
@@ -7913,6 +8003,8 @@ begin
       'the failure-injection marker constant is present in test builds');
 {$ENDIF}
     TestReleaseUrlSecurity;
+    TestCliFinalizeArguments;
+    TestFinalizeDoesNotReplaceOwnImage(Root);
     TestConsent(Root);
 {$IFDEF PORTAPPIX_TESTCRASH}
     TestCrashPointGrammar;

@@ -1789,8 +1789,13 @@ begin
   // The finalize helper runs from the staged launcher: it is not the
   // running installation image, so it can atomically replace Launcher.exe.
   NewExe := TPath.Combine(NewDir, LauncherFileName);
-  Args := Format('--finalize-update --root "%s" --parent %d',
-    [ExcludeTrailingPathDelimiter(FRootPath), GetCurrentProcessId]);
+  // The helper's own stdout/stderr go nowhere (it is spawned detached), so
+  // pass a log file next to the pending marker: a failed finalize is then
+  // diagnosable from the installation instead of leaving only stale state.
+  Args := Format('--finalize-update --root "%s" --parent %d --log-file "%s"',
+    [ExcludeTrailingPathDelimiter(FRootPath), GetCurrentProcessId,
+     TPath.Combine(TPath.Combine(ExcludeTrailingPathDelimiter(FRootPath),
+       'Cache'), 'update_finalize.log')]);
   SpawnProcess(NewExe, Args);
 end;
 
@@ -2146,11 +2151,13 @@ begin
     raise;
   end;
 
-  // Only now — after a verified, activated transfer — is the staging dir
-  // no longer needed.
-  if not CompanionDeleteDirectory(AStagingDir, True) then
-    Log(Format('Unable to remove the staging directory "%s": %s',
-      [AStagingDir, SysErrorMessage(Integer(GetLastError))]));
+  // The staging directory is NOT deleted here: the caller owns that decision,
+  // because a later finalize step can still fail and the RestoreFailedSwap
+  // path needs the staging directory (bookkeeping files,
+  // rollback_pre_swap.json, any backups not transferred) to restore the
+  // installation. Deleting it eagerly made every post-companion failure
+  // unrecoverable (the restore raised "The specified path was not found").
+  // Stale bookkeeping is harmless: it is excluded from later transfers.
 end;
 
 procedure TPortappixUpdateManager.FinalizePendingUpdate;
@@ -2162,6 +2169,8 @@ var
   SwapDone, SwapSucceeded: Boolean;
   Retries: Integer;
   Replaced: Boolean;
+  LastError: Integer;
+  InstallSource, SelfExe: string;
 
   /// R20: removes the staging artifacts that only the finalize consumes.
   procedure FinishConsumedStaging;
@@ -2249,25 +2258,54 @@ begin
       // Atomic replacement (R11): ReplaceFileW swaps the staged launcher
       // into place and preserves the current binary as Launcher.exe.old in
       // ONE operation — there is no window in which Launcher.exe is
-      // missing. Retries absorb a briefly running launcher instance.
+      // missing.
+      //
+      // The replacement SOURCE must not be the file this process is running
+      // from. The finalize helper is started as launcher_new\Launcher.exe, so
+      // handing that same path to ReplaceFileW fails with
+      // ERROR_SHARING_VIOLATION (32) for as long as the helper is alive —
+      // i.e. always. The helper therefore installs from a private copy in a
+      // neutral temp location, which it can freely consume. If the copy
+      // cannot be made, fall back to the staged path (correct, but only
+      // succeeds when this process is not the staged image).
+      Replaced := False;
+      LastError := 0;
+      InstallSource := NewExe;
+      SelfExe := TPath.GetFullPath(ParamStr(0));
+      if SameText(TPath.GetFullPath(NewExe), SelfExe) then
+      begin
+        InstallSource := TPath.Combine(TPath.GetDirectoryName(NewExe),
+          Format('install_%d.exe', [GetCurrentProcessId]));
+        if (not CopyFile(PChar(NewExe), PChar(InstallSource), False)) then
+          InstallSource := NewExe;
+      end;
       Replaced := False;
       for Retries := 1 to 20 do
       begin
-        if ReplaceFile(PChar(LauncherExe), PChar(NewExe),
-          PChar(OldLauncherExe), REPLACEFILE_REPLACE_EXISTING, nil, nil) then
+        if ReplaceFile(PChar(LauncherExe), PChar(InstallSource),          PChar(OldLauncherExe), REPLACEFILE_REPLACE_EXISTING, nil, nil) then
         begin
           Replaced := True;
           Break;
         end;
-        if (GetLastError <> ERROR_SHARING_VIOLATION) and
-           (GetLastError <> ERROR_ACCESS_DENIED) then
+        // Capture the error ONCE: Log() and SysErrorMessage() call Windows
+        // APIs that overwrite the thread's last-error value, so comparing
+        // GetLastError after logging would compare the wrong error (and the
+        // retry loop would give up after a single transient sharing
+        // violation).
+        LastError := Integer(GetLastError);
+        Log(Format('ReplaceFileW attempt %d failed (error %d): %s',
+          [Retries, LastError, SysErrorMessage(LastError)]));
+        if (LastError <> ERROR_SHARING_VIOLATION) and
+           (LastError <> ERROR_ACCESS_DENIED) then
           Break;
         Sleep(250);
       end;
+      if (not SameText(InstallSource, NewExe)) and TFile.Exists(InstallSource) then
+        RemoveFileQuiet(InstallSource);
       if not Replaced then
         raise EPortappixUpdateError.CreateFmt(
           'Unable to atomically install the staged launcher (ReplaceFileW): %s',
-          [SysErrorMessage(Integer(GetLastError))]);
+          [SysErrorMessage(LastError)]);
       Log('The staged launcher was installed atomically; the previous ' +
         'launcher is preserved as Launcher.exe.old.');
       // R20: record the completed swap durably and immediately. ReplaceFileW
@@ -2316,6 +2354,12 @@ begin
     {$ENDIF}
 
     SwapSucceeded := True;
+    // R15/R20: only NOW, with every mutation committed, is the staging
+    // directory no longer needed. Deleting it earlier would make a failure in
+    // any later step's restore impossible (the restore reads it).
+    if not CompanionDeleteDirectory(StagingDir, True) then
+      Log(Format('Unable to remove the staging directory "%s": %s',
+        [StagingDir, SysErrorMessage(Integer(GetLastError))]));
     // R20: the transition marker intentionally SURVIVES a successful
     // finalize. While the pending marker is live (the new launcher has not
     // confirmed yet), a repeated finalize must be able to see that the swap

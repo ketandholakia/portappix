@@ -301,8 +301,11 @@ begin
     else if SameText(Arg, '--finalize-update') then
     begin
       // No value: run from the staged launcher as the R11 finalize helper.
+      // This branch must NOT advance the index an extra time: the loop
+      // advances by one, and an extra Inc would swallow the following
+      // argument (e.g. the mandatory --root that SpawnUpdateHelper always
+      // passes), making every real finalize helper fail with exit 3.
       FCommand := 'finalize-update';
-      Inc(Index);
     end
     else if SameText(Arg, '--parent') then
     begin
