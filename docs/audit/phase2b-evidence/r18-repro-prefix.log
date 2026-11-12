@@ -1,0 +1,935 @@
+Portappix engine tests
+----------------------
+PASS: Token expansion replaces all manifest tokens
+PASS: Manifest id defaults to the folder name
+PASS: Manifest parses args
+PASS: Manifest parses version
+PASS: Manifest parses category
+PASS: Manifest schema defaults to current
+PASS: Manifest id matches Apps folder
+PASS: Manifest id mismatch is detected
+PASS: Policy allows HKCU\Software\<vendor>\<app>
+PASS: Policy denies HKLM
+PASS: Policy denies HKCU\Software root
+PASS: Policy denies HKCU\Software\Microsoft
+PASS: Policy allows %APPDATA% junction hosts
+PASS: Policy denies junctions in system folders
+PASS: Policy denies junctions in Documents
+PASS: Policy denies junctions in %APPDATA%\Microsoft
+PASS: Policy denies junction targets with traversal (..)
+PASS: Policy denies junction targets pointing into {app}
+PASS: Policy denies junction targets pointing into {root}
+PASS: Policy allows junction targets in {data}
+PASS: Policy denies environment variable values with path traversal
+PASS: Policy denies environment variable values with null characters
+PASS: Policy allows {app} PATH overrides
+PASS: Policy denies PATH overrides without {app}/{data}
+PASS: Policy denies non-allow-listed environment variables
+PASS: Catalog parses a valid app list
+PASS: Catalog FindById works
+PASS: Catalog rejects malformed entries
+PASS: Catalog keeps the previous list when a reload fails (atomic swap)
+PASS: Catalog rejects non-https package URLs
+PASS: Catalog rejects unknown kinds
+PASS: Catalog parses the kind field
+PASS: Catalog parses the recipe field
+PASS: Vendor-link app parsed
+PASS: IsVendorLink returns true
+PASS: StripPrefix parsed
+PASS: ExePath parsed
+PASS: License parsed
+PASS: Redistribution parsed
+PASS: ManifestOverlay parsed
+PASS: Catalog defaults to kind=package without provenance fields
+PASS: Catalog rejects missing files
+PASS: Test-update build rejects unsigned catalog by default
+PASS: Test-update build loads unsigned catalog when AllowUnsignedCatalogs is true
+PASS: Catalog with invalid .sig fails to load
+PASS: Zip extraction preserves subfolders
+PASS: Zip extraction rejects zip-slip entries
+PASS: Zip extraction rejects Alternate Data Stream entries
+PASS: Zip extraction rejects reserved Windows device names
+PASS: Zip extraction rejects duplicate/case-colliding entries
+PASS: Entry declaring size over cap is rejected before reading
+PASS: Failed extraction for over-cap entry leaves no destination folder
+PASS: Entry whose declared size lies is aborted when streaming reaches cap
+PASS: Aborted streaming extraction leaves no destination folder or partial files
+PASS: Total cap is enforced across multiple entries
+PASS: Total cap abort leaves no destination folder or partial files
+PASS: Extraction fails when actual uncompressed bytes differ from declared size
+PASS: Corrupt size mismatch leaves no partial files
+PASS: Extraction fails on unsupported compression method
+PASS: Unsupported compression method leaves no partial destination folder
+PASS: Extraction fails for stored entry whose compressed size differs from uncompressed size
+PASS: Stored entry mismatch leaves no partial destination folder
+PASS: SHA-256 of "abc" matches the reference value
+PASS: Signature: the embedded trusted public key changed during rotation
+PASS: Signature: trusted public key accepts a valid new-key signature
+PASS: Signature: VerifySignatureWithKey accepts the new key via the embedded blob
+PASS: Signature: a signature made with a different key is rejected
+PASS: Signature: the old-key catalog signature is rejected by the new trust pin
+PASS: Signature: the old key still verifies its own signature when supplied explicitly
+PASS: Signature: the synthetic other key verifies its own signature when supplied explicitly
+PASS: Signature: tampered catalog content is rejected
+PASS: Signature: invalid signature length (63 bytes) is rejected
+PASS: Signature: malformed (all-zero) signature encoding is rejected
+PASS: Signature: missing (empty) signature is rejected
+PASS: Signature: truncated public key blob fails closed
+PASS: Signature: wrong-magic public key blob fails closed
+PASS: Signature: empty catalog content is rejected
+PASS: Journal writes a durable transaction.json
+PASS: Journal records the active app id
+PASS: Journal records the new transaction as prepared
+PASS: Invalid transaction state transitions are rejected
+PASS: RecoverPendingCleanups resolves a prepared transaction with no operations
+PASS: Journal: tx dir exists before recovery
+PASS: Journal: corrupt-journal dir is preserved
+PASS: Corrupt transaction.json is preserved as transaction.json.bad
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Tx journal: successful durable write creates transaction.json
+PASS: Tx journal: prepared state is persisted
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Tx journal: flush failure aborts the transaction
+PASS: Tx journal: flush failure leaves the previous journal intact
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Tx journal: replace failure aborts the transaction
+PASS: Tx journal: replace failure leaves the previous journal intact
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Transaction "persist-000000000027f00f-e00974e9b6ba406e" recovered and completed.
+PASS: Tx journal: temp-file creation failure aborts the transaction
+PASS: Tx journal: partial write aborts the transaction
+PASS: Tx journal: concurrent journal access fails with a busy error
+PASS: Tx journal: an abandoned mutex triggers validation and recovery assessment
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Ordering: journal failure prevents the run from starting
+PASS: Ordering: journal failure prevents junction mutation
+PASS: Ordering: journal failure prevents registry mutation
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Ordering: simulated crash after intent persistence
+PASS: Ordering: crash after intent leaves the host directory untouched
+PASS: Ordering: the transaction survives the crash
+PASS: Ordering: the pending intent is durably recorded
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Reconciling op 0 (hostDirBackup/pending)...
+LOG: Transaction "txdemo-0000000000280d2c-9dfa7bdabdb24516" recovered and completed.
+PASS: Ordering: recovery resolves the crashed transaction
+PASS: Ordering: no junction was created by the interrupted run
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Ordering: simulated crash after the registry backup
+PASS: Ordering: the host key was not modified before its delete was journalled
+PASS: Ordering: no registry delete happened before the crash point
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Reconciling op 1 (registryBackup/done)...
+LOG: Reconciling op 0 (hostDirBackup/done)...
+LOG: Restored host directory "C:\Users\Admin\AppData\Roaming\TxJunction" from its backup.
+LOG: Transaction "txdemo-0000000000280d8a-04632009264f451a" recovered and completed.
+PASS: Ordering: backup-phase crash recovery completes without restoring
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Ordering: simulated crash after the registry modification
+PASS: Ordering: the host key was deleted before the crash
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Reconciling op 3 (registryDelete/done)...
+LOG: Restored host registry key "HKCU\Software\Vendor\txdemo" from its backup.
+LOG: Reconciling op 2 (junctionCreate/done)...
+LOG: Removed Portappix junction "C:\Users\Admin\AppData\Roaming\TxJunction" (ownership verified).
+LOG: Reconciling op 1 (registryBackup/done)...
+LOG: Reconciling op 0 (hostDirBackup/done)...
+LOG: Restored host directory "C:\Users\Admin\AppData\Roaming\TxJunction" from its backup.
+LOG: Transaction "txdemo-0000000000280de8-dc637cf8a36b4eb8" recovered and completed.
+PASS: Ordering: recovery re-imports the registry backup
+PASS: Ordering: recovery completes the interrupted transaction
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Ordering: simulated crash during cleanup
+PASS: Ordering: the transaction survives a mid-cleanup crash
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Portable registry saved: C:\Users\Admin\AppData\Local\Temp\portappix-tests-20261112112500234-5988\Data\txdemo\registry.reg
+LOG: Reconciling op 3 (registryDelete/restored)...
+LOG: Reconciling op 2 (junctionCreate/done)...
+LOG: Removed Portappix junction "C:\Users\Admin\AppData\Roaming\TxJunction" (ownership verified).
+LOG: Reconciling op 1 (registryBackup/done)...
+LOG: Reconciling op 0 (hostDirBackup/done)...
+LOG: Restored host directory "C:\Users\Admin\AppData\Roaming\TxJunction" from its backup.
+LOG: Transaction "txdemo-0000000000280e84-b46f0cd7f8a74f5c" recovered and completed.
+PASS: Ordering: recovery finishes an interrupted cleanup
+PASS: Ordering: the junction is removed after the interrupted cleanup
+PASS: Ordering: the host directory is restored after the interrupted cleanup
+PASS: Recovery: a preparing transaction is discarded safely
+PASS: Recovery: an empty prepared transaction completes
+PASS: Recovery: a host directory backup is renamed back
+PASS: Recovery: the backup-phase transaction completes
+PASS: Recovery: a running-transaction junction is removed
+PASS: Recovery: a deleted host key is restored from its backup
+PASS: Recovery: the running transaction completes
+PASS: Recovery: a pending cleanup restore is finished
+PASS: Recovery: recoveryRequired transactions are retained for manual review
+PASS: Recovery: recoveryRequired transactions trigger no host operations
+PASS: Recovery: repeated recovery does not damage recoveryRequired transactions
+PASS: Recovery: a failed restore retains the registry backup file
+PASS: Recovery: a failed restore keeps the transaction for retry
+PASS: Recovery: a retried recovery succeeds and completes
+PASS: Recovery: a missing backup keeps the transaction open
+PASS: Recovery: a missing backup fails closed into recoveryRequired
+PASS: Recovery: completed transactions are finalized
+PASS: Recovery: completed transactions are not restored unnecessarily
+PASS: Path safety: traversal in the junction host fails closed into recoveryRequired
+PASS: Path safety: traversal in the junction host triggers no host path operations
+PASS: Path safety: traversal in the junction host never imports a tampered backup reference
+PASS: Path safety: UNC junction host fails closed into recoveryRequired
+PASS: Path safety: UNC junction host triggers no host path operations
+PASS: Path safety: UNC junction host never imports a tampered backup reference
+PASS: Path safety: drive-root junction host fails closed into recoveryRequired
+PASS: Path safety: drive-root junction host triggers no host path operations
+PASS: Path safety: drive-root junction host never imports a tampered backup reference
+PASS: Path safety: tampered registry backup reference fails closed into recoveryRequired
+PASS: Path safety: tampered registry backup reference triggers no host path operations
+PASS: Path safety: tampered registry backup reference never imports a tampered backup reference
+PASS: Path safety: junction target outside the data dir fails closed into recoveryRequired
+PASS: Path safety: junction target outside the data dir triggers no host path operations
+PASS: Path safety: junction target outside the data dir never imports a tampered backup reference
+PASS: Registry safety: HKCU\\Software without vendor\\app fails closed into recoveryRequired
+PASS: Registry safety: HKCU\\Software without vendor\\app triggers no host path operations
+PASS: Registry safety: HKCU\\Software without vendor\\app never imports a tampered backup reference
+PASS: Registry safety: HKCU\\Software\\Microsoft on deny-list fails closed into recoveryRequired
+PASS: Registry safety: HKCU\\Software\\Microsoft on deny-list triggers no host path operations
+PASS: Registry safety: HKCU\\Software\\Microsoft on deny-list never imports a tampered backup reference
+PASS: Registry safety: HKCU\\Software\\Classes\\.. traversal fails closed into recoveryRequired
+PASS: Registry safety: HKCU\\Software\\Classes\\.. traversal triggers no host path operations
+PASS: Registry safety: HKCU\\Software\\Classes\\.. traversal never imports a tampered backup reference
+PASS: Reconciler ValidateRegistryKey rejects HKCU\Software root
+PASS: Reconciler ValidateRegistryKey rejects HKCU\Software\Microsoft (too shallow)
+PASS: Reconciler ValidateRegistryKey rejects HKCU\Software\Microsoft\App (denied vendor)
+PASS: Reconciler ValidateRegistryKey rejects HKCU\Software\Classes\.. (traversal)
+PASS: Reconciler ValidateRegistryKey allows HKCU\Software\<vendor>\<app>
+LOG: Migrating the legacy run_state.json to transaction journals...
+LOG: Migrated legacy journal entry for "legacyapp" into transaction "legacyapp-00000000002813d3-6c28cce78ca24919".
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Cleaning up app state: legacyapp
+LOG: Portable registry saved: C:\Users\Admin\AppData\Local\Temp\portappix-tests-20261112112500234-5988\Data\legacyapp\registry.reg
+LOG: Removed registry key from host: HKCU\Software\Vendor\Legacy
+LOG: Restoring host registry backup: C:\Users\Admin\AppData\Local\Temp\portappix-tests-20261112112500234-5988\Data\legacyapp\host_backup_0.reg
+LOG: Removing junction: C:\Users\Admin\AppData\Roaming\LegacyJunction
+LOG: Legacy transaction for "legacyapp" recovered.
+PASS: Legacy: the schema-1 journal is preserved as run_state.json.legacy
+PASS: Legacy: run_state.json is removed after a successful migration
+PASS: Legacy: the portable registry is exported before the host key is deleted
+PASS: Legacy: the host registry backup is imported
+PASS: Legacy: the recorded junction is removed
+PASS: Legacy: the migrated transaction completes
+PASS: Legacy: no unvalidated key ever reaches reg.exe
+LOG: Migrating the legacy run_state.json to transaction journals...
+LOG: Legacy key "HKCU\Software\..\Evil" for app "legacyapp" is not a valid HKCU path; manual review required.
+LOG: Migrated legacy journal entry for "legacyapp" into transaction "legacyapp-0000000000281412-a79845a951024639".
+LOG: Legacy journal entry "bad id!" has an invalid app id; it was not migrated and needs manual review.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Cleaning up app state: legacyapp
+LOG: Legacy transaction for "legacyapp" recovered.
+PASS: Legacy: an invalid legacy key is never passed to reg.exe
+PASS: Legacy: an unusable legacy journal is preserved
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: The legacy run_state.json is corrupt; a copy was kept as run_state.json.bad.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Legacy: a corrupt schema-1 journal is preserved as run_state.json.bad
+PASS: Legacy: a corrupt schema-1 journal is left in place for manual inspection
+PASS: Legacy: a corrupt schema-1 journal triggers no host operations
+PASS: Inspection: a missing path classifies as missing
+PASS: Inspection: an ordinary directory classifies as a directory
+PASS: Inspection: an ordinary file classifies as a file
+PASS: Inspection: CreateJunction succeeds
+PASS: Inspection: a mount-point junction classifies as a junction
+PASS: Inspection: the junction target is parsed and matches
+PASS: Inspection: IsMountPoint is true for junctions
+PASS: Inspection: the junction identity is captured
+PASS: Inspection: the object identity is stable across inspections
+PASS: Inspection: junction delete+recreate succeeds
+PASS: Inspection: a recreated junction has a new identity
+PASS: Inspection: creating a junction with a missing target succeeds
+PASS: Inspection: a junction with a dangling target still classifies as a junction
+PASS: Inspection: a symbolic link classifies as a symlink, not a junction
+PASS: Inspection: long paths are handled without crashing
+PASS: Inspection: long-path limitation documented (>260 chars unsupported)
+PASS: Inspection: unused
+PASS: Inspection: GetJunctionTarget still returns the junction target
+PASS: Inspection: an unsupported reparse tag is classified, never interpreted
+PASS: Inspection: a buffer shorter than the header is rejected
+PASS: Inspection: a lying reparse data length is rejected
+PASS: Inspection: an empty substitute name is ambiguous and not parsed
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Preservation: an originally absent host path is recorded as absent
+LOG: The legacy run_state.json is corrupt; it is kept for manual inspection.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Reconciling op 1 (junctionCreate/pending)...
+LOG: Reconciling op 0 (registryBackup/done)...
+LOG: Transaction "jxpres-000000000028146f-7c8caaa5650a4a63" recovered and completed.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: The legacy run_state.json is corrupt; it is kept for manual inspection.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Preservation: an existing directory and its contents survive the run
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: The legacy run_state.json is corrupt; it is kept for manual inspection.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Preservation: the original junction is restored with its recorded target
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: The legacy run_state.json is corrupt; it is kept for manual inspection.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Transaction "jxpres-0000000000281635-0c269a93a2d54f83" recovered and completed.
+PASS: Preservation: a symbolic link is rejected with a clear error
+PASS: Preservation: the symbolic link is preserved
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: The legacy run_state.json is corrupt; it is kept for manual inspection.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Transaction "jxpres-0000000000281654-4ad05ea812934e02" recovered and completed.
+PASS: Preservation: an unsupported reparse point is rejected
+PASS: Preservation: the unsupported reparse point is preserved
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: The legacy run_state.json is corrupt; it is kept for manual inspection.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Transaction "jxpres-0000000000281692-9590c15d6c4b4404" recovered and completed.
+PASS: Preservation: an ambiguous target prevents replacement
+PASS: Preservation: the ambiguous junction is preserved
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: The legacy run_state.json is corrupt; it is kept for manual inspection.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: Transaction "jxpres-00000000002816d1-e8b644b4a58f4401" recovered and completed.
+PASS: Preservation: an inspection failure prevents mutation
+PASS: Preservation: the object survives an inspection failure
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+LOG: The legacy run_state.json is corrupt; it is kept for manual inspection.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Preservation: a transaction persistence failure prevents replacement
+PASS: Preservation: the original junction survives the persistence failure
+LOG: The legacy run_state.json is corrupt; it is kept for manual inspection.
+LOG: Transaction "demo-000000000027eff0-845db8775bf84c8a" could not be loaded: Transaction journal is not valid JSON.
+PASS: Preservation: recovery keeps the already-in-place original junction
+PASS: Ownership: the recorded Portappix junction is removed
+PASS: Ownership: a junction with a different target is preserved as a conflict
+PASS: Ownership: a symbolic link replacement is preserved as a conflict
+PASS: Ownership: an ordinary directory replacement is preserved as a conflict
+PASS: Ownership: an externally recreated junction (new identity) is preserved
+PASS: Ownership: a Phase 2 record without identity is removed by target match
+PASS: Ownership: an inspection failure preserves the object and fails closed
+PASS: Restoration: the original junction is restored with its exact target
+PASS: Restoration: the transaction completes after restoration
+PASS: Restoration: an originally absent path is restored to absent
+PASS: Restoration: an already-in-place original junction is left alone
+PASS: Restoration: repeated recovery is idempotent
+PASS: Restoration: recovery completes cleanly
+PASS: Restoration: a missing original target is reported
+PASS: Restoration: the junction is restored exactly as recorded even when dangling
+PASS: Restoration: access-denied scenario prepared
+PASS: Restoration: recovery succeeds after a transient failure
+PASS: Junction crash: after intent persistence the original junction is intact
+PASS: Junction crash: recovery keeps the intact original junction
+PASS: Junction crash: after preservation the original is removed for replacement
+PASS: Junction crash: recovery restores the original junction after removal
+PASS: Junction crash: the Portappix junction was created before the crash
+PASS: Junction crash: recovery removes the Portappix junction and restores the original
+PASS: Junction crash: the run was interrupted during cleanup
+PASS: Junction crash: post-restoration recovery finalizes without damage
+PASS: Junction crash: all crashed transactions resolved
+PASS: Junction crash: repeated recovery after interrupted restoration is clean
+PASS: Native: the fixture starts with an absent host path
+PASS: Native: the original junction is created and inspected
+PASS: Native: the original junction is removed after its intent is durable
+PASS: Native: the Portappix junction is created
+PASS: Native: the reconciler reports success
+PASS: Native: all operations resolved after restoration
+PASS: Native: the original junction is restored with its exact target
+PASS: Native: the original target directory still exists
+PASS: Native: repeated reconciliation reports success
+PASS: Native: repeated reconciliation is idempotent
+PASS: Native: original target dir removed for the second-run fixture
+PASS: Native: original junction recreated by the second-run fixture
+PASS: Native: the externally recreated junction fixture is in place
+PASS: Native: an externally recreated junction (new identity) is refused
+PASS: Native: the identity conflict is reported
+PASS: Native: the externally recreated junction is preserved untouched
+PASS: Native: the conflicting transaction remains open for manual resolution
+PASS: Native: fixture junction removed
+PASS: Native: a dangling original target still restores
+PASS: Native: the missing original target is reported
+PASS: Native: the junction is restored exactly as recorded (dangling)
+PASS: Identity crash: the run was interrupted at the junction-created boundary
+PASS: Identity crash: the Portappix junction exists on disk before termination
+PASS: Identity crash: the journal carries the Phase 3 provenance field
+PASS: Identity crash: the creation identity was indeed never persisted
+PASS: Identity crash: recovery refuses removal; the replacement junction remains untouched
+PASS: Identity crash: the transaction becomes recoveryRequired
+PASS: Identity crash: the unresolved ownership is explicitly reported
+PASS: Identity crash: all recovery metadata (journal, backups) is retained
+PASS: Identity crash: repeated recovery is idempotent
+PASS: Unpersisted identity: the unchanged Portappix junction is preserved
+PASS: Unpersisted identity: recovery fails closed with an explicit report
+PASS: Unpersisted identity: repeated recovery changes nothing
+PASS: Unpersisted identity: a Phase 2 record without identity is removed by the target match
+PASS: Unpersisted identity: ambiguous provenance preserves the junction
+PASS: Unpersisted identity: ambiguous provenance quarantines the journal without acting on it
+PASS: Native identity: the Portappix junction is created on real NTFS
+PASS: Native identity: removal is refused without the persisted identity
+PASS: Native identity: the untouched original junction is preserved
+PASS: Native identity: the transaction stays open for manual resolution
+PASS: Native identity: the replacement fixture is in place
+PASS: Native identity: a repeated recovery pass is idempotently refused
+PASS: Native identity: the replacement junction remains untouched
+PASS: Native identity: the unresolved ownership is reported
+PASS: PerformCleanup exports registry keys before deleting them
+PASS: PerformCleanup never deletes keys when the export fails
+PASS: RunHiddenProcess returns False on timeout
+PASS: RunHiddenProcess sets exit code to -1 on timeout
+PASS: ExportKey returns False when process runner times out
+PASS: PerformCleanup never deletes host keys when reg.exe export times out
+PASS: Recovery: transaction is retained on disk when reg.exe import times out
+PASS: Recovery: registry backup file is preserved on disk when import times out
+PASS: Recovery: ImportFile was attempted and timed out
+Testing recovery registry failure safety and idempotency...
+PASS: Failsafe: live host key was deleted after successful export
+PASS: Failsafe: live host key was exported before delete
+PASS: Failsafe: host key delete was called
+PASS: Failsafe: transaction directory removed on completion
+PASS: Failsafe: host key was PRESERVED when export failed
+PASS: Failsafe: deleteKey was NEVER called when export failed
+PASS: Failsafe: transaction directory was retained for retry
+PASS: Failsafe: transaction persisted error surfaces export failure
+PASS: Failsafe: opAbsent key created during run is removed by recovery
+PASS: Failsafe: delete called for opAbsent key
+PASS: Failsafe: pre-existing key was restored and NOT deleted
+PASS: Failsafe: pre-existing key backup was imported
+PASS: Failsafe: transaction directory removed on completion of restore
+PASS: Failsafe: second recovery pass with clean state does zero work
+Testing unowned junction review experience...
+PASS: Review: unowned junction preserved untouched by recovery
+PASS: Review: unowned junction recorded in review list
+PASS: Review: recorded junction path matches host path
+PASS: Review: needs_review.json created on disk
+PASS: Review: second recovery pass does not duplicate review entry
+PASS: Review: error message explains manual review is required
+PASS: Review: next run of unowned_app is refused
+PASS: Review: other application is NOT blocked and can begin transaction
+PASS: Review: clear fails when junction exists and neither force nor delete is specified
+PASS: Review: entry retained after failed clear
+PASS: Review: clear with --force succeeds
+PASS: Review: junction preserved on disk after force clear
+PASS: Review: entry cleared after force clear
+PASS: Review: clear with --delete-unowned-junction succeeds
+PASS: Review: junction deleted when --delete-unowned-junction passed
+PASS: Review: appC entry cleared
+PASS: Review: clear succeeds without flags when junction already deleted by hand
+PASS: Review: appD entry cleared
+PASS: Noise filter treats Prefetch as noise
+PASS: Noise filter treats thumbnail caches as noise
+PASS: Noise filter treats user registry hive files as noise
+PASS: Noise filter excludes the launcher root
+PASS: Noise filter treats Explorer Recent items as noise
+PASS: Noise filter keeps normal app files
+PASS: Noise filter ignores unrelated fragments before they are added
+PASS: Custom file fragments are honoured
+PASS: Noise filter treats Explorer RecentDocs as noise
+PASS: Noise filter treats UserAssist as noise
+PASS: Noise filter keeps normal app keys
+PASS: Registry noise prefixes match on component boundaries
+PASS: Snapshot records files reported by the probe
+PASS: Snapshot records keys reported by the probe
+PASS: Snapshot hashes file contents
+PASS: Missing files are tolerated with an empty hash
+PASS: Snapshot hashes registry values
+PASS: Diff detects modified file content
+PASS: Diff detects added files
+PASS: Diff detects deleted files
+PASS: Diff detects modified registry values
+PASS: Diff detects added registry keys
+PASS: Diff is not empty when the host changed
+PASS: Modified detection uses content hashes when available
+PASS: Diffing a snapshot with itself is empty
+PASS: Noise files are excluded from snapshots
+PASS: Snapshot is not truncated below the caps
+PASS: MaxFiles caps the snapshot
+PASS: Hitting MaxFiles marks the snapshot truncated
+PASS: Duplicate file reports collapse into one entry
+PASS: Suggestions propose an APPDATA override for %APPDATA% writes
+PASS: Suggestions skip the LOCALAPPDATA override when it was not touched
+PASS: Suggestions propose a junction for %PROGRAMDATA% writes
+PASS: Suggestions collapse registry keys to the common vendor\app prefix
+PASS: Suggestions flag keys outside HKCU\Software for manual review
+PASS: Suggestions were produced
+PASS: Suggestions warn about protected user folders
+PASS: Suggestions ignore writes inside the portable data folder
+PASS: Suggestions ignore writes inside the portable data folder
+PASS: Suggestions ignore writes inside the portable data folder
+PASS: Suggestions ignore writes inside the portable data folder
+PASS: Suggestions ignore writes inside the portable data folder
+PASS: Registry prefixes shallower than vendor\app need manual review
+PASS: Suggestions propose a TEMP override for temp writes
+PASS: Suggestions propose a TMP override for temp writes
+PASS: Trace writes report.json
+PASS: Trace writes report.md
+PASS: Trace writes suggested_app.json
+PASS: Trace result counts added files
+PASS: Trace result counts added keys
+PASS: Trace result records the app exit code
+PASS: Trace result counts the registry suggestion
+PASS: Trace result counts the warnings
+PASS: report.json parses as JSON
+PASS: report.json has a files section
+PASS: report.json has a registry section
+PASS: report.json has a suggestions section
+PASS: report.json has a snapshot section
+PASS: report.md lists added files
+PASS: report.md lists suggestions
+PASS: suggested_app.json keeps the app id
+PASS: suggested_app.json contains the registry suggestion
+PASS: suggested_app.json carries warnings for manual review
+PASS: SemVer equal versions compare as equal
+PASS: SemVer patch increments sort upward
+PASS: SemVer minor numbers compare numerically
+PASS: SemVer major numbers sort upward
+PASS: SemVer missing numbers default to zero
+PASS: SemVer pre-releases sort before the stable release
+PASS: SemVer alphanumeric pre-release identifiers sort lexically
+PASS: SemVer longer pre-release lists sort after their prefixes
+PASS: SemVer numeric pre-release identifiers compare numerically
+PASS: SemVer build metadata is ignored for ordering
+PASS: SemVer parses core numbers and pre-release
+PASS: SemVer rejects non-numeric versions
+PASS: SemVer rejects a leading v prefix
+PASS: SemVer rejects more than three core numbers
+PASS: Data version defaults to 0 when no marker exists
+PASS: Data version round-trips through data_version.json
+PASS: A dataVersion of 0 writes nothing and keeps the previous marker
+PASS: Manifest parses dataVersion
+PASS: Manifest dataVersion defaults to 0
+PASS: Manifest rejects negative dataVersion
+PASS: Pending updates start empty
+PASS: Queueing the same app twice refreshes one entry
+PASS: HasPendingUpdate finds queued entries
+PASS: HasPendingUpdate ignores other apps
+PASS: Two apps can be queued
+PASS: Pending updates persist on disk
+PASS: RemovePendingUpdate deletes only the target entry
+PASS: A corrupt pending_updates.json is treated as an empty queue
+PASS: catalog.json fixture exists
+PASS: catalog.json.sig fixture exists
+PASS: Malformed pending_updates.json is treated as empty
+PASS: Oversized pending_updates.json is treated as empty
+PASS: Old format migrates and preserves app ID
+PASS: Old format migrates to schema 2
+PASS: Old format migration drops attacker url
+PASS: Old format migration drops attacker sha256
+PASS: App is queued before apply
+PASS: Unverifiable catalog keeps the pending updates queue intact
+PASS: Unknown app is queued
+PASS: Unknown app ID is dropped during apply
+PASS: everything queued
+PASS: Queued update with catalog version no newer than installed is dropped
+PASS: Attacker URL from pending_updates.json was NOT used
+PASS: Attacker sha256 from pending_updates.json was NOT used
+PASS: Catalog sha256 was used for verification
+PASS: Catalog URL was used for update
+PASS: Rollback restores Apps\<id>.prev into place
+PASS: Rollback consumes the .prev folder
+PASS: Rollback removes the stale folder
+PASS: Rollback without a .prev folder is refused
+PASS: Updates refuse version downgrades
+PASS: Updates allow version upgrades
+PASS: Updates refuse data-version downgrades
+PASS: Updates allow data-version upgrades
+PASS: Vendor-link app directory created in Apps
+PASS: Vendor-link binary extracted in target location
+PASS: Vendor-link assets preserved
+PASS: StripPrefix directory removed and flattened
+PASS: app.json manifest synthesized locally
+PASS: Synthesized manifest id
+PASS: Synthesized manifest name
+PASS: Synthesized manifest version
+PASS: Synthesized manifest category
+PASS: Synthesized manifest exe path
+PASS: Synthesized manifest args overlay
+PASS: Synthesized manifest env overlay count
+PASS: Vendor-link installation rejects policy-violating manifest overlay
+PASS: Failed vendor-link app is not installed
+PASS: Temporary installation folder cleaned up on failure
+PASS: Settings default to no update URL
+PASS: Settings default to no automatic update checks
+PASS: Settings default to applying pending updates
+PASS: Settings round-trip the update URL
+PASS: Settings round-trip autoCheckUpdates
+PASS: Settings round-trip autoApplyPendingUpdates
+PASS: A corrupt settings file behaves like defaults
+PASS: releases.json parses into a release record
+PASS: releases.json rejects non-semantic versions
+PASS: releases.json rejects unknown schema versions
+PASS: releases.json rejects invalid sha256 values
+PASS: releases.json rejects missing size property
+PASS: releases.json rejects size <= 0
+PASS: Installed version defaults to 0.0.0
+PASS: No rollback offer before any update
+PASS: A newer release is an update
+PASS: PrepareUpdate refuses a package with a wrong sha256
+PASS: PrepareUpdate deletes the rejected package
+PASS: PrepareUpdate rejects a launcher package with lying uncompressed size
+PASS: PrepareUpdate with lying size leaves existing Launcher.exe untouched
+PASS: PrepareUpdate cleans up temporary extraction folder on lying size error
+PASS: PrepareUpdate puts the new launcher in place
+PASS: PrepareUpdate keeps the old launcher as Launcher.exe.old
+PASS: PrepareUpdate copies extra release files into the root
+PASS: PrepareUpdate writes update_pending.json
+PASS: NeedsRollbackOffer is true for an unconfirmed update
+PASS: PendingUpdateVersion reads the pending update
+PASS: ConfirmUpdate writes the update_ok marker
+PASS: ConfirmUpdate records the new installed version
+PASS: NeedsRollbackOffer is false once the update is confirmed
+PASS: RollbackToOldLauncher reports success
+PASS: Rollback restores the previous launcher
+PASS: Rollback consumes Launcher.exe.old
+PASS: Rollback keeps the failed build next to the launcher
+PASS: NeedsRollbackOffer is false when OldLauncher is absent
+PASS: NeedsRollbackOffer cleans up orphaned update_ok
+PASS: Rollback without Launcher.exe.old is refused
+PASS: PrepareUpdate puts new launcher in place
+PASS: PrepareUpdate preserves old launcher
+PASS: PrepareUpdate records old_launcher.json
+PASS: old_launcher.json is valid JSON
+PASS: old_launcher.json schema is 2 (authenticated record)
+PASS: old_launcher.json carries an HMAC
+PASS: old_launcher.json records correct SHA-256
+PASS: old_launcher.json records correct size
+PASS: old_launcher.json records previous version
+PASS: VerifyOldLauncher succeeds on clean state
+PASS: VerifyOldLauncher returns empty error on success
+PASS: VerifyOldLauncher fails on size mismatch
+PASS: VerifyOldLauncher reports size mismatch
+PASS: Rollback with size-tampered Launcher.exe.old is refused
+PASS: Failed rollback leaves Launcher.exe untouched after size mismatch
+PASS: Failed rollback leaves Launcher.exe.old untouched after size mismatch
+PASS: Failed rollback does not create a .failed_* executable after size mismatch
+PASS: VerifyOldLauncher fails on hash mismatch
+PASS: VerifyOldLauncher reports hash mismatch
+PASS: Rollback with content-tampered Launcher.exe.old is refused
+PASS: Failed rollback leaves Launcher.exe untouched after hash mismatch
+PASS: Failed rollback leaves Launcher.exe.old untouched after hash mismatch
+PASS: Failed rollback does not create a .failed_* executable after hash mismatch
+PASS: old_launcher.json removed for missing record test
+PASS: VerifyOldLauncher fails when record missing
+PASS: VerifyOldLauncher reports record missing
+PASS: Rollback with missing old_launcher.json is refused
+PASS: Failed rollback leaves Launcher.exe untouched after missing record
+PASS: Failed rollback leaves Launcher.exe.old untouched after missing record
+PASS: VerifyOldLauncher fails on corrupt json
+PASS: Rollback with corrupt JSON in old_launcher.json is refused
+PASS: Failed rollback leaves Launcher.exe untouched after corrupt json
+PASS: VerifyOldLauncher fails on schema mismatch
+PASS: Rollback with unexpected schema in old_launcher.json is refused
+PASS: Failed rollback leaves Launcher.exe untouched after schema mismatch
+PASS: VerifyOldLauncher fails on negative size
+PASS: Rollback with negative size in old_launcher.json is refused
+PASS: VerifyOldLauncher fails on short sha256
+PASS: Rollback with short sha256 in old_launcher.json is refused
+PASS: VerifyOldLauncher fails on earlier hash mismatch
+PASS: Rollback with mismatched SHA-256 from earlier record is refused
+PASS: Failed rollback leaves Launcher.exe untouched after earlier record mismatch
+PASS: Test junction created at OldLauncherExe
+PASS: VerifyOldLauncher fails on reparse point
+PASS: VerifyOldLauncher reports reparse point error
+PASS: Rollback with reparse point Launcher.exe.old is refused
+PASS: Failed rollback leaves Launcher.exe untouched after reparse point check
+PASS: VerifyOldLauncher succeeds with authenticated schema-2 record
+PASS: VerifyOldLauncher refuses schema-1 records once schema-2 is established (R9)
+PASS: VerifyOldLauncher succeeds with restored valid record
+PASS: Rollback with valid record reports success
+PASS: Verified rollback restores previous Launcher.exe
+PASS: Verified rollback consumes Launcher.exe.old
+PASS: Verified rollback consumes old_launcher.json
+PASS: Verified rollback creates a single .failed_* backup
+PASS: Update 1 installed 1.1.0
+PASS: Update 2 puts v3 launcher in place
+PASS: Update 2 rotates v2 into Launcher.exe.old
+PASS: Rotated old_launcher.json is valid
+PASS: Rotated old_launcher.json records v2 SHA-256
+PASS: Rotated old_launcher.json records version 1.1.0
+PASS: Rollback after second update succeeds
+PASS: Rollback after second update restores v2
+PASS: Launcher.exe.old consumed after second rollback
+PASS: old_launcher.json consumed after second rollback
+PASS: IsValidSha256Hex accepts 64 lowercase hex characters
+PASS: IsValidSha256Hex accepts uppercase hex characters
+PASS: IsValidSha256Hex accepts mixed hex characters
+PASS: IsValidSha256Hex rejects 64 non-hex characters
+PASS: IsValidSha256Hex rejects 63 characters
+PASS: IsValidSha256Hex rejects 65 characters
+PASS: IsValidSha256Hex rejects the empty string
+PASS: IsValidSha256Hex rejects trailing whitespace
+PASS: releases.json rejects a full-length non-hex sha256 (format validation)
+PASS: RecordAuth: rollback key is 32 bytes
+PASS: RecordAuth: DPAPI-protected key file persisted
+PASS: RecordAuth: key round-trips through DPAPI protection
+PASS: RecordAuth: each installation generates an independent key
+PASS: RecordAuth: HMAC digest is 64 hex characters
+PASS: RecordAuth: HMAC comparison is case-insensitive
+PASS: RecordAuth: a single changed HMAC character is rejected
+PASS: RecordAuth: a wrong-length HMAC is rejected
+PASS: RecordAuth: an empty HMAC is rejected
+PASS: RecordAuth: a modified sha256 field changes the HMAC
+PASS: RecordAuth: a modified size field changes the HMAC
+PASS: RecordAuth: a modified version field changes the HMAC
+PASS: RecordAuth: a modified recordedAt field changes the HMAC
+PASS: RecordAuth: a different key produces a different HMAC
+PASS: RecordAuth: schema-1 record verifies as the migration input
+PASS: RecordAuth: verified schema-1 record re-stamped to schema 2
+PASS: RecordAuth: re-stamped record carries an HMAC
+PASS: RecordAuth: tampered sha256 field is refused
+PASS: RecordAuth: tampered field reports HMAC mismatch
+PASS: RecordAuth: tampered size field is refused
+PASS: RecordAuth: schema-2 record without HMAC is refused
+PASS: RecordAuth: missing HMAC is reported
+PASS: RecordAuth: HMAC from a different key is refused
+PASS: RecordAuth: foreign-key HMAC reports mismatch
+PASS: RecordAuth: authenticated schema-2 record verifies
+PASS: RecordAuth: rollback with an authenticated record succeeds
+PASS: RecordAuth: rollback restores the previous launcher
+PASS: RecordAuth: rollback consumes the record
+PASS: Review fail-closed: a missing review file is an empty list
+PASS: Review fail-closed: malformed JSON raises instead of an empty list
+PASS: Review fail-closed: a non-array root raises instead of an empty list
+PASS: Review fail-closed: a scalar root raises
+PASS: Review fail-closed: a non-object entry raises
+PASS: Review fail-closed: a missing required field raises
+PASS: Review fail-closed: an empty required field raises
+PASS: Review fail-closed: a non-string optional field raises
+PASS: Review fail-closed: BeginTransaction refuses while review state is unreadable
+PASS: Review fail-closed: ClearReview fails on unreadable review state
+PASS: Review fail-closed: ClearReview reports the review-state error
+PASS: Review fail-closed: a valid review file still loads
+PASS: Concurrent: authenticated baseline record verifies
+PASS: Concurrent: verify-style handle opened (read + delete share, no write share)
+PASS: Concurrent: a writer cannot replace the file while the verify handle is open
+PASS: Concurrent: exclusive holder opened Launcher.exe.old
+PASS: Concurrent: rollback is refused while Launcher.exe.old is exclusively held
+PASS: Concurrent: refused rollback leaves Launcher.exe untouched
+PASS: Concurrent: refused rollback leaves Launcher.exe.old untouched
+PASS: Concurrent: refused rollback creates no .failed_* executable
+PASS: Concurrent: rollback succeeds after the external holder releases the file
+PASS: Concurrent: rollback restores the previous launcher
+PASS: Review persistence: RecordReviewItem raises on access denied
+PASS: Review persistence: needs_review.json is untouched after a failed record
+PASS: Review persistence: RecordReviewItem raises on disk-full
+PASS: Review persistence: needs_review.json is untouched after disk-full
+PASS: Review clearing: ClearReview fails when the rewrite cannot be persisted
+PASS: Review clearing: ClearReview reports the persistence error
+PASS: Review clearing: the review entries survive a failed clear
+PASS: Review clearing: ClearReview succeeds after the failure is removed
+PASS: Review clearing: only the cleared entry is removed once persistence works
+PASS: Update injection: a metadata write failure aborts PrepareUpdate
+PASS: Update injection: metadata write failure leaves the launcher untouched
+PASS: Update injection: metadata write failure creates no .old
+PASS: Update injection: metadata write failure leaves no stale record
+PASS: Update injection: metadata write failure leaves no pending marker
+PASS: Update injection: a disk-full simulation aborts PrepareUpdate
+PASS: Update injection: disk-full leaves the launcher untouched
+PASS: Update injection: disk-full launcher hash matches the pre-swap hash
+PASS: Update injection: staging leaves the launcher untouched
+PASS: Update injection: staging writes the rollback record
+PASS: Update injection: a finalize crash after the swap aborts finalization
+PASS: Update injection: finalize failure restores the launcher byte-identically
+PASS: Update injection: finalize failure consumes the .old backup on restore
+PASS: Update injection: finalize failure leaves no rollback record (no backup existed)
+PASS: Update injection: finalize failure leaves no pending marker
+PASS: Update injection: the staging directory is cleaned after a verified restore
+PASS: Update injection: a finalize crash after the root files aborts finalization
+PASS: Update injection: installation failure restores the launcher byte-identically
+PASS: Update injection: the previous update_ok marker is restored
+PASS: Update injection: the replaced root file is restored
+PASS: Update injection: installation failure leaves no .old
+PASS: Update injection: installation failure leaves no rollback record
+PASS: Update injection: installation failure leaves no pending marker
+PASS: Update injection: the staging directory is cleaned after the verified restore
+PASS: Update injection: finalize failure with a pre-existing pending marker aborts
+PASS: Update injection: the pre-existing pending marker is restored
+PASS: Update injection: launcher is still byte-identical after the second failure
+PASS: R17: RecordReviewItem is not starved by the inverted review lock order (got: )
+PASS: R17: the concurrent RecordReviewItem completed
+PASS: R17: the concurrently recorded review entry survived
+PASS: R18: short-path test file opened
+PASS: R18: short-name handle rename still works
+PASS: R18: short-name rename took effect
+FAIL: R18: long-name handle rename survives with correctly sized storage (child exit C0000005)
+FAIL: long path: full staged-update cycle succeeds beyond MAX_PATH (child exit 00000001)
+PASS: R9: legitimate schema-1 record verifies pre-establishment
+PASS: R9: the advisory migration flag is written at establishment
+PASS: R9: schema-1 record refused after authenticated establishment
+PASS: R9: the refusal explains the legacy-record rejection
+PASS: R9: rollback refused while the establishment flag exists without the key blob
+PASS: R10: authenticated baseline record verifies
+PASS: R10: rollback succeeds despite a concurrent rename-and-replace attempt
+PASS: R10: the verified file was restored, not the attacker content
+PASS: R10: the concurrent rename attempt was blocked: open with DELETE denied: The process cannot access the file because it is being used by another process
+PASS: R11: Launcher.exe exists after an interrupted update swap
+PASS: R11: Launcher.exe was never replaced by a partial swap
+PASS: R11: the finalized update installs the new launcher atomically
+PASS: R11: the finalize preserves the previous launcher as .old
+PASS: R12: concurrent review recordings from two instances both survive
+PASS: R13: concurrent first-time key creation yields one consistent key
+PASS: R14: the companion file was replaced by the update
+PASS: R14: watchdog rollback succeeds
+PASS: R14: rollback restores the previous launcher
+PASS: R14: rollback also restores companion files
+PASS: the failure-injection marker constant is present in test builds
+PASS: Test-update build accepts loopback 127.0.0.1 with port
+PASS: Test-update build accepts loopback 127.0.0.1 with path
+PASS: Test-update build accepts bare loopback 127.0.0.1
+PASS: Test-update build accepts loopback localhost with port
+PASS: Test-update build accepts loopback localhost with path
+PASS: Test-update build accepts bare loopback localhost
+PASS: Test-update build accepts https URL
+PASS: Test-update build rejects http://127.0.0.1.evil.com/
+PASS: Test-update build rejects http://127.0.0.1.evil.com/releases.json
+PASS: Test-update build rejects http://localhost.evil.com/
+PASS: Test-update build rejects http://localhost.evil.com/releases.json
+PASS: Test-update build rejects plain http://example.com URL
+PASS: Test-update build rejects plain http://evil.com URL
+PASS: AllowInsecureReleaseUrls is False by default
+PASS: Test-update build accepts --allow-insecure-release-urls switch
+PASS: Switch sets AllowInsecureReleaseUrls to True
+PASS: AllowInsecureReleaseUrls permits non-loopback http URL in test build
+PASS: Unapproved app needs consent
+PASS: Approved app does not need consent
+PASS: Modified exe binary requires consent again
+PASS: Re-approved modified binary does not need consent
+PASS: grammar accepts state:preparing
+PASS: grammar arms exactly the parsed value for state:preparing
+PASS: grammar accepts state:prepared
+PASS: grammar arms exactly the parsed value for state:prepared
+PASS: grammar accepts state:hostBackupComplete
+PASS: grammar arms exactly the parsed value for state:hostBackupComplete
+PASS: grammar accepts state:hostStateChanging
+PASS: grammar arms exactly the parsed value for state:hostStateChanging
+PASS: grammar accepts state:hostStateChanged
+PASS: grammar arms exactly the parsed value for state:hostStateChanged
+PASS: grammar accepts state:running
+PASS: grammar arms exactly the parsed value for state:running
+PASS: grammar accepts state:cleaning
+PASS: grammar arms exactly the parsed value for state:cleaning
+PASS: grammar accepts state:completed
+PASS: grammar arms exactly the parsed value for state:completed
+PASS: grammar accepts state:recoveryRequired
+PASS: grammar arms exactly the parsed value for state:recoveryRequired
+PASS: grammar accepts op:0:pending
+PASS: grammar arms exactly the parsed value for op:0:pending
+PASS: grammar accepts op:0:done
+PASS: grammar arms exactly the parsed value for op:0:done
+PASS: grammar accepts op:1:absent
+PASS: grammar arms exactly the parsed value for op:1:absent
+PASS: grammar accepts op:2:failed
+PASS: grammar arms exactly the parsed value for op:2:failed
+PASS: grammar accepts op:3:restored
+PASS: grammar arms exactly the parsed value for op:3:restored
+PASS: grammar accepts op:0:created
+PASS: grammar arms exactly the parsed value for op:0:created
+PASS: grammar accepts op:007:pending
+PASS: grammar arms exactly the parsed value for op:007:pending
+PASS: grammar rejects invalid candidate 1 ("")
+PASS: invalid candidate 1 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 2 (" ")
+PASS: invalid candidate 2 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 3 ("   ")
+PASS: invalid candidate 3 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 4 ("state:")
+PASS: invalid candidate 4 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 5 ("state: ")
+PASS: invalid candidate 5 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 6 ("state:bogus")
+PASS: invalid candidate 6 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 7 ("STATE:preparing")
+PASS: invalid candidate 7 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 8 ("state:Preparing")
+PASS: invalid candidate 8 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 9 ("state:preparing ")
+PASS: invalid candidate 9 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 10 (" state:preparing")
+PASS: invalid candidate 10 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 11 ("state:prepared/")
+PASS: invalid candidate 11 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 12 ("state:recoveryRequired:extra")
+PASS: invalid candidate 12 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 13 ("op:")
+PASS: invalid candidate 13 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 14 ("op:0")
+PASS: invalid candidate 14 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 15 ("op:0:")
+PASS: invalid candidate 15 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 16 ("op::done")
+PASS: invalid candidate 16 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 17 ("op:-1:done")
+PASS: invalid candidate 17 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 18 ("op:a:done")
+PASS: invalid candidate 18 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 19 ("op:1.5:done")
+PASS: invalid candidate 19 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 20 ("op:0:Done")
+PASS: invalid candidate 20 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 21 ("op:2:created:extra")
+PASS: invalid candidate 21 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 22 ("op:0000000000:done")
+PASS: invalid candidate 22 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 23 ("op:+2:done")
+PASS: invalid candidate 23 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 24 ("op:0 done")
+PASS: invalid candidate 24 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 25 ("op:1:pending2")
+PASS: invalid candidate 25 leaves the armed checkpoint untouched
+PASS: grammar rejects invalid candidate 26 ("op:0: failed")
+PASS: invalid candidate 26 leaves the armed checkpoint untouched
+PASS: grammar arms a fresh value
+PASS: the armed checkpoint tracks the last valid parse
+PASS: state chain step prepared: the checkpoint fired
+PASS: state chain step prepared: it fired exactly at "state:prepared"
+PASS: state chain step prepared: the new state was durably persisted before the checkpoint
+PASS: state chain step hostBackupComplete: the checkpoint fired
+PASS: state chain step hostBackupComplete: it fired exactly at "state:hostBackupComplete"
+PASS: state chain step hostBackupComplete: the new state was durably persisted before the checkpoint
+PASS: state chain step hostStateChanging: the checkpoint fired
+PASS: state chain step hostStateChanging: it fired exactly at "state:hostStateChanging"
+PASS: state chain step hostStateChanging: the new state was durably persisted before the checkpoint
+PASS: state chain step hostStateChanged: the checkpoint fired
+PASS: state chain step hostStateChanged: it fired exactly at "state:hostStateChanged"
+PASS: state chain step hostStateChanged: the new state was durably persisted before the checkpoint
+PASS: state chain step running: the checkpoint fired
+PASS: state chain step running: it fired exactly at "state:running"
+PASS: state chain step running: the new state was durably persisted before the checkpoint
+PASS: state chain step cleaning: the checkpoint fired
+PASS: state chain step cleaning: it fired exactly at "state:cleaning"
+PASS: state chain step cleaning: the new state was durably persisted before the checkpoint
+PASS: state chain step completed: the checkpoint fired
+PASS: state chain step completed: it fired exactly at "state:completed"
+PASS: state chain step completed: the new state was durably persisted before the checkpoint
+PASS: op:0:pending intent boundary: the checkpoint fired
+PASS: op:0:pending intent boundary: it fired exactly at "op:0:pending"
+PASS: op:0:pending: the intent status was durably persisted first
+PASS: op:1:pending vs armed op:1:done: no crash
+PASS: op:1:pending vs armed op:1:done: the hook never fired
+PASS: the mismatched intent was still durably persisted
+PASS: op:1:done junction-identity boundary: the checkpoint fired
+PASS: op:1:done junction-identity boundary: it fired exactly at "op:1:done"
+PASS: op:1:done: the done status was durably persisted first
+PASS: op:1:done: the junction identity was durably persisted first
+PASS: op:1:done: the reparse tag was durably persisted first
+PASS: op:2:created via transaction APIs: no crash
+PASS: op:2:created via transaction APIs: the hook never fired
+PASS: op:0:failed boundary: the checkpoint fired
+PASS: op:0:failed boundary: it fired exactly at "op:0:failed"
+PASS: op:0:failed: the failure was durably persisted first
+PASS: op:0:absent boundary: the checkpoint fired
+PASS: op:0:absent boundary: it fired exactly at "op:0:absent"
+PASS: op:0:absent: the absence was durably persisted first
+PASS: op:0:restored boundary: the checkpoint fired
+PASS: op:0:restored boundary: it fired exactly at "op:0:restored"
+PASS: op:0:restored: the restoration was durably persisted first
+PASS: state:recoveryRequired boundary: the checkpoint fired
+PASS: state:recoveryRequired boundary: it fired exactly at "state:recoveryRequired"
+PASS: state:recoveryRequired: the terminal state was durably persisted first
+PASS: the recovery journal keeps its Phase 3 provenance
+PASS: grammar: an empty checkpoint value is rejected
+PASS: grammar: a whitespace-only checkpoint value is rejected
+PASS: grammar: a tab-only checkpoint value is rejected
+PASS: grammar: rejected values never arm a checkpoint
+PASS: an empty armed checkpoint never triggers the crash hook
+
+Result: 838 passed, 2 failed

@@ -6139,22 +6139,30 @@ begin
       // legacy schema-1 record is refused now that schema-2 operation is
       // established (R9 downgrade protection).
       TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
+      // The timestamp is taken ONCE: the record and its HMAC must cover the
+      // same recordedAt (GetRollbackKey performs a DPAPI unprotect that can
+      // take a millisecond or more; a second DateToISO8601(Now) evaluation
+      // would then disagree with the written field on millisecond clocks).
+      var RecTime := DateToISO8601(Now);
       WriteTextFile(RecordFile, Format(
         '{"schema":2,"sha256":"%s","size":%d,"version":"0.0.0","recordedAt":"%s","hmac":"%s"}',
-        [OldHash, OldSize, DateToISO8601(Now),
-         ComputeRecordHmac(GetRollbackKey, OldHash, OldSize, '0.0.0', DateToISO8601(Now))]));
-      Check(Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher succeeds with authenticated schema-2 record');
+        [OldHash, OldSize, RecTime,
+         ComputeRecordHmac(GetRollbackKey, OldHash, OldSize, '0.0.0', RecTime)]));
+      Check(Manager.VerifyOldLauncher(Err),
+        'VerifyOldLauncher succeeds with authenticated schema-2 record (Err: ' + Err + ')');
       TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
       WriteTextFile(RecordFile,
         '{"schema":1,"sha256":"' + OldHash + '","size":' + IntToStr(OldSize) + ',"version":"0.0.0"}');
       Check(not Manager.VerifyOldLauncher(Err),
         'VerifyOldLauncher refuses schema-1 records once schema-2 is established (R9)');
       TFile.WriteAllText(OldLauncherExe, OldContent, TEncoding.ASCII);
+      RecTime := DateToISO8601(Now);
       WriteTextFile(RecordFile, Format(
         '{"schema":2,"sha256":"%s","size":%d,"version":"0.0.0","recordedAt":"%s","hmac":"%s"}',
-        [OldHash, OldSize, DateToISO8601(Now),
-         ComputeRecordHmac(GetRollbackKey, OldHash, OldSize, '0.0.0', DateToISO8601(Now))]));
-      Check(Manager.VerifyOldLauncher(Err), 'VerifyOldLauncher succeeds with restored valid record');
+        [OldHash, OldSize, RecTime,
+         ComputeRecordHmac(GetRollbackKey, OldHash, OldSize, '0.0.0', RecTime)]));
+      Check(Manager.VerifyOldLauncher(Err),
+        'VerifyOldLauncher succeeds with restored valid record (Err: ' + Err + ')');
       Check(Manager.RollbackToOldLauncher(False), 'Rollback with valid record reports success');
       Check(TFile.ReadAllText(LauncherExe) = OldContent, 'Verified rollback restores previous Launcher.exe');
       Check(not TFile.Exists(OldLauncherExe), 'Verified rollback consumes Launcher.exe.old');
@@ -6926,6 +6934,215 @@ begin
   end;
 end;
 
+{$IFDEF PORTAPPIX_TESTINJECT}
+// R18/R-long-path crash-isolated child mode: the pre-fix fixed-MAX_PATH
+// rename buffer corrupts the stack and kills the process (access
+// violation), so both repros run in a child of this same executable:
+//   --r18-rename-child    direct RenameByHandle: long path must SUCCEED and
+//                         an over-long component must fail cleanly
+//   --r18-longpath-child  full staged-update cycle on a >300-char root
+function RunR18RenameChild: Integer;
+var
+  Dir, Target: string;
+  Handle: THandle;
+
+  function OpenSource(const ADir, AName: string): THandle;
+  begin
+    Result := CreateFile(PChar(ADir + '\' + AName), GENERIC_READ or $00010000,
+      FILE_SHARE_READ, nil, OPEN_EXISTING, 0, 0);
+  end;
+
+begin
+  Result := 1;
+  Dir := '\\?\' + TPath.Combine(TPath.GetTempPath,
+    Format('portappix-r18-%d', [GetCurrentProcessId]));
+  try
+    if TDirectory.Exists(Dir) then
+      TDirectory.Delete(Dir, True);
+    // A long PATH (components stay valid): the rename must SUCCEED with the
+    // dynamically sized storage (pre-fix: 0xC0000005 stack corruption).
+    var LongDir := Dir;
+    while LongDir.Length < 327 do
+      LongDir := LongDir + '\nested-long-path-level-directory';
+    ForceDirectories(LongDir);
+    TFile.WriteAllText(LongDir + '\src.txt', 'x');
+    Handle := OpenSource(LongDir, 'src.txt');
+    if Handle = INVALID_HANDLE_VALUE then
+      Exit;
+    try
+      if not PortappixTestRenameByHandle(Handle, LongDir + '\Launcher.exe') then
+        Exit;
+    finally
+      CloseHandle(Handle);
+    end;
+    // An over-long single COMPONENT (>255, NTFS limit) must fail CLEANLY
+    // (False, defined error) — never by corrupting the process.
+    TFile.WriteAllText(Dir + '\src2.txt', 'x');
+    Handle := OpenSource(Dir, 'src2.txt');
+    if Handle = INVALID_HANDLE_VALUE then
+      Exit;
+    try
+      Target := Dir + '\' + string.Create('n', 280) + '.txt';
+      if PortappixTestRenameByHandle(Handle, Target) then
+        Exit; // unexpectedly succeeded — component-limit enforcement gone
+      // A clean failure is expected; the process surviving to this point is
+      // the actual regression check (pre-fix died before returning).
+    finally
+      CloseHandle(Handle);
+    end;
+    Result := 0;
+  finally
+    if TDirectory.Exists(Dir) then
+      try
+        TDirectory.Delete(Dir, True);
+      except
+      end;
+  end;
+end;
+
+function RunLongPathInstallationChild: Integer;
+var
+  RootDir, ZipPath, LauncherExe, ReadmeFile: string;
+  Release: TPortappixRelease;
+  Manager: TPortappixUpdateManager;
+begin
+  Result := 1;
+  // A full staged-update cycle on an installation root beyond MAX_PATH
+  // (requirement: long Windows paths). Uses the \\?\ prefix; the process is
+  // not long-path aware by default.
+  RootDir := '\\?\' + TPath.Combine(TPath.GetTempPath,
+    Format('portappix-lp-install-%d', [GetCurrentProcessId]));
+  while RootDir.Length < 300 do
+    RootDir := TPath.Combine(RootDir, 'nested-long-path-level-directory');
+  RootDir := ExcludeTrailingPathDelimiter(RootDir);
+  if TDirectory.Exists(RootDir) then
+    TDirectory.Delete(RootDir, True);
+  try
+    ForceDirectories(RootDir);
+    LauncherExe := TPath.Combine(RootDir, 'Launcher.exe');
+    ReadmeFile := TPath.Combine(RootDir, 'readme.txt');
+    TFile.WriteAllText(LauncherExe, 'lp-old-launcher', TEncoding.ASCII);
+    TFile.WriteAllText(ReadmeFile, 'lp-old-readme');
+
+    ZipPath := TPath.Combine(RootDir, 'Cache', 'lp.zip');
+    ForceDirectories(TPath.GetDirectoryName(ZipPath));
+    BuildLauncherZip(ZipPath, 'lp-new-launcher'); // ships a NEW readme.txt
+    Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+      Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+    // The child exits before the suite's key-override setup; point the
+    // rollback key at this child's own temporary file.
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := TPath.Combine(RootDir, 'Cache',
+      'rollback_key.bin');
+    {$ENDIF}
+    Manager := TPortappixUpdateManager.Create(RootDir);
+    try
+      Manager.OnLog := procedure(AMsg: string) begin end;
+      Writeln('  [lp-child] preparing');
+      Manager.PrepareUpdate(ZipPath, Release, False);
+      Writeln('  [lp-child] finalizing');
+      Manager.FinalizePendingUpdate;
+      Writeln('  [lp-child] checking companion content');
+      // BuildLauncherZip ships the launcher content as the companion too,
+      // so the replaced readme carries the NEW exe content string.
+      if TFile.ReadAllText(ReadmeFile) <> 'lp-new-launcher' then
+      begin
+        Writeln('  [lp-child] FAIL: companion not replaced');
+        Exit;
+      end;
+      Writeln('  [lp-child] rolling back');
+      try
+        if not Manager.RollbackToOldLauncher(False) then
+          Exit;
+      except
+        on E: Exception do
+        begin
+          Writeln('  [lp-child] rollback raised: ', E.ClassName, ': ', E.Message);
+          Exit;
+        end;
+      end;
+      Writeln('  [lp-child] verifying restored content');
+      if TFile.ReadAllText(LauncherExe) <> 'lp-old-launcher' then
+        Exit;
+      if TFile.ReadAllText(ReadmeFile) <> 'lp-old-readme' then
+        Exit;
+      Result := 0;
+    finally
+      Release.Free;
+      Manager.Free;
+    end;
+  finally
+    if TDirectory.Exists(RootDir) then
+      try
+        TDirectory.Delete(RootDir, True);
+      except
+      end;
+  end;
+end;
+{$ENDIF}
+
+procedure SpawnSelfAndExpectSuccess(const AChildArgument, ALabel: string);
+var
+  CmdLine: string;
+  StartupInfo: TStartupInfo;
+  ProcessInfo: TProcessInformation;
+  ExitCode: Cardinal;
+begin
+  FillChar(StartupInfo, SizeOf(StartupInfo), 0);
+  StartupInfo.cb := SizeOf(StartupInfo);
+  CmdLine := QuoteArgument(ParamStr(0)) + ' ' + AChildArgument;
+  if not CreateProcess(nil, PChar(CmdLine), nil, nil, False,
+    CREATE_NEW_PROCESS_GROUP or CREATE_UNICODE_ENVIRONMENT, nil, nil,
+    StartupInfo, ProcessInfo) then
+  begin
+    Check(False, ALabel + ': unable to spawn the child');
+    Exit;
+  end;
+  try
+    WaitForSingleObject(ProcessInfo.hProcess, 120000);
+    GetExitCodeProcess(ProcessInfo.hProcess, ExitCode);
+  finally
+    CloseHandle(ProcessInfo.hThread);
+    CloseHandle(ProcessInfo.hProcess);
+  end;
+  Check(ExitCode = 0, Format('%s (child exit %s)', [ALabel, IntToHex(ExitCode, 8)]));
+end;
+
+procedure TestRenameByHandleLongPaths(const ARoot: string);
+var
+  Dir, ShortTarget: string;
+  Handle: THandle;
+begin
+  // Short-name handle renames must keep working (regression guard).
+  Dir := TPath.Combine(ARoot, 'r18-short');
+  ForceDirectories(Dir);
+  TFile.WriteAllText(TPath.Combine(Dir, 'src.txt'), 'x');
+  Handle := CreateFile(PChar(TPath.Combine(Dir, 'src.txt')),
+    GENERIC_READ or $00010000, FILE_SHARE_READ, nil, OPEN_EXISTING, 0, 0);
+  Check(Handle <> INVALID_HANDLE_VALUE, 'R18: short-path test file opened');
+  try
+    ShortTarget := TPath.Combine(Dir, 'renamed-short.txt');
+    Check(PortappixTestRenameByHandle(Handle, ShortTarget),
+      'R18: short-name handle rename still works');
+  finally
+    CloseHandle(Handle);
+  end;
+  Check(TFile.Exists(ShortTarget), 'R18: short-name rename took effect');
+
+  // Long path (components valid): must SUCCEED via correctly sized storage;
+  // an over-long component must fail cleanly. Runs in a child process because
+  // the pre-fix fixed MAX_PATH buffer corrupts the stack and kills the
+  // process with 0xC0000005.
+  SpawnSelfAndExpectSuccess('--r18-rename-child',
+    'R18: handle rename supports long paths and fails cleanly on over-long components');
+end;
+
+procedure TestLongPathInstallation;
+begin
+  SpawnSelfAndExpectSuccess('--r18-longpath-child',
+    'long path: full staged-update cycle succeeds beyond MAX_PATH');
+end;
+
 procedure TestCompanionRestoreOnRollback(const ARoot: string);
 var
   Manager: TPortappixUpdateManager;
@@ -7014,6 +7231,14 @@ end;
 var
   Root: string;
 begin
+{$IFDEF PORTAPPIX_TESTINJECT}
+  // R18 crash-isolated child modes: see RunR18RenameChild /
+  // RunLongPathInstallationChild.
+  if SameText(ParamStr(1), '--r18-rename-child') then
+    Halt(RunR18RenameChild);
+  if SameText(ParamStr(1), '--r18-longpath-child') then
+    Halt(RunLongPathInstallationChild);
+{$ENDIF}
   Writeln('Portappix engine tests');
   Writeln('----------------------');
   Root := MakeTempRoot;
@@ -7080,6 +7305,8 @@ begin
     TestReviewPersistenceFailures(Root);
     TestUpdateFailureInjection(Root);
     TestReviewLockInversion(Root);
+    TestRenameByHandleLongPaths(Root);
+    TestLongPathInstallation;
     // Phase 2 repro tests (each asserts FIXED behavior; fails pre-fix).
     TestSchemaDowngradeRefused(Root);
     TestConcurrentRenameBlocked(Root);

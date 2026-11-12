@@ -105,6 +105,15 @@ const
 procedure CheckUpdateCrashPoint(const APoint: string);
 {$ENDIF}
 
+{$IFDEF PORTAPPIX_TESTINJECT}
+/// Test-only entry point for the R18 rename repro (declared in the interface
+/// so test projects can call it): performs a handle-based rename exactly as
+/// the production rollback path does. Referenced nowhere in production code
+/// (byte-scanned by the isolation suite).
+function PortappixTestRenameByHandle(const AHandle: THandle;
+  const ANewName: string): Boolean;
+{$ENDIF}
+
 type
   EPortappixUpdateError = class(Exception);
 
@@ -242,19 +251,30 @@ const
   FILE_ACCESS_DELETE = $00010000;
 
 type
-  // FILE_RENAME_INFO (win32) for handle-based renames (R10): the verified
-  // file is moved through its write-denying handle, so an attacker cannot
-  // swap the pathname after verification.
-  TFileRenameInfoRec = record
+  // FILE_RENAME_INFO (win32) header for handle-based renames (R10, R18):
+  // the verified file is moved through its write-denying handle, so an
+  // attacker cannot swap the pathname after verification. Only the fixed
+  // header is declared; the variable-length FileName follows it in a
+  // dynamically sized buffer at FILE_RENAME_INFO_NAME_OFFSET (R18 — a fixed
+  // MAX_PATH array corrupts the stack for long paths, and on x64 the C name
+  // offset (20) differs from Delphi's padded SizeOf (24)).
+  TFileRenameInfoHeader = record
     Flags: DWORD;
     RootDirectory: THandle;
     FileNameLength: DWORD;
-    FileName: array[0..MAX_PATH] of WideChar;
   end;
 
 const
   FILE_INFO_CLASS_RENAME = 3;
   FILE_RENAME_FLAG_POSIX_SEMANTICS = 2; // no replace-if-exists
+  /// offsetof(FILE_RENAME_INFO, FileName). The C layout is
+  ///   {union{BOOLEAN ReplaceIfExists; DWORD Flags;}; HANDLE RootDirectory;
+  ///    DWORD FileNameLength; WCHAR FileName[1];}
+  /// On x86 the name starts at 4+4+4 = 12; on x64 the Flags field is padded
+  /// to the 8-byte alignment of RootDirectory, so the name starts at
+  /// 8+8+4 = 20. Delphi pads the header record the same way (SizeOf is 24
+  /// on x64), so the name offset must NOT be derived from SizeOf (R18).
+  FILE_RENAME_INFO_NAME_OFFSET = SizeOf(THandle) * 2 + SizeOf(DWORD);
   /// ReplaceFileW option: overwrite the backup file if it exists (winnt.h
   /// REPLACE_EXISTING; not declared in the Delphi RTL).
   REPLACEFILE_REPLACE_EXISTING = $00000001;
@@ -266,20 +286,40 @@ function SetFileInformationByHandle(hFile: THandle; FileInformationClass: Intege
   external 'kernel32.dll' name 'SetFileInformationByHandle';
 
 /// Renames the file behind AHandle to ANewName (no replace) through the
-/// handle itself. Requires DELETE access on the handle.
+/// handle itself. Requires DELETE access on the handle. R18: the buffer is
+/// sized dynamically (name offset + name + null terminator) so long Windows
+/// paths cannot overflow the fixed MAX_PATH-sized storage the previous
+/// implementation used (which corrupted the stack for >261-char targets).
+/// The name is placed at FILE_RENAME_INFO_NAME_OFFSET — the exact C-layout
+/// offset on both x86 (12) and x64 (20), NOT at SizeOf(header) (24 on x64).
 function RenameByHandle(const AHandle: THandle; const ANewName: string): Boolean;
 var
-  Info: TFileRenameInfoRec;
+  Buffer: TBytes;
+  Info: ^TFileRenameInfoHeader;
   NameLength: Integer;
+  NamePtr: PWideChar;
 begin
-  FillChar(Info, SizeOf(Info), 0);
-  Info.Flags := FILE_RENAME_FLAG_POSIX_SEMANTICS;
   NameLength := Length(ANewName);
+  SetLength(Buffer, FILE_RENAME_INFO_NAME_OFFSET +
+    (NameLength + 1) * SizeOf(WideChar));
+  FillChar(Buffer[0], Length(Buffer), 0);
+  Info := @Buffer[0];
+  Info.Flags := FILE_RENAME_FLAG_POSIX_SEMANTICS;
   Info.FileNameLength := DWORD(NameLength * SizeOf(WideChar));
-  Move(PChar(ANewName)^, Info.FileName[0], NameLength * SizeOf(WideChar));
+  NamePtr := PWideChar(PByte(@Buffer[0]) + FILE_RENAME_INFO_NAME_OFFSET);
+  if NameLength > 0 then
+    Move(PChar(ANewName)^, NamePtr^, NameLength * SizeOf(WideChar));
   Result := SetFileInformationByHandle(AHandle, FILE_INFO_CLASS_RENAME,
-    @Info, SizeOf(Info));
+    Info, DWORD(Length(Buffer)));
 end;
+
+{$IFDEF PORTAPPIX_TESTINJECT}
+function PortappixTestRenameByHandle(const AHandle: THandle;
+  const ANewName: string): Boolean;
+begin
+  Result := RenameByHandle(AHandle, ANewName);
+end;
+{$ENDIF}
 
 {$IFDEF PORTAPPIX_TESTINJECT}
 function UpdateRenameFile(const AFrom, ATo: string): Boolean;

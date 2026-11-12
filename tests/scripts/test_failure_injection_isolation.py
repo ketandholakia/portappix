@@ -67,6 +67,7 @@ INJECT_NEEDLES = [
     "PortappixRollbackAttackHook",
     "EPortappixSimulatedUpdateCrash",
     "PortappixReviewLockGapMs",
+    "PortappixTestRenameByHandle",
 ]
 # src file that declares the test-only rollback key override.
 KEY_OVERRIDE_FILE = "src/Portappix.RecordAuth.pas"

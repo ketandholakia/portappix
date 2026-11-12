@@ -1,0 +1,44 @@
+PASS: src/Portappix.Common.pas exists
+PASS: src/Portappix.Common.pas: PortappixWriteHook appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Common.pas: PortappixTestInjectMarker appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Common.pas: DispatchWriteHook appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Common.pas: TPortappixWriteHookResult appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Common.pas: PortappixWriteDelayMs appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Update.pas exists
+PASS: src/Portappix.Update.pas: PortappixRenameHook appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Update.pas: PortappixSpawnErrorCode appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Update.pas: TPortappixRenameHook appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Update.pas: PortappixUpdateCrashPoint appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Update.pas: PortappixUpdateCrashKill appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Update.pas: PortappixRollbackAttackHook appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Update.pas: EPortappixSimulatedUpdateCrash appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: src/Portappix.Update.pas: PortappixTestRenameByHandle appears only inside active $IFDEF PORTAPPIX_TESTINJECT regions (0 exposed)
+PASS: source scan guard: PortappixWriteHook does occur in the scanned sources
+PASS: source scan guard: PortappixRenameHook does occur in the scanned sources
+PASS: source scan guard: PortappixSpawnErrorCode does occur in the scanned sources
+PASS: source scan guard: PortappixTestInjectMarker does occur in the scanned sources
+PASS: source scan guard: PortappixWriteDelayMs does occur in the scanned sources
+PASS: source scan guard: PortappixUpdateCrashPoint does occur in the scanned sources
+PASS: source scan guard: PortappixRollbackAttackHook does occur in the scanned sources
+PASS: src/Portappix.RecordAuth.pas exists
+PASS: src/Portappix.RecordAuth.pas: PortappixRecordKeyPathOverride appears only inside active $IFDEF PORTAPPIX_TESTCRASH regions (0 exposed)
+PASS: src/Portappix.RecordAuth.pas: the key-override scan guard is not vacuous
+PASS: production Win32 production artifact exists (C:\Users\Admin\AppData\Local\Temp\remed-prod-w32-p2b\Launcher.exe)
+PASS: production Win32 production artifact is non-empty
+PASS: production Win32 launcher contains no TESTINJECT marker
+PASS: production Win64 production artifact exists (C:\Users\Admin\AppData\Local\Temp\remed-prod-w64-p2b\Launcher.exe)
+PASS: production Win64 production artifact is non-empty
+PASS: production Win64 launcher contains no TESTINJECT marker
+PASS: test-config Win32 test artifact exists (C:\Users\Admin\AppData\Local\Temp\remed-tests-w32-inject-p2b\PortappixTests.exe)
+PASS: test-config Win32 test artifact is non-empty
+PASS: test-config Win32 test binary contains the TESTINJECT marker
+PASS: test-config Win64 test artifact exists (C:\Users\Admin\AppData\Local\Temp\remed-tests-w64-inject-p2b\PortappixTests.exe)
+PASS: test-config Win64 test artifact is non-empty
+PASS: test-config Win64 test binary contains the TESTINJECT marker
+PASS: guard accepts a production-like synthetic launcher
+PASS: guard rejects a launcher carrying the TESTINJECT marker
+PASS: guard rejects a launcher carrying the TESTINJECT marker (utf-8)
+PASS: guard rejects an empty launcher
+PASS: guard rejects an unreadable launcher (directory path)
+
+Result: 42 passed, 0 failed
