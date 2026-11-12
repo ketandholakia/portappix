@@ -7505,6 +7505,178 @@ begin
     {$ENDIF}
   end;
 end;
+
+/// Seeds a root with an installed launcher ('v1') plus a staged update to a
+/// zip shipping 'v2' as Launcher.exe and a companion readme.
+procedure SeedStagedUpdate(const ARootDir, AStagingTag: string;
+  out AManager: TPortappixUpdateManager);
+var
+  CacheDir, ZipPath: string;
+  Release: TPortappixRelease;
+begin
+  CacheDir := TPath.Combine(ARootDir, 'Cache');
+  ForceDirectories(CacheDir);
+  TFile.WriteAllText(TPath.Combine(ARootDir, 'Launcher.exe'), 'v1',
+    TEncoding.ASCII);
+  ZipPath := TPath.Combine(CacheDir, AStagingTag + '.zip');
+  BuildLauncherZip(ZipPath, 'v2');
+  Release := ParseReleasesJson(ReleasesJsonFor('1.1.0',
+    Sha256File(ZipPath), TFile.GetSize(ZipPath)));
+  try
+    AManager := TPortappixUpdateManager.Create(ARootDir);
+    AManager.OnLog := procedure(AMsg: string) begin end;
+    AManager.PrepareUpdate(ZipPath, Release, False);
+  finally
+    Release.Free;
+  end;
+end;
+
+/// R20 checkpoint test: a finalize terminated at APoint leaves recoverable
+/// state; a resumed finalize must succeed (never "staged binary is missing")
+/// and end with exactly one installed launcher v2, one .old, no staging dir,
+/// no swap marker, and a live pending marker that ConfirmUpdate can consume.
+/// Every checkpoint is tested as an abrupt termination (the failure restore
+/// never runs) — the R20 scenario: the process dies, nothing cleans up.
+procedure CheckFinalizeCrashCheckpoint(const ARoot, AName, APoint: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, CacheDir: string;
+begin
+  RootDir := TPath.Combine(ARoot, AName);
+  ForceDirectories(RootDir);
+  SeedStagedUpdate(RootDir, AName, Manager);
+  try
+    PortappixUpdateCrashPoint := APoint;
+    PortappixUpdateCrashKill := True;
+    try
+      try
+        Manager.FinalizePendingUpdate;
+      except
+        on E: EPortappixSimulatedUpdateCrash do ;
+      end;
+    finally
+      PortappixUpdateCrashPoint := '';
+      PortappixUpdateCrashKill := False;
+    end;
+
+    // Resume: must complete without a staged source binary when ReplaceFileW
+    // already consumed it (durable swap marker / pre-swap inference). A
+    // pre-fix build fails hard here — the failure must be reported, not abort
+    // the run.
+    try
+      Manager.FinalizePendingUpdate;
+    except
+      on E: Exception do
+        Writeln('  [r20] resume raised: ', E.ClassName, ': ', E.Message);
+    end;
+    Check(TFile.ReadAllText(TPath.Combine(RootDir, 'Launcher.exe')) = 'v2',
+      Format('R20[%s]: the resumed finalize leaves the new launcher installed', [APoint]));
+    Check(TFile.Exists(TPath.Combine(RootDir, 'Launcher.exe.old')),
+      Format('R20[%s]: the resumed finalize keeps the previous launcher as .old', [APoint]));
+    CacheDir := TPath.Combine(RootDir, 'Cache');
+    Check(Length(TDirectory.GetDirectories(CacheDir, 'launcher_rollback_*')) = 0,
+      Format('R20[%s]: the resumed finalize consumes the staging directory', [APoint]));
+    Check(TFile.Exists(TPath.Combine(CacheDir, 'update_swap_done.json')),
+      Format('R20[%s]: the swap marker persists until confirmation', [APoint]));
+    Check(TFile.ReadAllText(TPath.Combine(RootDir, 'readme.txt')) = 'v2',
+      Format('R20[%s]: the companion file is installed', [APoint]));
+
+    // Idempotence: a repeated finalize after completion is a no-op success;
+    // the durable marker is what makes that possible.
+    try
+      Manager.FinalizePendingUpdate;
+    except
+      on E: Exception do
+        Writeln('  [r20] repeated finalize raised: ', E.ClassName, ': ', E.Message);
+    end;
+    Check(TFile.ReadAllText(TPath.Combine(RootDir, 'Launcher.exe')) = 'v2',
+      Format('R20[%s]: a repeated finalize is idempotent', [APoint]));
+
+    // Confirmation consumes both markers (the transition is over).
+    Manager.ConfirmUpdate;
+    Check(not TFile.Exists(TPath.Combine(CacheDir, 'update_swap_done.json')),
+      Format('R20[%s]: ConfirmUpdate clears the swap marker', [APoint]));
+    Check(not TFile.Exists(TPath.Combine(CacheDir, 'update_pending.json')),
+      Format('R20[%s]: ConfirmUpdate clears the pending marker', [APoint]));
+  finally
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
+
+/// R20 checkpoint matrix + the process-termination variant (the restore
+/// handler is suppressed, simulating abrupt death: no exception handler).
+procedure TestFinalizeResumeCheckpoints(const ARoot: string);
+var
+  Manager: TPortappixUpdateManager;
+  RootDir, CacheDir: string;
+begin
+  CheckFinalizeCrashCheckpoint(ARoot, 'r20-before-swap',
+    UpdateFinalizeCrashBeforeSwap);
+  CheckFinalizeCrashCheckpoint(ARoot, 'r20-after-swap',
+    UpdateFinalizeCrashAfterSwap);
+  CheckFinalizeCrashCheckpoint(ARoot, 'r20-after-root-files',
+    UpdateFinalizeCrashAfterRootFiles);
+  CheckFinalizeCrashCheckpoint(ARoot, 'r20-after-companions',
+    UpdateFinalizeCrashAfterCompanions);
+  CheckFinalizeCrashCheckpoint(ARoot, 'r20-after-newdir',
+    UpdateFinalizeCrashAfterNewDir);
+
+  // Abrupt termination right after ReplaceFileW: the crash fires and the
+  // failure restore never runs (the process is gone). The durable marker is
+  // the ONLY evidence, and the resume must still succeed.
+  RootDir := TPath.Combine(ARoot, 'r20-terminated-after-swap');
+  ForceDirectories(RootDir);
+  SeedStagedUpdate(RootDir, 'r20-kill', Manager);
+  try
+    PortappixUpdateCrashPoint := UpdateFinalizeCrashAfterSwap;
+    PortappixUpdateCrashKill := True;
+    try
+      try
+        Manager.FinalizePendingUpdate;
+      except
+        on E: EPortappixSimulatedUpdateCrash do ;
+      end;
+    finally
+      PortappixUpdateCrashPoint := '';
+      PortappixUpdateCrashKill := False;
+    end;
+
+    CacheDir := TPath.Combine(RootDir, 'Cache');
+    Check(TFile.ReadAllText(TPath.Combine(RootDir, 'Launcher.exe')) = 'v2',
+      'R20[terminated]: the swap had completed before the process died');
+    Check(TFile.Exists(TPath.Combine(CacheDir, 'update_swap_done.json')),
+      'R20[terminated]: the durable swap marker survived the process death');
+    Check(not TFile.Exists(TPath.Combine(
+      TPath.Combine(CacheDir, 'launcher_new'), 'Launcher.exe')),
+      'R20[terminated]: the staged source binary was consumed by ReplaceFileW');
+
+    // Recovery on the next launcher start must not consider this unfinalized
+    // (a respawn would fail with a missing staged binary).
+    Check(not Manager.UnfinalizedPendingUpdate,
+      'R20[terminated]: recovery does not treat a completed swap as unfinalized');
+
+    Manager.FinalizePendingUpdate;
+    Check(TFile.ReadAllText(TPath.Combine(RootDir, 'Launcher.exe')) = 'v2',
+      'R20[terminated]: the resumed finalize completes the remaining steps');
+    Check(Length(TDirectory.GetDirectories(CacheDir, 'launcher_rollback_*')) = 0,
+      'R20[terminated]: the resumed finalize consumes the staging directory');
+    try
+      Manager.ConfirmUpdate;
+    except
+      on E: Exception do
+        Writeln('  [r20] confirm raised: ', E.ClassName, ': ', E.Message);
+    end;
+    Check(not TFile.Exists(TPath.Combine(CacheDir, 'update_swap_done.json')),
+      'R20[terminated]: ConfirmUpdate clears the swap marker');  finally
+    Manager.Free;
+    {$IFDEF PORTAPPIX_TESTCRASH}
+    PortappixRecordKeyPathOverride := RecordKeyBasePath;
+    {$ENDIF}
+  end;
+end;
 {$ENDIF}
 
 procedure TestConsent(const ARoot: string);
@@ -7635,6 +7807,7 @@ begin
     TestCompanionManifestAfterFinalize(Root);
     TestCompanionTransferFailureKeepsSources(Root);
     TestCompanionRestoreFailureKeepsBackups(Root);
+    TestFinalizeResumeCheckpoints(Root);
     // Materialize the marker constant into the test-mode binary (byte-scanned
     // by the isolation tests); production binaries contain no reference and
     // therefore no marker bytes.

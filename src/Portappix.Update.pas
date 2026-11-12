@@ -116,8 +116,11 @@ var
   PortappixDirectoryDeleteHook: TPortappixDirectoryDeleteHook = nil;
 const
   UpdateSwapCrashAfterRenameOld = 'swap:after-rename-old';
+  UpdateFinalizeCrashBeforeSwap = 'finalize:before-swap';
   UpdateFinalizeCrashAfterSwap = 'finalize:after-swap';
   UpdateFinalizeCrashAfterRootFiles = 'finalize:after-root-files';
+  UpdateFinalizeCrashAfterCompanions = 'finalize:after-preserve-companions';
+  UpdateFinalizeCrashAfterNewDir = 'finalize:after-newdir-delete';
 procedure CheckUpdateCrashPoint(const APoint: string);
 {$ENDIF}
 
@@ -235,6 +238,17 @@ type
     /// R11: spawns launcher_new\Launcher.exe --finalize-update for this root.
     procedure SpawnUpdateHelper;
     function ReadPendingStagingDir: string;
+    /// R20: Cache\update_swap_done.json — the durable marker written
+    /// immediately after ReplaceFileW succeeds. It is the authoritative
+    /// evidence of a completed swap on resume (the staged source binary is
+    /// consumed by ReplaceFileW, so it can no longer be used as the signal).
+    function SwapDoneFile: string;
+    /// R20: True when the durable swap-done marker exists AND the installed
+    /// launcher still matches the hash it records.
+    function SwapAlreadyCompleted: Boolean;
+    /// R20: records the completed swap durably (and removes it on restore).
+    procedure WriteSwapDoneMarker(const ANewSha256, AOldSha256: string);
+    procedure RemoveSwapDoneMarker;
     /// R14/R16: moves the surviving root-file backups from the staging dir
     /// into the persistent companion backup directory — only after every
     /// backup has been transferred AND verified, and only after the durable
@@ -283,6 +297,12 @@ const
   /// staged files without a backup; recorded before finalize so the
   /// manifest is correct even when finalize resumes after a crash.
   StagedFilesName = 'staged_files.json';
+  /// R20: durable marker written IMMEDIATELY after ReplaceFileW succeeds.
+  /// Without it, a resume had to infer the completed swap from a hash
+  /// comparison — and ReplaceFileW consumes the staged source binary, so the
+  /// next resume failed hard ("staged launcher binary is missing") even
+  /// though the installation was already correct.
+  SwapDoneName = 'update_swap_done.json';
   CompanionManifestSchema = 1;
   /// Unauthenticated advisory marker written when authenticated schema-2
   /// operation is established (R9): if it exists without the key blob,
@@ -1802,12 +1822,81 @@ begin
   end;
 end;
 
+function TPortappixUpdateManager.SwapDoneFile: string;
+begin
+  Result := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), SwapDoneName);
+end;
+
+function TPortappixUpdateManager.SwapAlreadyCompleted: Boolean;
+var
+  Marker: TJSONObject;
+  Recorded: string;
+begin
+  Result := False;
+  if not TFile.Exists(SwapDoneFile) then
+    Exit;
+  if not TFile.Exists(LauncherExe) then
+    Exit;
+  Recorded := '';
+  try
+    Marker := TJSONObject.ParseJSONValue(
+      TFile.ReadAllText(SwapDoneFile, TEncoding.UTF8)) as TJSONObject;
+    if Marker = nil then
+      Exit;
+    try
+      if (Marker.FindValue('sha256') <> nil) then
+        Recorded := Marker.FindValue('sha256').Value.ToLower.Trim;
+    finally
+      Marker.Free;
+    end;
+  except
+    Exit;
+  end;
+  // The marker is evidence, not authority: it counts only while the
+  // installed launcher still matches the hash it recorded. A launcher that
+  // changed (manual restore, another update) invalidates it, and the normal
+  // pre-swap inference below then governs.
+  if (Recorded = '') or (not TFile.Exists(LauncherExe)) then
+    Exit;
+  Result := SameText(Sha256File(LauncherExe).ToLower, Recorded);
+end;
+
+procedure TPortappixUpdateManager.WriteSwapDoneMarker(
+  const ANewSha256, AOldSha256: string);
+var
+  Marker: TJSONObject;
+begin
+  Marker := TJSONObject.Create;
+  try
+    Marker.AddPair('schema', TJSONNumber.Create(1));
+    Marker.AddPair('sha256', ANewSha256.ToLower);
+    Marker.AddPair('previousSha256', AOldSha256.ToLower);
+    Marker.AddPair('completedAt', DateToISO8601(Now));
+    ForceDirectories(TPath.GetDirectoryName(SwapDoneFile));
+    if not WriteTextFileDurable(SwapDoneFile, Marker.Format(2)) then
+      raise EPortappixUpdateError.Create(
+        'Unable to write the update swap marker.');
+  finally
+    Marker.Free;
+  end;
+end;
+
+procedure TPortappixUpdateManager.RemoveSwapDoneMarker;
+begin
+  RemoveFileQuiet(SwapDoneFile);
+end;
+
 function TPortappixUpdateManager.UnfinalizedPendingUpdate: Boolean;
 var
   StagingDir: string;
 begin
   Result := False;
   if not TFile.Exists(PendingFile) then
+    Exit;
+  // R20: a swap that already completed is not "unfinalized": the staged
+  // binary is gone by design (ReplaceFileW consumed it) and the remaining
+  // work is the marker/finalize bookkeeping, not a respawn of the helper.
+  if SwapAlreadyCompleted then
     Exit;
   // The finalize step deletes launcher_new when it completes; its presence
   // with a live pending marker means the staged update was never finalized.
@@ -2066,11 +2155,26 @@ end;
 procedure TPortappixUpdateManager.FinalizePendingUpdate;
 var
   StagingDir, StagingName, NewExe, PreSwapSha256, CurrentHash: string;
+  NewSha256: string;
   Target: string;
   MovedRootFiles: TList<string>;
   SwapDone, SwapSucceeded: Boolean;
   Retries: Integer;
   Replaced: Boolean;
+
+  /// R20: removes the staging artifacts that only the finalize consumes.
+  procedure FinishConsumedStaging;
+  begin
+    if TDirectory.Exists(NewDir) then
+      try
+        TDirectory.Delete(NewDir, True);
+      except
+        on E: Exception do
+          Log(Format('Unable to remove the temporary update folder "%s": %s',
+            [NewDir, E.Message]));
+      end;
+  end;
+
 begin
   if not TFile.Exists(PendingFile) then
     raise EPortappixUpdateError.Create(
@@ -2080,19 +2184,20 @@ begin
     raise EPortappixUpdateError.Create(
       'The pending update marker has no staging reference.');
   StagingDir := TPath.Combine(TPath.Combine(FRootPath, 'Cache'), StagingName);
-  if not TDirectory.Exists(StagingDir) then
-    raise EPortappixUpdateError.CreateFmt(
-      'The staging directory "%s" is missing.', [StagingDir]);
-  NewExe := TPath.Combine(NewDir, LauncherFileName);
-  if not TFile.Exists(NewExe) then
-    raise EPortappixUpdateError.Create(
-      'The staged launcher binary is missing (launcher_new\Launcher.exe).');
 
-  // Pre-swap hash from the staging dir: a mismatch means a previous helper
-  // already completed the swap (idempotent resume, R11).
+  // R20: an interrupted finalize must be recoverable no matter WHERE it
+  // stopped. Two independent pieces of evidence are used:
+  //  - the durable swap-done marker, written immediately after ReplaceFileW
+  //    (the staged source binary is consumed by that call, so its absence
+  //    must never be read as "nothing was done");
+  //  - the pre-swap hash recorded in the staging dir (fallback for an
+  //    installation whose swap completed before the marker existed).
+  // A swap that already completed with the staging dir already consumed is
+  // a SUCCESSFUL finalize: report completion instead of failing.
+  SwapDone := SwapAlreadyCompleted;
   PreSwapSha256 := '';
-  SwapDone := False;
-  if TFile.Exists(TPath.Combine(StagingDir, PreSwapBackupName)) then
+  if TDirectory.Exists(StagingDir) and
+     TFile.Exists(TPath.Combine(StagingDir, PreSwapBackupName)) then
   begin
     var PreSwapJson := TJSONObject.ParseJSONValue(
       TFile.ReadAllText(TPath.Combine(StagingDir, PreSwapBackupName),
@@ -2104,15 +2209,42 @@ begin
       finally
         PreSwapJson.Free;
       end;
-    CurrentHash := Sha256File(LauncherExe).ToLower;
-    SwapDone := (PreSwapSha256 <> '') and (not SameText(CurrentHash, PreSwapSha256));
   end;
+  if (not SwapDone) and (PreSwapSha256 <> '') and TFile.Exists(LauncherExe) then
+  begin
+    CurrentHash := Sha256File(LauncherExe).ToLower;
+    SwapDone := not SameText(CurrentHash, PreSwapSha256);
+  end;
+
+  if not TDirectory.Exists(StagingDir) then
+  begin
+    if SwapDone then
+    begin
+      // The finalize ran through the companion step (which consumes the
+      // staging dir) and died before its own cleanup: finish it. The marker
+      // stays until ConfirmUpdate: while the pending marker is live, it is
+      // the evidence that a repeated finalize has nothing left to do.
+      FinishConsumedStaging;
+      Log('Update finalization already complete; nothing left to do.');
+      Exit;
+    end;
+    raise EPortappixUpdateError.CreateFmt(
+      'The staging directory "%s" is missing.', [StagingDir]);
+  end;
+
+  NewExe := TPath.Combine(NewDir, LauncherFileName);
+  if not SwapDone and not TFile.Exists(NewExe) then
+    raise EPortappixUpdateError.Create(
+      'The staged launcher binary is missing (launcher_new\Launcher.exe).');
 
   SwapSucceeded := False;
   MovedRootFiles := TList<string>.Create;
   try
     if not SwapDone then
     begin
+      {$IFDEF PORTAPPIX_TESTINJECT}
+      CheckUpdateCrashPoint(UpdateFinalizeCrashBeforeSwap);
+      {$ENDIF}
       // Atomic replacement (R11): ReplaceFileW swaps the staged launcher
       // into place and preserves the current binary as Launcher.exe.old in
       // ONE operation — there is no window in which Launcher.exe is
@@ -2137,6 +2269,11 @@ begin
           [SysErrorMessage(Integer(GetLastError))]);
       Log('The staged launcher was installed atomically; the previous ' +
         'launcher is preserved as Launcher.exe.old.');
+      // R20: record the completed swap durably and immediately. ReplaceFileW
+      // consumed the staged source binary, so every later resume depends on
+      // this marker to know that the installation is already correct.
+      NewSha256 := Sha256File(LauncherExe).ToLower;
+      WriteSwapDoneMarker(NewSha256, PreSwapSha256);
       {$IFDEF PORTAPPIX_TESTINJECT}
       CheckUpdateCrashPoint(UpdateFinalizeCrashAfterSwap);
       {$ENDIF}
@@ -2161,6 +2298,10 @@ begin
     // R14: the replaced companions survive until confirmation.
     PreserveCompanionBackups(StagingDir);
 
+    {$IFDEF PORTAPPIX_TESTINJECT}
+    CheckUpdateCrashPoint(UpdateFinalizeCrashAfterCompanions);
+    {$ENDIF}
+
     try
       TDirectory.Delete(NewDir, True);
     except
@@ -2169,7 +2310,15 @@ begin
           [NewDir, E.Message]));
     end;
 
+    {$IFDEF PORTAPPIX_TESTINJECT}
+    CheckUpdateCrashPoint(UpdateFinalizeCrashAfterNewDir);
+    {$ENDIF}
+
     SwapSucceeded := True;
+    // R20: the transition marker intentionally SURVIVES a successful
+    // finalize. While the pending marker is live (the new launcher has not
+    // confirmed yet), a repeated finalize must be able to see that the swap
+    // is already done; ConfirmUpdate and RollbackToOldLauncher clear it.
     Log('Update finalization complete; restarting the launcher.');
     // Best-effort: the atomic install is done; if the new launcher cannot
     // be started automatically, the watchdog still offers rollback on its
@@ -2271,6 +2420,10 @@ begin
   end
   else if TFile.Exists(OldLauncherExe) then
     CheckedMoveFile(OldLauncherExe, LauncherExe);
+
+  // 4b. R20: the swap no longer exists once the pre-swap launcher is back;
+  // the durable marker would otherwise keep claiming a completed swap.
+  RemoveSwapDoneMarker;
 
   // 5. Post-restore invariant: the launcher must exist and be
   //    byte-identical to the pre-swap state.
@@ -2374,6 +2527,8 @@ begin
 
   SetInstalledVersion(PendingVersion);
   RemoveFileQuiet(PendingFile);
+  // R20: the update is confirmed; the swap marker served its purpose.
+  RemoveSwapDoneMarker;
 
   // R14: the update is confirmed healthy — the old companion files are
   // discarded and the new ones stay in place.
@@ -2446,6 +2601,8 @@ begin
   RemoveFileQuiet(OkFile);
   RemoveFileQuiet(PendingFile);
   RemoveFileQuiet(OldLauncherRecordFile);
+  // R20: the swap is undone; no marker may claim otherwise.
+  RemoveSwapDoneMarker;
 
   // R14/R15/R16: restore the companion files the update replaced, delete the
   // files it introduced (manifest-authoritative), and only remove the backup
