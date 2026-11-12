@@ -62,10 +62,10 @@ Existing assertions were preserved; the only expectation change is the
 | Win32 Release | `dcc32 -B -DRELEASE -E<temp> -N0<temp> -Usrc src\Launcher.dpr` | 0 | 3× W1002 (see note) |
 | Win32 Debug | `dcc32 -B -DDEBUG -$O- -$R+ -$Q+ …` | 0 | 3× W1002 |
 | Win64 Release | `dcc64 -B -DRELEASE …` | 0 | 3× W1002 |
-| Tests Win32 test-config | `-DPORTAPPIX_TESTCRASH -DPORTAPPIX_TESTUPDATE -DPORTAPPIX_TESTINJECT` | 0 | **810 passed / 0 failed** |
-| Tests Win64 test-config | same, `dcc64` | 0 | **810 passed / 0 failed** |
-| Tests Win32 release-config | `-DPORTAPPIX_TESTCRASH` | 0 | **761 passed / 0 failed** |
-| Tests Win64 release-config | same, `dcc64` | 0 | **761 passed / 0 failed** |
+| Tests Win32 test-config | `-DPORTAPPIX_TESTCRASH -DPORTAPPIX_TESTUPDATE -DPORTAPPIX_TESTINJECT` | 0 | **810 passed / 0 failed** (Phase 2A); see §9.2 for the Phase 2B counts (930) |
+| Tests Win64 test-config | same, `dcc64` | 0 | **810 passed / 0 failed** (Phase 2A); see §9.2 |
+| Tests Win32 release-config | `-DPORTAPPIX_TESTCRASH` | 0 | **761 passed / 0 failed** (Phase 2A); 777 after Phase 2B |
+| Tests Win64 release-config | same, `dcc64` | 0 | **761 passed / 0 failed** (Phase 2A); 777 after Phase 2B |
 
 W1002 note: the known `FILE_FLAG_OPEN_REPARSE_POINT` platform warning appears twice
 in `Portappix.Junction.pas` (pre-existing) and once in `Portappix.Update.pas`
@@ -146,9 +146,104 @@ binary in the sandbox, and both behaved as specified.
    open item inherited from earlier phases (unit simulation + real
    termination are different evidence classes).
 
-## 9. Release recommendation
+## 9. Phase 2B — second independent review (R15–R20)
 
-**GO** — release is recommended. All code-level findings are remediated and
+**Date:** 2026-11-12
+**Baseline:** `main` at `d41537d`'s parent chain (`f520be9`, `81e61aa`, `a3e9046`,
+`eeb6dd8`/R17, `d41537d`/R18)
+**Method:** repro-first — each finding gets a deterministic failing test, the
+pre-fix failure is captured as raw evidence, the fix is applied, then the same
+tests are re-run on both bitnesses. Evidence logs:
+`docs/audit/phase2b-evidence/`.
+
+### 9.1 Findings-to-fix mapping
+
+| # | Finding (independent review, second pass) | Pre-fix defect | Fix | Commit | Evidence |
+|---|---|---|---|---|---|
+| R15 | Companion rollback deletes the backup directory even when a restore failed | `RollbackToOldLauncher` restored each file with a logged-only failure then unconditionally deleted the whole `companion_rollback` directory — destroying the only copies of the pre-update companion files | Per-file checked restore with a failure counter; directory removed only when every restore AND every introduced-file deletion succeeded; introduced files driven by the durable manifest; unsafe manifest names drop the list (fail-closed) | `7d97192` | `r15-r16-repro-prefix.log` (15 FAILED pre-fix), `r15-r16-fixed-pass{,-x64}.log` |
+| R16 | Companion finalize destroys staging and previous backups on any failed transfer | `PreserveCompanionBackups` deleted the previous companion directory BEFORE moving staging backups in, and treated failed moves as logged warnings; the unconditional staging delete then lost the source too | Transfer into a FRESH `companion_rollback_staging` with per-file SHA-256 verification, union-merge with the previous directory, durable manifest, then activation (delete previous + rename); on any failure every file is moved back to staging and only a drained transfer dir is deleted; bookkeeping files stay in staging until consumed | `7d97192` | same |
+| R17 | Inconsistent lock order (could deadlock) | Review operations acquired `JournalLock`/`ReviewLock` in inconsistent order relative to `FSync` | Canonical order `FSync → JournalLock → ReviewLock` for every review operation | `eeb6dd8` | `r17-*.log` |
+| R18 | Fixed `MAX_PATH` `FILE_RENAME_INFO` buffer corrupts the stack for long paths | `RenameByHandle` declared a fixed `FileName: array[0..MAX_PATH]` and reported `SizeOf(record)`; a >261-char target overflowed the stack (0xC0000005) | Dynamically sized buffer at the exact C-layout name offset (`12` on x86, `20` on x64 — not Delphi's padded `SizeOf`, 24 on x64); long paths now work, over-long components fail cleanly with `ERROR_INVALID_NAME` | `d41537d` | `r18-probe-prefix-crash.log`, `r18-repro-prefix.log` (838/2 pre-fix), `r18-fixed-pass{,-x64}.log` |
+| R19 | One DPAPI key shared by every installation under the account | Key at `%LOCALAPPDATA%\Portappix\rollback_key.bin`, process-wide; two installations authenticated each other's records (documentation also misstated the path — code used `TPath.GetHomePath`) | Key scoped to `%LOCALAPPDATA%\Portappix\keys\<sha256(canonical root)>\rollback_key.bin`; explicit-root API (`GetInstallationRollbackKey`, `TryGetInstallationRollbackKey`, `InstallationKeyBlobExists`); bounded legacy-key adoption; docs corrected | `19fcfa2` | `r19-repro-prefix.log` (4 FAILED pre-fix), `r19-fixed-pass{,-x64}.log` |
+| R20 | Finalize recovery is not idempotent after a completed `ReplaceFileW` | Resume inferred the swap only from the pre-swap hash, but `ReplaceFileW` consumes the staged source binary — every post-swap recovery died with "staged launcher binary is missing" or "staging directory is missing" while the installation was actually correct | Durable `Cache\update_swap_done.json` written immediately after the swap (honoured only while the installed hash matches); missing staged binary is an error only when the swap is not done; missing staging dir + completed swap = success; marker cleared by `ConfirmUpdate`/rollback/restore; `UnfinalizedPendingUpdate` excludes completed swaps | `26e53d2` | `r20-repro-prefix.log` (3 FAILED pre-fix), `r20-fixed-pass{,-x64}.log` |
+
+Additional requirements addressed in the same round:
+
+- **Durable companion manifest** (`companion_manifest.json`, schema 1) with
+  `replaced` (name + verified sha256) and `introduced` lists; `staged_files.json`
+  written by `PrepareUpdate` so the introduced list survives a resumed finalize.
+- **Every recovery/finalization operation is idempotent** — verified by the R20
+  checkpoint matrix (five checkpoints, each resumed and then finalized again).
+- **Backups preserved on every incomplete recovery path** — R15/R16 tests assert
+  staging, previous companion dir and manifest survive every injected failure.
+- **Deterministic failure injection** — `PortappixFileMoveHook`,
+  `PortappixFileDeleteHook`, `PortappixDirectoryDeleteHook` (TESTINJECT only).
+- **Process-termination tests at finalize checkpoints** — crash point with the
+  failure restore suppressed (no exception handler could run).
+- **Long Windows path tests** — 339-char rename target; full update+rollback E2E
+  on a 327-char `\\?\` installation root.
+- **Review concurrency tests** — R17 lock-order repro (`TestReviewLockInversion`).
+- **Two installations under one account** — `TestInstallationKeyIsolation`.
+
+### 9.2 Test results (raw logs in `docs/audit/phase2b-evidence/`)
+
+| Configuration | Result | Log |
+|---|---|---|
+| Tests Win32 test-config (TESTCRASH+TESTUPDATE+TESTINJECT) | **930 passed / 0 failed** (×2 runs) | `r19-fixed-pass.log` |
+| Tests Win64 test-config | **930 passed / 0 failed** (×2 runs) | `r19-fixed-pass-x64.log` |
+| Tests Win32 release-config (TESTCRASH only) | **777 passed / 0 failed** | (this round, §4) |
+| Tests Win64 release-config | **777 passed / 0 failed** | (this round, §4) |
+| Production Win32/Win64 (RELEASE) | builds clean | — |
+| `test_failure_injection_isolation.py` | **53 passed / 0 failed** | `r19-isolation.log` |
+| `test_crash_hook_isolation.py` | 51 passed / 0 failed | — |
+| `test_signing_workflow.py` | 46 passed / 0 failed | — |
+| `test_icons.py` | 76 passed / 0 failed | — |
+
+Assertion counts grew 835 → 930 (+95) across Phase 2B. Pre-fix evidence for
+each finding was captured with the same tests against the pre-fix source; see
+the per-finding logs above (15 + 2 + 4 + 3 targeted FAILs).
+
+Also fixed while writing these tests (pre-existing, unrelated to the findings):
+- A schema-2 rollback-record test evaluated `DateToISO8601(Now)` twice around a
+  multi-millisecond DPAPI call, so millisecond timestamps could disagree
+  (reproduced 3/5 on the pre-R18 x64 binary).
+- `TestUpdateManager` rebuilt a zip and validated it against the stale release
+  hash; zip local timestamps make a rebuild non-deterministic.
+
+### 9.3 Remaining limitations (Phase 2B)
+
+1. **Legacy key adoption** links installations created before R19 on the same
+   machine (each copies the same historic key). New installations are fully
+   independent. Documented in `UPDATE_ROLLBACK_INTEGRITY.md` §7.
+2. **Long-path support is per-component bounded**: paths over `MAX_PATH` work,
+   but a single component over 255 characters is rejected by NTFS (clean
+   failure, no data loss).
+3. **`RootDirectory`-relative handle renames are unsupported** by
+   `SetFileInformationByHandle` on the tested Windows build (`ERROR_INVALID_PARAMETER`
+   regardless of access flags or info class); the implementation uses absolute
+   names, which is what the rollback path needs.
+4. **Power-loss validation** of durable writes remains a VM-class open item
+   inherited from earlier phases (unit simulation and real process termination
+   are different evidence classes).
+5. **Orphaned staging/companion directories** after an unrecoverable
+   interruption are preserved deliberately (they may hold the only rollback
+   copies) and require operator cleanup after inspection.
+
+### 9.4 Release recommendation (Phase 2B)
+
+**GO for the R15–R20 remediation.** All six findings have a deterministic
+pre-fix repro, a targeted fix, and post-fix green suites on Win32 and Win64 in
+both test configurations, plus a clean production build and a clean
+failure-injection isolation scan (53/0). No P1 recovery or integrity defect
+remains open from this round. The residual limitations in §9.3 are documented
+and none permits silent data destruction or an unauthenticated/foreign record
+to be accepted.
+
+---
+
+## 10. Release recommendation (Phase 2A, unchanged)
+
+**GO** - release is recommended. All code-level findings are remediated and
 verified by the 810-check Delphi suites on both bitnesses in two
 configurations, four Python suites, three release-class builds, binary
 isolation scans, and Windows Sandbox Gates 1–4 with real process termination,

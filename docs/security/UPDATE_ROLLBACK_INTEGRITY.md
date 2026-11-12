@@ -28,7 +28,8 @@ Adversary classes considered:
    rollback record key (e.g. blocked by ACL, or running in a context where DPAPI
    decryption of the key blob fails).
 4. **Same-user arbitrary code (residual risk, NOT defended):** code running as
-   the launcher's user that can read `%LOCALAPPDATA%\Portappix\rollback_key.bin`
+   the launcher's user that can read
+   `%LOCALAPPDATA%\Portappix\keys\<installation-id>\rollback_key.bin`
    and call `CryptUnprotectData` can recover the HMAC key and forge a fully
    authenticated record. **No locally-stored secret can defend against this
    class**; the launcher deliberately does not pretend otherwise. The defense
@@ -68,11 +69,27 @@ Adversary classes considered:
   position. `time` is informational and is not covered by the HMAC (it always
   equals `recordedAt` in records the launcher writes).
 - The HMAC key is 32 random bytes (`BCryptGenRandom`) generated per
-  installation on first use, wrapped with DPAPI (`CryptProtectData`, user
+  **installation** on first use, wrapped with DPAPI (`CryptProtectData`, user
   scope, `CRYPTPROTECT_UI_FORBIDDEN`) and stored at
-  `%LOCALAPPDATA%\Portappix\rollback_key.bin`. The user-profile ACL (user-only
-  by default on NTFS) plus DPAPI user scoping mean the key blob is bound to the
-  user account that created it. The key file is created without wide sharing.
+  `%LOCALAPPDATA%\Portappix\keys\<installation-id>\rollback_key.bin`, where
+  `<installation-id>` is the SHA-256 of the canonical installation root path
+  (R19). The user-profile ACL (user-only by default on NTFS) plus DPAPI user
+  scoping mean the key blob is bound to the user account that created it; the
+  per-installation subdirectory additionally binds it to one installation, so
+  two installations under the same account never share key material. The
+  canonicalization resolves the full path, strips a `\\?\` prefix, drops any
+  trailing delimiter, normalizes separators and lowercases, so spelling
+  variants of one installation resolve to one key while genuinely different
+  installations get different keys. The key file is created without wide
+  sharing.
+- **Legacy key migration (bounded):** launchers before R19 stored one unscoped
+  key at `%LOCALAPPDATA%\Portappix\rollback_key.bin` shared by every
+  installation under the account. On first use, an installation without a
+  scoped key adopts (copies) that blob into its scoped location; the legacy
+  file is left in place because other installations may still need to migrate
+  from it. Adoption never invents key material, never overwrites an existing
+  scoped key, and the verification path performs it without creating key
+  material for an installation that had truly none.
 - **Failure behavior is fail-closed everywhere:**
   - record write failure → the update aborts before the executable is renamed
     (`RecordOldLauncher` runs BEFORE the rename);
@@ -136,32 +153,112 @@ for forensics.
 
 ## 4. Self-update transaction (all-or-nothing swap)
 
-`PrepareUpdate` is a transaction with checked restore:
+### 4.1 Staging (`PrepareUpdate`)
 
-1. **Backup phase (no mutation yet):** replaced root files, the previous
-   rollback record, `update_ok`, and any pre-existing `update_pending.json`
-   are copied into `Cache\launcher_rollback_<timestamp>\`; the pre-swap
-   SHA-256 of the launcher is persisted there too.
-2. **Mutation phase:** durable write of the new `update_pending.json`;
-   `RecordOldLauncher` for the launcher **before** any rename (a crash after
-   the rename can no longer wedge rollback with a missing record);
-   `Launcher.exe → Launcher.exe.old → new launcher` renames; release root
-   files are moved into place.
-3. **Failure restore:** `RestoreFailedSwap` reverses every completed mutation
-   with *checked* operations (a failing restore raises instead of being
-   silent), then verifies the post-restore invariant — the launcher exists and
-   is byte-identical to the pre-swap hash — and the metadata invariants
-   (previous record restored or absent, markers restored or absent). On a
-   failed restore the backup directory is preserved for forensics.
-4. **Crash windows:** a process crash at any point leaves either the fully
-   swapped state with the watchdog armed (`update_ok` deleted), or the original
-   state; the record-before-rename ordering removes the `.old`-without-record
-   wedge.
+`PrepareUpdate` performs **no mutation of the installation root**:
 
-All update-state metadata (`old_launcher.json`, `update_pending.json`,
-`update_ok`, `launcher_version.json`) is now written with
-`WriteTextFileDurable` (FlushFileBuffers before replace, directory flush
-after).
+1. The package is verified (sha256 + size) and extracted into
+   `Cache\launcher_new\` (same zip-slip and entry caps as apps).
+2. A staging directory `Cache\launcher_rollback_<timestamp>\` receives:
+   - `staged_files.json` — the package's non-launcher root-file names (the
+     basis of the introduced-file list);
+   - one **copy** of every package root file that already exists in the root
+     (the "replaced" set);
+   - copies of the previous `old_launcher.json`, `update_ok` and
+     `update_pending.json` (with distinct prefixed names);
+   - `rollback_pre_swap.json` — the pre-swap launcher SHA-256.
+3. `update_ok` is removed (arms the watchdog), any superseded `.old` is
+   removed, the schema-2 record for the **current** launcher is written, and
+   `update_pending.json` (with the staging reference) is written durably.
+4. A finalize helper (`launcher_new\Launcher.exe --finalize-update`) is
+   spawned after this process exits.
+
+A failure anywhere in staging runs `RestoreFailedSwap` and raises; the
+installation is never left half-staged.
+
+### 4.2 Finalizing (`FinalizePendingUpdate`)
+
+```
+        pending marker + staging dir
+                    │
+                    ▼
+      ┌────── swap already completed? ──────┐
+      │  (durable swap-done marker matches  │
+      │   the installed hash, OR pre-swap   │
+      │   hash inference)                   │
+      │                                     │
+     no ─────────────────────────────────► yes
+      │                                     │
+      ▼                                     ▼
+ ReplaceFileW(Launcher.exe,           staging dir present?
+   launcher_new\Launcher.exe,                │
+   Launcher.exe.old)                  ┌──────┴──────┐
+      │                              yes            no
+      ▼                              │              │
+ write update_swap_done.json         │              ▼
+ (durable, R20)                      │      clean launcher_new,
+      │                              │      return success (idempotent)
+      ▼                              │
+ move package root files ◄───────────┘
+      │
+      ▼
+ PreserveCompanionBackups (R16)
+      │
+      ▼
+ delete launcher_new; clear swap marker at confirmation
+```
+
+Key invariants:
+
+- **`Launcher.exe` is never missing.** The transition is a single
+  `ReplaceFileW` with backup; there is no window in which the executable does
+  not exist (test: `TestLauncherNeverMissingDuringSwap`).
+- **Every step is idempotent on resume**, including after the staged source
+  binary was consumed by `ReplaceFileW` (R20). The durable
+  `Cache\update_swap_done.json` records the installed hash immediately after
+  the swap; it is honoured only while the installed launcher still matches it.
+- **Failure restores are checked and verified.** `RestoreFailedSwap` reverses
+  every completed mutation with raising operations, deletes the swap marker,
+  then verifies the launcher is byte-identical to `rollback_pre_swap.json` and
+  that the metadata invariants hold. A failed restore preserves every backup
+  and raises (never a silent partial rollback).
+- **Companion backups are never destroyed by a failed operation (R15/R16).**
+  Backups move into a FRESH `Cache\companion_rollback_staging\` with per-file
+  SHA-256 verification, union-merged with the previous companion directory,
+  and only then is the previous directory replaced. Any failure moves every
+  transferred file back to the staging directory; only a fully drained
+  transfer directory is deleted. The companion manifest
+  (`companion_manifest.json`, schema 1) records the replaced files with their
+  verified hashes and the files the update introduced.
+
+### 4.3 Recovery states
+
+| State on disk | Meaning | Next finalize |
+|---|---|---|
+| pending + staging + `launcher_new\Launcher.exe` | staged, not swapped | swap normally |
+| pending + staging + swap-done marker | swapped, post-swap steps pending | skip swap, continue |
+| pending + no staging + swap-done marker | all steps ran; cleanup interrupted | finish cleanup, success |
+| pending + no staging + no marker | staging destroyed externally | error, manual inspection |
+| no pending | confirmed or never staged | `ConfirmUpdate`/rollback |
+
+`UnfinalizedPendingUpdate` (the recovery respawn condition) excludes the
+completed-swap states, so recovery never respawns a helper that would
+deterministically fail on a missing staged binary.
+
+### 4.4 Rollback (`RollbackToOldLauncher`)
+
+1. The `.old` file is opened with a write-denying handle and verified
+   (reparse-point rejection, size, sha256, authenticated schema-2 record).
+2. The running launcher is renamed aside (`Launcher.exe.failed_<stamp>`), and
+   the verified `.old` is renamed into place **through the still-open handle**
+   (`FileRenameInfo`, R10/R18) — what was verified is what is installed.
+3. Companion files: every "replaced" backup is restored and every
+   manifest-recorded "introduced" file is deleted. The companion directory is
+   removed **only if every restore and deletion succeeded** (R15); otherwise
+   it is kept intact with its manifest so the rollback can be retried. An
+   unsafe manifest entry drops the whole introduced list (fail-closed).
+4. The swap marker, pending marker, `update_ok` and previous record are
+   removed; `launcher_version.json` is restored.
 
 ## 5. Review metadata fail-closed semantics
 
@@ -195,6 +292,16 @@ pattern: a new define `{$IFDEF PORTAPPIX_TESTINJECT}` gates
 - `PortappixRenameHook` (Update.pas): rename calls fail with an injected Win32
   error code;
 - `PortappixSpawnErrorCode` (Update.pas): injected launcher spawn failure;
+- `PortappixFileMoveHook`, `PortappixFileDeleteHook`,
+  `PortappixDirectoryDeleteHook` (Update.pas): injected failures for the
+  companion-backup transfer, companion restore and introduced-file deletion
+  paths (R15/R16);
+- `PortappixUpdateCrashPoint` / `PortappixUpdateCrashKill` (Update.pas): armed
+  finalize checkpoints, including the R20 resume matrix
+  (`finalize:before-swap`, `finalize:after-swap`,
+  `finalize:after-root-files`, `finalize:after-preserve-companions`,
+  `finalize:after-newdir-delete`);
+- `PortappixKeyCreateDelayMs` (RecordAuth.pas): widened first-creation window;
 - the marker constant `PortappixTestInjectMarker` =
   `PORTAPPIX-TESTINJECT-BUILD-2026-11-11`, materialized into the test binary
   and byte-scanned.
@@ -203,9 +310,10 @@ Production binaries contain no reference to any of these (verified by the
 source scan and binary byte scans in
 `tests/scripts/test_failure_injection_isolation.py`); `scripts/make_release.py`
 refuses a staged launcher carrying the marker in either encoding. The
-rollback-record key path override (`PortappixRecordKeyPathOverride`) is
-similarly gated behind `{$IFDEF PORTAPPIX_TESTCRASH}` so unit tests never touch
-the real `%LOCALAPPDATA%`.
+rollback-record key path overrides (`PortappixRecordKeyPathOverride`,
+`PortappixKeyRootOverride`) are similarly gated behind
+`{$IFDEF PORTAPPIX_TESTCRASH}` so unit tests never touch the real
+`%LOCALAPPDATA%`.
 
 ## 7. Limitations
 
@@ -220,3 +328,22 @@ the real `%LOCALAPPDATA%`.
 4. `WriteTextFileDurable` reduces but cannot eliminate power-loss windows
    (documented in the Phase 2 report); `FlushDirectoryWindows` is best-effort
    and not supported on every file system.
+5. Handle-based renames (`RenameByHandle`) support long Windows paths
+   (> `MAX_PATH`) with valid components, but a single path component longer
+   than the NTFS limit (255 characters) is rejected by the OS with
+   `ERROR_INVALID_NAME`; the rollback then fails cleanly without destroying
+   anything (R18).
+6. The staging and companion directories can be left on disk after an
+   unrecoverable interruption; they are preserved deliberately (they may hold
+   the only rollback copies) and are consumed by the next successful
+   finalize/rollback or by operator cleanup after inspection.
+7. Companion metadata (the manifest) is fail-closed for the introduced-file
+   list only: a missing or corrupt manifest never blocks the launcher rollback;
+   it merely means the introduced files cannot be identified and are left in
+   place.
+8. Legacy unscoped-key adoption (R19) means that on a machine where several
+   installations were created before R19, each of them copies the same legacy
+   key on first use. That preserves compatibility for existing records, but
+   those pre-existing installations remain mutually linked by that historical
+   key; only installations that create a fresh key (the normal case after
+   upgrade) are fully independent.
