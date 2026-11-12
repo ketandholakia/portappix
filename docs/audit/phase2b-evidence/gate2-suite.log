@@ -1,0 +1,116 @@
+WARNING: PSReadLine configuration failed: The predictive suggestion feature cannot be enabled 
+because the console output doesn't support virtual terminal processing or it's redirected.
+Portappix compatibility suite
+  Launcher : C:\Users\Admin\AppData\Local\Temp\opencode\suite-launcher\Launcher.exe
+  Root     : C:\Users\Admin\AppData\Local\Temp\opencode\gate2-results\root
+  Results  : C:\Users\Admin\AppData\Local\Temp\opencode\gate2-results
+  WARNING  : run in a VM / Windows Sandbox only.
+
+Case appdatawriter
+ERROR: The system was unable to find the specified registry key or value.
+  [PASS] appdatawriter/run            exit 0, markers under Data\appdatawriter
+ERROR: The system was unable to find the specified registry key or value.
+  [PASS] appdatawriter/host-clean     host snapshot after == before
+Case registrywriter
+ERROR: The system was unable to find the specified registry key or value.
+  [PASS] registrywriter/run           first run exit 0
+The operation completed successfully.
+
+The operation completed successfully.
+
+  [PASS] registrywriter/run2/host-clean host snapshot after == before
+  [PASS] registrywriter/persistence   second run saw the first run's string/dword/binary/nested values
+The operation completed successfully.
+
+  [PASS] registrywriter/host-clean    host snapshot after == before
+Case programdatawriter
+The operation completed successfully.
+
+  [PASS] programdatawriter/run        junction redirect worked; nothing left on the host
+The operation completed successfully.
+
+  [PASS] programdatawriter/host-clean host snapshot after == before
+Case stublauncher
+The operation completed successfully.
+
+  [PASS] stublauncher/run             launcher waited for the detached child (exit 0, marker present)
+The operation completed successfully.
+
+  [PASS] stublauncher/host-clean      host snapshot after == before
+Case elevationrequired
+The operation completed successfully.
+
+  [PASS] elevationrequired/run        host is elevated so the app ran (expected in Windows Sandbox); state stayed clean
+The operation completed successfully.
+
+  [PASS] elevationrequired/host-clean host snapshot after == before
+Case slowexit
+The operation completed successfully.
+
+  [PASS] slowexit/run                 launcher waited out the 8 s ignore window (exit 0)
+The operation completed successfully.
+
+  [PASS] slowexit/host-clean          host snapshot after == before
+Case singleinstance
+The operation completed successfully.
+
+  [PASS] singleinstance/run           second run refused cleanly (exit 4, already running)
+  [PASS] singleinstance/first-run     first run finished cleanly (exit 0)
+The operation completed successfully.
+
+  [PASS] singleinstance/host-clean/host-clean host snapshot after == before
+Case crashmidrun
+The operation completed successfully.
+
+  [PASS] crashmidrun/journal          journal recorded the crashed app
+  [PASS] crashmidrun/run              crash recovery exported keys, cleaned the host and cleared the journal
+The operation completed successfully.
+
+  [PASS] crashmidrun/host-clean/host-clean host snapshot after == before
+Policy checks
+  [PASS] policy/bad-env-path-hijack   rejected by Portappix.Policy with a message
+  [PASS] policy/bad-junction-documents rejected by Portappix.Policy with a message
+  [PASS] policy/bad-registry-outside-allowlist rejected by Portappix.Policy with a message
+  [PASS] policy/appdatawriter         manifest passes policy
+  [PASS] policy/crashmidrun           manifest passes policy
+  [PASS] policy/elevationrequired     manifest passes policy
+  [PASS] policy/programdatawriter     manifest passes policy
+  [PASS] policy/registrywriter        manifest passes policy
+  [PASS] policy/singleinstance        manifest passes policy
+  [PASS] policy/slowexit              manifest passes policy
+  [PASS] policy/stublauncher          manifest passes policy
+
+================= suite summary: 31 checks, 0 failed =================
+PASS   appdatawriter/run                        exit 0, markers under Data\appdatawriter
+PASS   appdatawriter/host-clean                 host snapshot after == before
+PASS   registrywriter/run                       first run exit 0
+PASS   registrywriter/run2/host-clean           host snapshot after == before
+PASS   registrywriter/persistence               second run saw the first run's string/dword/binary/nested values
+PASS   registrywriter/host-clean                host snapshot after == before
+PASS   programdatawriter/run                    junction redirect worked; nothing left on the host
+PASS   programdatawriter/host-clean             host snapshot after == before
+PASS   stublauncher/run                         launcher waited for the detached child (exit 0, marker present)
+PASS   stublauncher/host-clean                  host snapshot after == before
+PASS   elevationrequired/run                    host is elevated so the app ran (expected in Windows Sandbox); state stayed clean
+PASS   elevationrequired/host-clean             host snapshot after == before
+PASS   slowexit/run                             launcher waited out the 8 s ignore window (exit 0)
+PASS   slowexit/host-clean                      host snapshot after == before
+PASS   singleinstance/run                       second run refused cleanly (exit 4, already running)
+PASS   singleinstance/first-run                 first run finished cleanly (exit 0)
+PASS   singleinstance/host-clean/host-clean     host snapshot after == before
+PASS   crashmidrun/journal                      journal recorded the crashed app
+PASS   crashmidrun/run                          crash recovery exported keys, cleaned the host and cleared the journal
+PASS   crashmidrun/host-clean/host-clean        host snapshot after == before
+PASS   policy/bad-env-path-hijack               rejected by Portappix.Policy with a message
+PASS   policy/bad-junction-documents            rejected by Portappix.Policy with a message
+PASS   policy/bad-registry-outside-allowlist    rejected by Portappix.Policy with a message
+PASS   policy/appdatawriter                     manifest passes policy
+PASS   policy/crashmidrun                       manifest passes policy
+PASS   policy/elevationrequired                 manifest passes policy
+PASS   policy/programdatawriter                 manifest passes policy
+PASS   policy/registrywriter                    manifest passes policy
+PASS   policy/singleinstance                    manifest passes policy
+PASS   policy/slowexit                          manifest passes policy
+PASS   policy/stublauncher                      manifest passes policy
+
+Results written to C:\Users\Admin\AppData\Local\Temp\opencode\gate2-results\20261112-165420.json

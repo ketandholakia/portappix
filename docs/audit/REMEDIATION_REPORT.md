@@ -146,7 +146,7 @@ binary in the sandbox, and both behaved as specified.
    open item inherited from earlier phases (unit simulation + real
    termination are different evidence classes).
 
-## 9. Phase 2B — second independent review (R15–R20)
+## 9. Phase 2B — second independent review (R15–R21)
 
 **Date:** 2026-11-12
 **Baseline:** `main` at `d41537d`'s parent chain (`f520be9`, `81e61aa`, `a3e9046`,
@@ -166,6 +166,7 @@ tests are re-run on both bitnesses. Evidence logs:
 | R18 | Fixed `MAX_PATH` `FILE_RENAME_INFO` buffer corrupts the stack for long paths | `RenameByHandle` declared a fixed `FileName: array[0..MAX_PATH]` and reported `SizeOf(record)`; a >261-char target overflowed the stack (0xC0000005) | Dynamically sized buffer at the exact C-layout name offset (`12` on x86, `20` on x64 — not Delphi's padded `SizeOf`, 24 on x64); long paths now work, over-long components fail cleanly with `ERROR_INVALID_NAME` | `d41537d` | `r18-probe-prefix-crash.log`, `r18-repro-prefix.log` (838/2 pre-fix), `r18-fixed-pass{,-x64}.log` |
 | R19 | One DPAPI key shared by every installation under the account | Key at `%LOCALAPPDATA%\Portappix\rollback_key.bin`, process-wide; two installations authenticated each other's records (documentation also misstated the path — code used `TPath.GetHomePath`) | Key scoped to `%LOCALAPPDATA%\Portappix\keys\<sha256(canonical root)>\rollback_key.bin`; explicit-root API (`GetInstallationRollbackKey`, `TryGetInstallationRollbackKey`, `InstallationKeyBlobExists`); bounded legacy-key adoption; docs corrected | `19fcfa2` | `r19-repro-prefix.log` (4 FAILED pre-fix), `r19-fixed-pass{,-x64}.log` |
 | R20 | Finalize recovery is not idempotent after a completed `ReplaceFileW` | Resume inferred the swap only from the pre-swap hash, but `ReplaceFileW` consumes the staged source binary — every post-swap recovery died with "staged launcher binary is missing" or "staging directory is missing" while the installation was actually correct | Durable `Cache\update_swap_done.json` written immediately after the swap (honoured only while the installed hash matches); missing staged binary is an error only when the swap is not done; missing staging dir + completed swap = success; marker cleared by `ConfirmUpdate`/rollback/restore; `UnfinalizedPendingUpdate` excludes completed swaps | `26e53d2` | `r20-repro-prefix.log` (3 FAILED pre-fix), `r20-fixed-pass{,-x64}.log` |
+| R21 | The Phase-2 staged-update finalize never worked in the real flow (found while executing Gate 3 in this round; **pre-existing since 81e61aa**, not introduced by R15–R20) | (a) the CLI parsed `--finalize-update` with an extra `Inc(Index)`, swallowing the mandatory `--root` argument, so every helper exited 3 (usage); (b) the helper was spawned AS `launcher_new\Launcher.exe` and then passed that same path to `ReplaceFileW` as the replacement source, which Windows refuses (`ERROR_SHARING_VIOLATION`) for the caller's own mapped image; (c) the retry loop compared `GetLastError` after logging, so it never retried; (d) `PreserveCompanionBackups` deleted the staging dir before later steps could fail, making the restore impossible | CLI: no extra index advance. Update: install from a private copy (`install_<pid>.exe`) when the staged path is the helper's own image; capture the error once before logging; delete the staging dir only after every mutation commits; `--log-file Cache\update_finalize.log` for the helper | `e9c04e5` | `gate3-selfupdate.log` (23/0 after; the gate fails at every baseline from `81e61aa` on) |
 
 Additional requirements addressed in the same round:
 
@@ -189,19 +190,23 @@ Additional requirements addressed in the same round:
 
 | Configuration | Result | Log |
 |---|---|---|
-| Tests Win32 test-config (TESTCRASH+TESTUPDATE+TESTINJECT) | **930 passed / 0 failed** (×2 runs) | `r19-fixed-pass.log` |
-| Tests Win64 test-config | **930 passed / 0 failed** (×2 runs) | `r19-fixed-pass-x64.log` |
-| Tests Win32 release-config (TESTCRASH only) | **777 passed / 0 failed** | (this round, §4) |
-| Tests Win64 release-config | **777 passed / 0 failed** | (this round, §4) |
+| Tests Win32 test-config (TESTCRASH+TESTUPDATE+TESTINJECT) | **944 passed / 0 failed** | `final-pass.log` |
+| Tests Win64 test-config | **944 passed / 0 failed** (×2 runs) | `final-pass-x64.log` |
+| Tests Win32 release-config (TESTCRASH only) | **791 passed / 0 failed** | (this round, §4) |
+| Tests Win64 release-config | **791 passed / 0 failed** | (this round, §4) |
 | Production Win32/Win64 (RELEASE) | builds clean | — |
-| `test_failure_injection_isolation.py` | **53 passed / 0 failed** | `r19-isolation.log` |
+| `test_failure_injection_isolation.py` | **53 passed / 0 failed** | `final-isolation.log` |
 | `test_crash_hook_isolation.py` | 51 passed / 0 failed | — |
 | `test_signing_workflow.py` | 46 passed / 0 failed | — |
 | `test_icons.py` | 76 passed / 0 failed | — |
+| Gate 2 (compatibility suite, release launcher) | **31 checks / 0 failed** | `gate2-suite.log` |
+| Gate 3 (self-update, real staged update + watchdog) | **23 passed / 0 failed** | `gate3-selfupdate.log` |
+| Gate 1 (crash harness) / Gate 4 (rollback) | **NOT RUN this round** — both require an isolated VM/Sandbox (`-IConfirmThisIsAVM`) and manipulate host paths; running them on the development host would be unsafe and would invalidate the evidence. Last recorded results (Phase 2A): 13/0 and 46/0. | — |
 
-Assertion counts grew 835 → 930 (+95) across Phase 2B. Pre-fix evidence for
+Assertion counts grew 835 → 944 (+109) across Phase 2B. Pre-fix evidence for
 each finding was captured with the same tests against the pre-fix source; see
-the per-finding logs above (15 + 2 + 4 + 3 targeted FAILs).
+the per-finding logs above (15 + 2 + 4 + 3 targeted FAILs, plus the Gate 3
+failure that exposed R21).
 
 Also fixed while writing these tests (pre-existing, unrelated to the findings):
 - A schema-2 rollback-record test evaluated `DateToISO8601(Now)` twice around a
@@ -231,13 +236,25 @@ Also fixed while writing these tests (pre-existing, unrelated to the findings):
 
 ### 9.4 Release recommendation (Phase 2B)
 
-**GO for the R15–R20 remediation.** All six findings have a deterministic
-pre-fix repro, a targeted fix, and post-fix green suites on Win32 and Win64 in
-both test configurations, plus a clean production build and a clean
-failure-injection isolation scan (53/0). No P1 recovery or integrity defect
-remains open from this round. The residual limitations in §9.3 are documented
-and none permits silent data destruction or an unauthenticated/foreign record
-to be accepted.
+**GO for the R15–R21 remediation, with one caveat recorded honestly.**
+
+All six review findings have a deterministic pre-fix repro, a targeted fix, and
+post-fix green suites on Win32 and Win64 in both test configurations, plus a
+clean production build and a clean failure-injection isolation scan (53/0).
+
+Executing the gates also exposed **R21**, a P1 defect that predates this round
+(the Phase-2 finalize helper never worked in the real flow: it swallowed its own
+`--root` argument and then asked Windows to replace its own executing image).
+It is fixed and verified end-to-end: Gate 3 now passes 23/0 with two consecutive
+real updates, `.old` rotation, the deleted-`update_ok` watchdog rollback and the
+failing-build rollback. Gates 1 and 4 were **not re-run** this round because they
+require an isolated VM/Sandbox; the last recorded results are 13/0 and 46/0 from
+Phase 2A, and the code they exercise changed in this round, so those two gates
+must be re-run in the Sandbox before release is signed off.
+
+No P1 recovery or integrity defect remains open from this round. The residual
+limitations in §9.3 are documented and none permits silent data destruction or an
+unauthenticated/foreign record to be accepted.
 
 ---
 

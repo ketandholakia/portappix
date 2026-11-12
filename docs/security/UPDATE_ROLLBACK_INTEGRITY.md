@@ -213,6 +213,11 @@ Key invariants:
 - **`Launcher.exe` is never missing.** The transition is a single
   `ReplaceFileW` with backup; there is no window in which the executable does
   not exist (test: `TestLauncherNeverMissingDuringSwap`).
+- **The helper never installs from its own image (R21).** The helper runs as
+  `launcher_new\Launcher.exe`, and Windows refuses to use the caller's mapped
+  image as a `ReplaceFileW` source (`ERROR_SHARING_VIOLATION`). The helper
+  therefore installs from a private copy (`launcher_new\install_<pid>.exe`),
+  which it consumes, and removes the copy if the swap fails.
 - **Every step is idempotent on resume**, including after the staged source
   binary was consumed by `ReplaceFileW` (R20). The durable
   `Cache\update_swap_done.json` records the installed hash immediately after
