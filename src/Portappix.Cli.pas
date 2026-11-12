@@ -366,12 +366,12 @@ begin
     (FCommand = 'check-manifest') or (FCommand = 'recover') or
     (FCommand = 'status') or (FCommand = 'clear-review') or
     (FCommand = 'apply-updates') or (FCommand = 'check-updates') or
-    (FCommand = 'self-update') or (FCommand = 'post-update') or
-    (FCommand = 'rollback');
+    (FCommand = 'self-update') or (FCommand = 'finalize-update') or
+    (FCommand = 'post-update') or (FCommand = 'rollback');
   if not Result then
     Log('No command switch found (--run, --trace, --check-manifest, --recover, ' +
       '--status, --clear-review, --apply-updates, --check-updates, --self-update, ' +
-      '--post-update, --rollback or --accept-rollback).');
+      '--finalize-update, --post-update, --rollback or --accept-rollback).');
 end;
 
 function TPortappixCli.ResolveManifestPath(const AReference: string;

@@ -367,41 +367,48 @@ begin
   Stream := TFileStream.Create(ADestination + '.download', fmCreate);
   Client := THTTPClient.Create;
   try
-    Client.UserAgent := 'Portappix';
     try
+      Client.UserAgent := 'Portappix';
       Response := Client.Get(AUrl, Stream);
-    except
-      on E: Exception do
+
+      if (Response = nil) or (Response.StatusCode < 200) or (Response.StatusCode >= 300) then
       begin
-        if TFile.Exists(ADestination + '.download') then
-          TFile.Delete(ADestination + '.download');
-        raise EPortappixUpdateError.CreateFmt('Unable to download "%s": %s',
-          [AUrl, E.Message]);
+        if Response = nil then
+          raise EPortappixUpdateError.CreateFmt('Unable to download "%s".', [AUrl]);
+        raise EPortappixUpdateError.CreateFmt('Unable to download "%s" (HTTP %d).',
+          [AUrl, Response.StatusCode]);
       end;
-    end;
 
-    if (Response = nil) or (Response.StatusCode < 200) or (Response.StatusCode >= 300) then
-    begin
-      if TFile.Exists(ADestination + '.download') then
-        TFile.Delete(ADestination + '.download');
-      if Response = nil then
-        raise EPortappixUpdateError.CreateFmt('Unable to download "%s".', [AUrl]);
-      raise EPortappixUpdateError.CreateFmt('Unable to download "%s" (HTTP %d).',
-        [AUrl, Response.StatusCode]);
-    end;
-
-    if Stream.Size > Int64(2) * 1024 * 1024 * 1024 then
-    begin
+      if Stream.Size > Int64(2) * 1024 * 1024 * 1024 then
+        raise EPortappixUpdateError.CreateFmt(
+          'Downloaded file "%s" exceeds size limit of 2 GiB.', [AUrl]);
+    finally
+      // Release the .download handle BEFORE any cleanup touches the file
+      // (the previous handler deleted it under the open stream and masked
+      // the real error with a raw sharing violation).
+      Client.Free;
       Stream.Free;
-      Stream := nil;
-      if TFile.Exists(ADestination + '.download') then
-        TFile.Delete(ADestination + '.download');
-      raise EPortappixUpdateError.CreateFmt(
-        'Downloaded file "%s" exceeds size limit of 2 GiB.', [AUrl]);
     end;
-  finally
-    Client.Free;
-    Stream.Free;
+  except
+    on E: EPortappixUpdateError do
+    begin
+      if TFile.Exists(ADestination + '.download') then
+        try
+          TFile.Delete(ADestination + '.download');
+        except
+        end;
+      raise;
+    end;
+    on E: Exception do
+    begin
+      if TFile.Exists(ADestination + '.download') then
+        try
+          TFile.Delete(ADestination + '.download');
+        except
+        end;
+      raise EPortappixUpdateError.CreateFmt('Unable to download "%s": %s',
+        [AUrl, E.Message]);
+    end;
   end;
 
   TFile.Move(ADestination + '.download', ADestination);
