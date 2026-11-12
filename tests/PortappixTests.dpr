@@ -5522,6 +5522,74 @@ begin
   end;
 end;
 
+procedure TestReviewLockInversion(const ARoot: string);
+var
+  Journal: TPortappixJournal;
+  TxDir, ReviewFile, ThreadError: string;
+  ThreadDone: Boolean;
+
+  procedure RunRecordThread;
+  begin
+    // Runs RecordReviewItem on a second thread while the main thread holds
+    // the review mutex inside ListReviewItems' inversion window (R17).
+    TThread.CreateAnonymousThread(
+      procedure
+      begin
+        try
+          Journal.RecordReviewItem('lockorder-b', 'J:\b', 'T:\b', 'unowned');
+          ThreadDone := True;
+        except
+          on E: Exception do
+            ThreadError := E.ClassName + ': ' + E.Message;
+        end;
+      end).Start;
+  end;
+
+begin
+  TxDir := TPath.Combine(ARoot, 'r17-lock-order');
+  ForceDirectories(TxDir);
+  // A seeded review file is REQUIRED: with a missing file ListReviewItems
+  // exits before its second lock and the inversion window never opens.
+  ReviewFile := TPath.Combine(TxDir, 'Transactions', 'needs_review.json');
+  ForceDirectories(TPath.GetDirectoryName(ReviewFile));
+  WriteTextFile(ReviewFile,
+    '[{"appId":"seed","junctionPath":"J:\\seed","target":"T:\\s","time":"t0","reason":"r"}]');
+  Journal := TPortappixJournal.Create(TxDir);
+  try
+    Journal.OnLog := procedure(AMsg: string) begin end;
+
+    // Park the list thread while it holds the review mutex but has not yet
+    // acquired FSync. Under the inverted order a second thread that takes
+    // FSync first cannot acquire the review mutex and fails with the
+    // 5-second lock timeout; under the consistent FSync -> review order both
+    // operations complete.
+    PortappixReviewLockGapMs := 800;
+    ThreadDone := False;
+    ThreadError := '';
+    try
+      TThread.CreateAnonymousThread(
+        procedure
+        begin
+          Journal.ListReviewItems;
+        end).Start;
+      Sleep(300); // the ListReviewItems thread is now parked inside the gap
+      RunRecordThread;
+      Sleep(6500); // cover the 5-second review-mutex timeout plus margin
+    finally
+      PortappixReviewLockGapMs := 0;
+    end;
+
+    Check(ThreadError = '',
+      'R17: RecordReviewItem is not starved by the inverted review lock order' +
+      ' (got: ' + ThreadError + ')');
+    Check(ThreadDone, 'R17: the concurrent RecordReviewItem completed');
+    Check(Length(Journal.ListReviewItems) = 2,
+      'R17: the concurrently recorded review entry survived');
+  finally
+    Journal.Free;
+  end;
+end;
+
 procedure TestUpdateFailureInjection(const ARoot: string);
 var
   Manager: TPortappixUpdateManager;
@@ -7011,6 +7079,7 @@ begin
 {$IFDEF PORTAPPIX_TESTINJECT}
     TestReviewPersistenceFailures(Root);
     TestUpdateFailureInjection(Root);
+    TestReviewLockInversion(Root);
     // Phase 2 repro tests (each asserts FIXED behavior; fails pre-fix).
     TestSchemaDowngradeRefused(Root);
     TestConcurrentRenameBlocked(Root);

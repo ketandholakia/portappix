@@ -98,6 +98,15 @@ type
     property OnLog: TProc<string> read GetOnLog write SetOnLog;
   end;
 
+{$IFDEF PORTAPPIX_TESTINJECT}
+var
+  /// Milliseconds slept inside ListReviewItems between its two lock
+  /// acquisitions — deterministically holds the first-acquired lock so the
+  /// lock-order inversion repro (R17) can observe the inversion window.
+  /// Test builds only; production binaries contain no reference to this.
+  PortappixReviewLockGapMs: Integer = 0;
+{$ENDIF}
+
 implementation
 
 function TryGetObjectValue(const AObject: TJSONObject; const AName: string;
@@ -245,10 +254,18 @@ function TPortappixJournal.AcquireReviewLock: THandle;
 var
   WaitResult: DWORD;
 begin
-  // Windows mutexes are thread-recursive: a thread that already owns the
-  // mutex (e.g. RecordReviewItem calling ListReviewItems, or BeginTransaction
-  // holding the journal lock and reading the review list) re-acquires it
-  // immediately, so nesting is safe as long as acquisition is balanced.
+  // R17 canonical lock order for ALL review operations
+  // (ListReviewItems / RecordReviewItem / ClearReview):
+  //   FSync -> JournalLock -> ReviewLock
+  // FSync is always taken first (per-instance critical section), the
+  // journal mutex may be held by callers that already started a recovery
+  // cycle, and the review mutex is innermost. No operation may acquire
+  // these in a different order — the inverted order deadlocked two threads
+  // of the same process (R17). Windows mutexes are thread-recursive: a
+  // thread that already owns the mutex (e.g. RecordReviewItem calling
+  // ListReviewItems, or BeginTransaction holding the journal lock and
+  // reading the review list) re-acquires it immediately, so nesting is
+  // safe as long as acquisition is balanced.
   Result := CreateMutex(nil, False,
     PChar(MutexNameFor('Review', FRootPath.ToLower)));
   if Result = 0 then
@@ -939,20 +956,32 @@ var
 begin
   SetLength(Result, 0);
   FilePath := ReviewFilePath;
-  // Cross-process serialization (R12): the file-existence check and the read
-  // happen inside the review mutex so no writer interleaves.
-  ReviewLock := AcquireReviewLock;
+  // R17 canonical lock order: FSync (per-instance) BEFORE the review mutex —
+  // the same order RecordReviewItem, ClearReview and BeginTransaction use.
+  // The previous order (review mutex first) allowed a same-process ABBA
+  // deadlock: a thread parked between the review mutex and FSync while a
+  // second thread held FSync and waited on the review mutex starved until
+  // the 5-second mutex timeout. Windows mutexes are thread-recursive, so
+  // the nested call from RecordReviewItem stays safe.
+  FSync.Enter;
   try
-    // A missing review file is the normal empty state (fresh installation or
-    // no unowned junction ever recorded), not an error.
-    if not TFile.Exists(FilePath) then
-      Exit;
-
-    FSync.Enter;
+    ReviewLock := AcquireReviewLock;
     try
-    // Fail closed: any problem reading or interpreting the review file must
-    // raise. Degrading to an empty list would silently unblock applications
-    // that require manual review and report a clean status.
+      {$IFDEF PORTAPPIX_TESTINJECT}
+      // R17 repro seam: parked while holding FSync and before the review
+      // mutex — the window the second thread must survive under the fixed
+      // order (it blocks on FSync and completes once this thread releases).
+      if PortappixReviewLockGapMs > 0 then
+        Sleep(PortappixReviewLockGapMs);
+      {$ENDIF}
+      // A missing review file is the normal empty state (fresh installation or
+      // no unowned junction ever recorded), not an error.
+      if not TFile.Exists(FilePath) then
+        Exit;
+
+      // Fail closed: any problem reading or interpreting the review file must
+      // raise. Degrading to an empty list would silently unblock applications
+      // that require manual review and report a clean status.
     Content := TFile.ReadAllText(FilePath, TEncoding.UTF8);
     JsonVal := TJSONObject.ParseJSONValue(Content);
     if JsonVal = nil then
@@ -1020,10 +1049,10 @@ begin
       JsonVal.Free;
     end;
     finally
-      FSync.Leave;
+      ReleaseReviewLock(ReviewLock);
     end;
   finally
-    ReleaseReviewLock(ReviewLock);
+    FSync.Leave;
   end;
 end;
 
